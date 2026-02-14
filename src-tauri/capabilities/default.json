@@ -1,0 +1,37 @@
+{
+	"$schema": "../gen/schemas/desktop-schema.json",
+	"identifier": "default",
+	"description": "Default capability for the Pi Desktop app",
+	"windows": ["main"],
+	"permissions": [
+		"core:default",
+		"core:window:default",
+		"core:window:allow-minimize",
+		"core:window:allow-maximize",
+		"core:window:allow-unmaximize",
+		"core:window:allow-close",
+		"core:window:allow-is-maximized",
+		"core:window:allow-start-dragging",
+		"core:window:allow-set-size",
+		"core:window:allow-set-position",
+		"core:window:allow-set-title",
+		"core:window:allow-show",
+		"core:window:allow-hide",
+		"core:window:allow-set-focus",
+		"core:window:allow-toggle-maximize",
+		"core:app:default",
+		"core:path:default",
+		"core:event:default",
+		"shell:default",
+		{
+			"identifier": "shell:allow-execute",
+			"allow": [
+				{
+					"name": "binaries/pi",
+					"sidecar": true,
+					"args": true
+				}
+			]
+		}
+	]
+}
