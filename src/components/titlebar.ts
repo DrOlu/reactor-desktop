@@ -1,231 +1,218 @@
 /**
- * Custom titlebar component for the desktop app.
- *
- * Provides window controls (minimize, maximize, close), drag region,
- * model selector trigger, session name, and token/cost stats display.
+ * TitleBar - custom native-like frame with quick controls + live stats
  */
 
-import { icon } from "@mariozechner/mini-lit";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { html, nothing, render } from "lit";
-import { Maximize2, Minus, Square, X } from "lucide";
-import { type RpcSessionState, rpcBridge } from "../rpc/bridge.js";
-import { ModelSelector } from "./model-selector.js";
-
-// ============================================================================
-// Types
-// ============================================================================
+import { type CliUpdateStatus, type RpcSessionState, rpcBridge } from "../rpc/bridge.js";
 
 interface SessionStats {
-	tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
-	cost: number;
-	totalMessages: number;
+	tokens: { total?: number };
+	cost?: number;
 }
-
-// ============================================================================
-// TitleBar
-// ============================================================================
 
 export class TitleBar {
 	private container: HTMLElement;
-	private isMaximized = false;
 	private state: RpcSessionState | null = null;
+	private currentProject: string | null = null;
+	private isMaximized = false;
 	private stats: SessionStats | null = null;
-	private modelSelector: ModelSelector;
-	private modelSelectorContainer: HTMLElement;
-	private statsRefreshInterval: ReturnType<typeof setInterval> | null = null;
+	private statsTimer: ReturnType<typeof setInterval> | null = null;
+	private cliStatus: CliUpdateStatus | null = null;
+	private cliUpdating = false;
+
+	private onNewSession: (() => void) | null = null;
+	private onOpenSessions: (() => void) | null = null;
+	private onOpenCommandPalette: (() => void) | null = null;
+	private onOpenSettings: (() => void) | null = null;
+	private onUpdateCli: (() => void) | null = null;
 
 	constructor(container: HTMLElement) {
 		this.container = container;
-
-		// Create a container for the model selector overlay
-		this.modelSelectorContainer = document.createElement("div");
-		this.modelSelectorContainer.id = "model-selector-root";
-		document.body.appendChild(this.modelSelectorContainer);
-		this.modelSelector = new ModelSelector(this.modelSelectorContainer);
-
-		this.checkMaximized();
+		void this.checkMaximized();
+		void this.refreshStats();
+		this.startStatsRefresh();
 		this.render();
 	}
 
-	/** Update displayed state (called from chat-view's onStateChange) */
 	updateState(state: RpcSessionState): void {
 		this.state = state;
-		this.refreshStats();
+		void this.refreshStats();
 		this.render();
 	}
 
-	/** Start periodic stats refresh */
-	startStatsRefresh(): void {
-		this.stopStatsRefresh();
-		this.statsRefreshInterval = setInterval(() => this.refreshStats(), 10000);
+	setProject(project: string | null): void {
+		this.currentProject = project;
+		this.render();
 	}
 
-	stopStatsRefresh(): void {
-		if (this.statsRefreshInterval) {
-			clearInterval(this.statsRefreshInterval);
-			this.statsRefreshInterval = null;
-		}
+	setOnNewSession(cb: () => void): void {
+		this.onNewSession = cb;
+	}
+
+	setOnOpenSessions(cb: () => void): void {
+		this.onOpenSessions = cb;
+	}
+
+	setOnOpenCommandPalette(cb: () => void): void {
+		this.onOpenCommandPalette = cb;
+	}
+
+	setOnOpenSettings(cb: () => void): void {
+		this.onOpenSettings = cb;
+	}
+
+	setOnUpdateCli(cb: () => void): void {
+		this.onUpdateCli = cb;
+	}
+
+	setCliUpdateStatus(status: CliUpdateStatus | null): void {
+		this.cliStatus = status;
+		this.render();
+	}
+
+	setCliUpdating(updating: boolean): void {
+		this.cliUpdating = updating;
+		this.render();
+	}
+
+	private startStatsRefresh(): void {
+		this.stopStatsRefresh();
+		this.statsTimer = setInterval(() => {
+			void this.refreshStats();
+		}, 8000);
+	}
+
+	private stopStatsRefresh(): void {
+		if (!this.statsTimer) return;
+		clearInterval(this.statsTimer);
+		this.statsTimer = null;
 	}
 
 	private async refreshStats(): Promise<void> {
 		try {
 			const raw = await rpcBridge.getSessionStats();
 			this.stats = {
-				tokens: raw.tokens as SessionStats["tokens"],
-				cost: raw.cost as number,
-				totalMessages: raw.totalMessages as number,
+				tokens: (raw.tokens as SessionStats["tokens"]) ?? {},
+				cost: typeof raw.cost === "number" ? raw.cost : 0,
 			};
 			this.render();
 		} catch {
-			// Stats not critical; ignore errors
+			// not critical
 		}
 	}
 
 	private async checkMaximized(): Promise<void> {
 		try {
 			this.isMaximized = await getCurrentWindow().isMaximized();
+			this.render();
 		} catch {
-			// Ignore errors during dev mode
+			// ignore (browser fallback)
 		}
 	}
 
 	private async minimize(): Promise<void> {
-		await getCurrentWindow().minimize();
+		try {
+			await getCurrentWindow().minimize();
+		} catch {
+			/* noop */
+		}
 	}
 
 	private async toggleMaximize(): Promise<void> {
-		const win = getCurrentWindow();
-		if (this.isMaximized) {
-			await win.unmaximize();
-		} else {
-			await win.maximize();
+		try {
+			const win = getCurrentWindow();
+			if (this.isMaximized) await win.unmaximize();
+			else await win.maximize();
+			this.isMaximized = !this.isMaximized;
+			this.render();
+		} catch {
+			/* noop */
 		}
-		this.isMaximized = !this.isMaximized;
-		this.render();
 	}
 
 	private async close(): Promise<void> {
-		await getCurrentWindow().close();
+		try {
+			await getCurrentWindow().close();
+		} catch {
+			/* noop */
+		}
 	}
 
-	private openModelSelector(): void {
-		const provider = this.state?.model?.provider ?? "";
-		const modelId = this.state?.model?.id ?? "";
-
-		this.modelSelector.open(provider, modelId, async (newProvider, newModelId) => {
-			try {
-				await rpcBridge.setModel(newProvider, newModelId);
-				const state = await rpcBridge.getState();
-				this.updateState(state);
-			} catch (err) {
-				console.error("Failed to set model:", err);
-			}
-		});
+	private formatTokens(value: number | undefined): string {
+		if (!value || value <= 0) return "0";
+		if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+		if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+		return String(value);
 	}
 
-	private formatTokens(n: number): string {
-		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-		if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-		return `${n}`;
-	}
-
-	private formatCost(cost: number): string {
-		if (cost === 0) return "$0.00";
-		if (cost < 0.01) return `$${cost.toFixed(4)}`;
-		return `$${cost.toFixed(2)}`;
+	private formatCost(value: number | undefined): string {
+		if (!value || value <= 0) return "$0";
+		if (value < 0.01) return `$${value.toFixed(4)}`;
+		return `$${value.toFixed(2)}`;
 	}
 
 	destroy(): void {
 		this.stopStatsRefresh();
-		this.modelSelectorContainer.remove();
 	}
 
 	render(): void {
-		const modelDisplay = this.state?.model ? this.state.model.id : "No model";
-
+		const modelId = this.state?.model?.id || "No model";
 		const thinkingLevel = this.state?.thinkingLevel;
-		const showThinking = thinkingLevel && thinkingLevel !== "off" && thinkingLevel !== "none";
+		const tokens = this.formatTokens(this.stats?.tokens?.total);
+		const cost = this.formatCost(this.stats?.cost);
+		const pending = this.state?.pendingMessageCount ?? 0;
+		const updateAvailable = Boolean(this.cliStatus?.update_available);
+		const canUpdateInApp = Boolean(this.cliStatus?.can_update_in_app && this.cliStatus?.npm_available);
+		const updateTitle = this.cliStatus
+			? `CLI ${this.cliStatus.current_version || "unknown"} → ${this.cliStatus.latest_version || "latest"}`
+			: "CLI update status";
 
 		const template = html`
-			<div
-				data-tauri-drag-region
-				class="flex items-center justify-between h-9 px-3 bg-background border-b border-border select-none"
-			>
-				<!-- Left: App title + session name -->
-				<div data-tauri-drag-region class="flex items-center gap-2 flex-1 min-w-0">
-					<span data-tauri-drag-region class="text-xs font-medium text-muted-foreground tracking-wide uppercase shrink-0">
-						Pi
-					</span>
-					${
-						this.state?.sessionName
-							? html`
-							<span class="text-[10px] text-muted-foreground/60 truncate">
-								/ ${this.state.sessionName}
-							</span>
-						`
-							: nothing
-					}
+			<div class="titlebar" data-tauri-drag-region>
+				<div class="titlebar-left" data-tauri-drag-region>
+					<span class="titlebar-app">pi</span>
+					${this.currentProject ? html`<span class="titlebar-sep">/</span><span class="titlebar-project">${this.currentProject}</span>` : nothing}
 				</div>
 
-				<!-- Center: Model selector + thinking level + stats -->
-				<div data-tauri-drag-region class="flex items-center gap-3 justify-center">
-					<!-- Model button -->
-					<button
-						class="flex items-center gap-1 px-2 py-0.5 rounded-md hover:bg-secondary transition-colors text-xs text-muted-foreground hover:text-foreground"
-						@click=${() => this.openModelSelector()}
-						title="Select model (Ctrl+M)"
-					>
-						<span class="font-mono truncate max-w-[200px]">${modelDisplay}</span>
-						<span class="text-[10px] opacity-60">&#9662;</span>
-					</button>
-
-					${
-						showThinking
-							? html`<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500 font-medium">${thinkingLevel}</span>`
-							: nothing
-					}
-
-					<!-- Stats -->
-					${
-						this.stats
-							? html`
-							<div class="flex items-center gap-2 text-[10px] text-muted-foreground/60">
-								<span title="Total tokens">${this.formatTokens(this.stats.tokens.total)} tok</span>
-								<span title="Session cost">${this.formatCost(this.stats.cost)}</span>
-							</div>
-						`
-							: nothing
-					}
+				<div class="titlebar-center" data-tauri-drag-region>
+					<span class="titlebar-model" title=${modelId}>${modelId}</span>
+					${thinkingLevel && thinkingLevel !== "off"
+						? html`<span class="titlebar-pill thinking">${thinkingLevel}</span>`
+						: nothing}
+					${pending > 0 ? html`<span class="titlebar-pill queue">${pending} queued</span>` : nothing}
+					<span class="titlebar-meta">${tokens} tok · ${cost}</span>
 				</div>
 
-				<!-- Right: Window controls -->
-				<div class="flex items-center gap-0.5 flex-1 justify-end">
-					<button
-						@click=${() => this.minimize()}
-						class="p-1.5 rounded hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
-						title="Minimize"
-					>
-						${icon(Minus, "xs")}
+				<div class="titlebar-right">
+					<button class="titlebar-action" @click=${() => this.onNewSession?.()} title="New session">New</button>
+					<button class="titlebar-action" @click=${() => this.onOpenSessions?.()} title="Sessions">Sessions</button>
+					<button class="titlebar-action" @click=${() => this.onOpenCommandPalette?.()} title="Commands">⌘K</button>
+					${updateAvailable
+						? html`
+							<button
+								class="titlebar-action update"
+								?disabled=${this.cliUpdating}
+								@click=${() => {
+									if (canUpdateInApp) this.onUpdateCli?.();
+									else this.onOpenSettings?.();
+								}}
+								title=${updateTitle}
+							>
+								${this.cliUpdating ? "Updating…" : canUpdateInApp ? "Update CLI" : "CLI Update"}
+							</button>
+						`
+						: nothing}
+					<button class="titlebar-action" @click=${() => this.onOpenSettings?.()} title="Settings">⚙</button>
+
+					<button class="titlebar-window" @click=${() => this.minimize()} title="Minimize">—</button>
+					<button class="titlebar-window" @click=${() => this.toggleMaximize()} title=${this.isMaximized ? "Restore" : "Maximize"}>
+						${this.isMaximized ? "❐" : "□"}
 					</button>
-					<button
-						@click=${() => this.toggleMaximize()}
-						class="p-1.5 rounded hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
-						title=${this.isMaximized ? "Restore" : "Maximize"}
-					>
-						${this.isMaximized ? icon(Square, "xs") : icon(Maximize2, "xs")}
-					</button>
-					<button
-						@click=${() => this.close()}
-						class="p-1.5 rounded hover:bg-destructive/20 transition-colors text-muted-foreground hover:text-destructive"
-						title="Close"
-					>
-						${icon(X, "xs")}
-					</button>
+					<button class="titlebar-window close" @click=${() => this.close()} title="Close">✕</button>
 				</div>
 			</div>
 		`;
-
 		render(template, this.container);
 	}
 }

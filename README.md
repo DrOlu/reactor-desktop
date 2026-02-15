@@ -1,95 +1,105 @@
 # Pi Desktop
 
-A minimalist, Apple-like desktop application for the pi coding agent. Built with Tauri 2 (Rust + web frontend), inspired by Warp terminal and Codex app.
+A native-feeling, cross-platform desktop client for the **pi coding agent** CLI, built with **Tauri 2 + Lit**.
+
+Pi Desktop uses `pi --mode rpc` under the hood and maps core CLI capabilities into a desktop UI.
+
+## Highlights
+
+- Native window shell (custom titlebar, mac-like minimal controls)
+- Project sidebar with persisted folders + per-project sessions
+- Streaming chat with tool-call blocks, thinking blocks, and live status pills
+- Full RPC model controls (model switch, thinking levels, queue modes, compaction, retry)
+- Message queue UX (steer + follow-up)
+- Session workflows (new, resume, fork picker, history viewer, rename, export HTML)
+- Message-level actions (copy/edit/retry) with hover affordances
+- Command palette for extension commands, prompt templates, and skills
+- Built-in package manager panel (`pi install/remove/update/list`, global or project-local scope)
+- Settings account status panel (auth.json + env-provider detection)
+- In-app CLI runtime check (current vs latest version, RPC compatibility probe, one-click npm update for PATH installs)
+- Titlebar “Update CLI” badge when a newer PATH-installed CLI is available
+- Extension UI protocol support (select/confirm/input/editor/notify/status/widget/title/set_editor_text)
+- Image attachments (button, drag/drop, clipboard paste)
+
+Detailed capability matrix: **[`FEATURE_MAPPING.md`](./FEATURE_MAPPING.md)**
+
+Execution docs:
+- **[`ROADMAP_V1.md`](./ROADMAP_V1.md)**
+- **[`RELEASE_CRITERIA.md`](./RELEASE_CRITERIA.md)**
+
+---
 
 ## Prerequisites
 
-- **Node.js** >= 20
-- **Rust** >= 1.70
-- **pi CLI** - Must be installed globally (see below)
+- Node.js >= 20
+- Rust >= 1.70
+- `pi` CLI available on PATH
 
-## Installing the pi CLI
-
-Before running Pi Desktop, you need to install the pi coding agent CLI:
+Install CLI:
 
 ```bash
-# Using npm
 npm install -g @mariozechner/pi-coding-agent
-
-# Verify installation
 pi --version
 ```
 
-If you don't have pi installed, the app will show an error with instructions.
+---
 
 ## Development
 
-1. Install dependencies:
-
 ```bash
 npm install
-```
-
-2. Start the development server:
-
-```bash
 npm run tauri dev
 ```
 
-This will open the app in development mode. The app will look for the `pi` CLI on your PATH.
+---
 
-## Building
-
-Build the frontend:
+## Build
 
 ```bash
 npm run build:frontend
-```
-
-Build the Tauri app:
-
-```bash
 npm run tauri build
 ```
 
-The built executable will be in `src-tauri/target/release/bundle/`.
+App bundles land in:
 
-## How It Works
+`src-tauri/target/release/bundle/`
 
-Pi Desktop is a Tauri 2 application that:
-
-1. Spawns the `pi --mode rpc` process as a child
-2. Communicates with pi via JSON-lines over stdin/stdout
-3. Renders a minimalist chat interface using Lit web components
-
-The app expects the `pi` CLI to be available on your PATH. It will:
-- Look for `pi` on PATH
-- Show an error with installation instructions if not found
-
-## Keyboard Shortcuts
-
-- `Ctrl+N` / `Cmd+N` — New session
-- `Ctrl+L` / `Cmd+L` — Focus input
-- `Escape` — Abort current run
-- `Ctrl+M` / `Cmd+M` — Cycle model (quick switch)
-- `Ctrl+Shift+M` / `Cmd+Shift+M` — Open model selector
+---
 
 ## Architecture
 
-```
-pi-desktop/
-├── src/                    # Frontend (TypeScript + Lit)
-│   ├── components/         # UI components (chat-view, titlebar, model-selector)
-│   ├── rpc/               # RPC bridge (communicates with pi via Tauri IPC)
-│   └── styles/            # CSS styles
-├── src-tauri/              # Backend (Rust)
-│   ├── src/lib.rs          # RPC process manager
-│   └── tauri.conf.json     # Tauri configuration
-└── package.json
-```
+- **Frontend**: Lit + Tailwind CSS utilities + custom CSS
+- **Backend**: Rust (Tauri command bridge + package command runner)
+- **Protocol**: JSON-lines RPC over stdin/stdout to `pi --mode rpc`
 
-## Tech Stack
+Key files:
 
-- **Frontend**: Lit web components, Tailwind CSS v4
-- **Backend**: Tauri 2 (Rust)
-- **Protocol**: JSON-lines RPC over stdin/stdout
+- `src/rpc/bridge.ts` — typed RPC client
+- `src/components/chat-view.ts` — chat, streaming, tools, queueing, attachments
+- `src/components/sidebar.ts` — projects + sessions
+- `src/components/settings-panel.ts` — runtime config
+- `src-tauri/src/lib.rs` — process manager + session indexing
+
+---
+
+## Notes
+
+RPC mode does not expose every interactive TUI-only CLI command directly. Pi Desktop implements the RPC-exposed core feature set and desktop-native workflows around it.
+
+Runtime discovery order for the `pi` process is:
+1. explicit dev CLI path (if provided)
+2. bundled sidecar binary (if present)
+3. `pi` found on PATH
+
+### Windows build-script policy errors
+
+If `cargo check` / `tauri dev` fails with:
+
+`An Application Control policy has blocked this file. (os error 4551)`
+
+this is an OS policy issue (build-script/proc-macro execution), not an app code error.
+
+Typical fixes:
+- run from a trusted development location (not a restricted folder)
+- remove enterprise/AppLocker/WDAC restrictions for Rust build artifacts
+- clear and rebuild target dir after policy changes (`cargo clean`)

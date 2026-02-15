@@ -23,6 +23,13 @@
 		"core:path:default",
 		"core:event:default",
 		"shell:default",
+		"fs:default",
+		"fs:allow-read",
+		"fs:allow-write",
+		"fs:allow-exists",
+		"fs:allow-mkdir",
+		"dialog:default",
+		"dialog:allow-open",
 		{
 			"identifier": "shell:allow-execute",
 			"allow": [

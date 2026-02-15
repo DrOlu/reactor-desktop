@@ -1,19 +1,15 @@
 /**
- * RPC Bridge - connects the Tauri frontend to the pi coding agent via IPC.
- *
- * Tauri Rust backend spawns the pi process and relays stdin/stdout.
- * This bridge provides a typed API matching the pi RPC protocol.
+ * RPC Bridge - typed frontend API for pi --mode rpc
  */
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-// ============================================================================
-// Types (subset of pi RPC protocol)
-// ============================================================================
+export type QueueMode = "all" | "one-at-a-time";
+export type StreamingBehavior = "steer" | "followUp";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export interface RpcStartOptions {
-	/** Dev-mode only: path to the CLI JS file. Null in production (auto-discovery). */
 	cliPath: string | null;
 	cwd: string;
 	provider?: string;
@@ -21,13 +17,24 @@ export interface RpcStartOptions {
 	env?: Record<string, string>;
 }
 
+export interface RpcImageInput {
+	type: "image";
+	data: string;
+	mimeType: string;
+}
+
+export interface RpcPromptOptions {
+	images?: RpcImageInput[];
+	streamingBehavior?: StreamingBehavior;
+}
+
 export interface RpcSessionState {
 	model?: { provider: string; id: string; contextWindow?: number; reasoning?: boolean };
-	thinkingLevel: string;
+	thinkingLevel: ThinkingLevel;
 	isStreaming: boolean;
 	isCompacting: boolean;
-	steeringMode: "all" | "one-at-a-time";
-	followUpMode: "all" | "one-at-a-time";
+	steeringMode: QueueMode;
+	followUpMode: QueueMode;
 	sessionFile?: string;
 	sessionId: string;
 	sessionName?: string;
@@ -36,12 +43,51 @@ export interface RpcSessionState {
 	pendingMessageCount: number;
 }
 
-export type RpcEventCallback = (event: Record<string, unknown>) => void;
-export type RpcResponseCallback = (response: Record<string, unknown>) => void;
+export interface PiCliCommandResult {
+	stdout: string;
+	stderr: string;
+	exit_code: number;
+	discovery: string;
+}
 
-// ============================================================================
-// RPC Bridge
-// ============================================================================
+export interface PiAuthProviderStatus {
+	provider: string;
+	source: "auth_file_api_key" | "auth_file_oauth" | "environment";
+	kind: "api_key" | "oauth" | "unknown";
+}
+
+export interface PiAuthStatus {
+	agent_dir: string | null;
+	auth_file: string | null;
+	auth_file_exists: boolean;
+	configured_providers: PiAuthProviderStatus[];
+}
+
+export interface CliUpdateStatus {
+	discovery: string;
+	current_version: string | null;
+	latest_version: string | null;
+	update_available: boolean;
+	can_update_in_app: boolean;
+	npm_available: boolean;
+	update_command: string;
+	note: string | null;
+}
+
+export interface NpmCommandResult {
+	stdout: string;
+	stderr: string;
+	exit_code: number;
+}
+
+export interface RpcCompatibilityReport {
+	ok: boolean;
+	checks: string[];
+	error?: string;
+	checkedAt: number;
+}
+
+export type RpcEventCallback = (event: Record<string, unknown>) => void;
 
 export class RpcBridge {
 	private requestId = 0;
@@ -54,17 +100,20 @@ export class RpcBridge {
 	private unlistenClosed: UnlistenFn | null = null;
 	private unlistenStderr: UnlistenFn | null = null;
 	private _isConnected = false;
+	private lastStartOptions: RpcStartOptions | null = null;
+	private lastDiscoveryInfo: string | null = null;
 
 	get isConnected(): boolean {
 		return this._isConnected;
 	}
 
-	/**
-	 * Start the pi RPC process and begin listening for events.
-	 * Returns a string describing how the pi binary was discovered.
-	 */
+	get discoveryInfo(): string | null {
+		return this.lastDiscoveryInfo;
+	}
+
 	async start(options: RpcStartOptions): Promise<string> {
-		// Listen for events from Rust backend before starting process
+		await this.teardownListeners();
+
 		this.unlistenEvent = await listen<string>("rpc-event", (event) => {
 			this.handleLine(event.payload);
 		});
@@ -81,39 +130,34 @@ export class RpcBridge {
 			console.debug("[pi stderr]", event.payload);
 		});
 
-		// Start the RPC process via Tauri
-		const discoveryInfo = await invoke<string>("rpc_start", {
-			options: {
-				cli_path: options.cliPath ?? null,
-				cwd: options.cwd,
-				provider: options.provider || null,
-				model: options.model || null,
-				env: options.env || null,
-			},
-		});
+		try {
+			const discoveryInfo = await invoke<string>("rpc_start", {
+				options: {
+					cli_path: options.cliPath ?? null,
+					cwd: options.cwd,
+					provider: options.provider || null,
+					model: options.model || null,
+					env: options.env || null,
+				},
+			});
 
-		this._isConnected = true;
-		return discoveryInfo;
+			this._isConnected = true;
+			this.lastStartOptions = { ...options };
+			this.lastDiscoveryInfo = discoveryInfo;
+			return discoveryInfo;
+		} catch (err) {
+			await this.teardownListeners();
+			throw err;
+		}
 	}
 
-	/**
-	 * Stop the RPC process.
-	 */
 	async stop(): Promise<void> {
 		this._isConnected = false;
-		this.unlistenEvent?.();
-		this.unlistenClosed?.();
-		this.unlistenStderr?.();
-		this.unlistenEvent = null;
-		this.unlistenClosed = null;
-		this.unlistenStderr = null;
+		await this.teardownListeners();
 		this.rejectAllPending("RPC stopped");
 		await invoke("rpc_stop");
 	}
 
-	/**
-	 * Subscribe to agent events (streaming text, tool calls, etc.)
-	 */
 	onEvent(callback: RpcEventCallback): () => void {
 		this.eventListeners.push(callback);
 		return () => {
@@ -122,20 +166,20 @@ export class RpcBridge {
 		};
 	}
 
-	// =========================================================================
+	// -------------------------------------------------------------------------
 	// Commands
-	// =========================================================================
+	// -------------------------------------------------------------------------
 
-	async prompt(message: string, images?: Array<{ type: string; data: string; mimeType: string }>): Promise<void> {
-		await this.send({ type: "prompt", message, images });
+	async prompt(message: string, options: RpcPromptOptions = {}): Promise<void> {
+		await this.send({ type: "prompt", message, images: options.images, streamingBehavior: options.streamingBehavior });
 	}
 
-	async steer(message: string): Promise<void> {
-		await this.send({ type: "steer", message });
+	async steer(message: string, images?: RpcImageInput[]): Promise<void> {
+		await this.send({ type: "steer", message, images });
 	}
 
-	async followUp(message: string): Promise<void> {
-		await this.send({ type: "follow_up", message });
+	async followUp(message: string, images?: RpcImageInput[]): Promise<void> {
+		await this.send({ type: "follow_up", message, images });
 	}
 
 	async abort(): Promise<void> {
@@ -168,13 +212,21 @@ export class RpcBridge {
 		return data.models;
 	}
 
-	async setThinkingLevel(level: string): Promise<void> {
+	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
 		await this.send({ type: "set_thinking_level", level });
 	}
 
-	async cycleThinkingLevel(): Promise<{ level: string } | null> {
+	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
 		const response = await this.send({ type: "cycle_thinking_level" });
 		return this.getData(response);
+	}
+
+	async setSteeringMode(mode: QueueMode): Promise<void> {
+		await this.send({ type: "set_steering_mode", mode });
+	}
+
+	async setFollowUpMode(mode: QueueMode): Promise<void> {
+		await this.send({ type: "set_follow_up_mode", mode });
 	}
 
 	async compact(customInstructions?: string): Promise<Record<string, unknown>> {
@@ -184,6 +236,14 @@ export class RpcBridge {
 
 	async setAutoCompaction(enabled: boolean): Promise<void> {
 		await this.send({ type: "set_auto_compaction", enabled });
+	}
+
+	async setAutoRetry(enabled: boolean): Promise<void> {
+		await this.send({ type: "set_auto_retry", enabled });
+	}
+
+	async abortRetry(): Promise<void> {
+		await this.send({ type: "abort_retry" });
 	}
 
 	async bash(command: string): Promise<Record<string, unknown>> {
@@ -212,8 +272,8 @@ export class RpcBridge {
 		return data.commands;
 	}
 
-	async switchSession(sessionFile: string): Promise<Record<string, unknown>> {
-		const response = await this.send({ type: "switch_session", sessionFile });
+	async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
+		const response = await this.send({ type: "switch_session", sessionPath });
 		return this.getData(response);
 	}
 
@@ -221,41 +281,103 @@ export class RpcBridge {
 		await this.send({ type: "set_session_name", name });
 	}
 
-	async exportHtml(): Promise<{ html: string }> {
-		const response = await this.send({ type: "export_html" });
+	async exportHtml(outputPath?: string): Promise<{ path: string }> {
+		const response = await this.send({ type: "export_html", outputPath });
 		return this.getData(response);
 	}
 
-	async getForkMessages(forkId: string): Promise<Array<Record<string, unknown>>> {
-		const response = await this.send({ type: "get_fork_messages", forkId });
-		const data = this.getData<{ messages: Array<Record<string, unknown>> }>(response);
+	async getForkMessages(): Promise<Array<{ entryId: string; text: string }>> {
+		const response = await this.send({ type: "get_fork_messages" });
+		const data = this.getData<{ messages: Array<{ entryId: string; text: string }> }>(response);
 		return data.messages;
 	}
 
-	async fork(): Promise<Record<string, unknown>> {
-		const response = await this.send({ type: "fork" });
+	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
+		const response = await this.send({ type: "fork", entryId });
 		return this.getData(response);
 	}
 
-	async getLastAssistantText(): Promise<string> {
+	async getLastAssistantText(): Promise<string | null> {
 		const response = await this.send({ type: "get_last_assistant_text" });
-		const data = this.getData<{ text: string }>(response);
+		const data = this.getData<{ text: string | null }>(response);
 		return data.text;
 	}
 
-	// =========================================================================
+	async sendExtensionUiResponse(response: Record<string, unknown>): Promise<void> {
+		await invoke("rpc_ui_response", { response: JSON.stringify(response) });
+	}
+
+	async runPiCliCommand(
+		args: string[],
+		options: { cwd?: string; env?: Record<string, string>; cliPath?: string | null } = {},
+	): Promise<PiCliCommandResult> {
+		const cliPath =
+			typeof options.cliPath !== "undefined" ? options.cliPath : (this.lastStartOptions?.cliPath ?? null);
+
+		return invoke<PiCliCommandResult>("run_pi_cli_command", {
+			options: {
+				args,
+				cwd: options.cwd ?? null,
+				env: options.env ?? null,
+				cli_path: cliPath,
+			},
+		});
+	}
+
+	async getPiAuthStatus(): Promise<PiAuthStatus> {
+		return invoke<PiAuthStatus>("get_pi_auth_status");
+	}
+
+	async getCliUpdateStatus(): Promise<CliUpdateStatus> {
+		return invoke<CliUpdateStatus>("get_cli_update_status", {
+			options: {
+				cli_path: this.lastStartOptions?.cliPath ?? null,
+				cwd: this.lastStartOptions?.cwd ?? null,
+				env: this.lastStartOptions?.env ?? null,
+			},
+		});
+	}
+
+	async updateCliViaNpm(): Promise<NpmCommandResult> {
+		return invoke<NpmCommandResult>("update_cli_via_npm");
+	}
+
+	async checkRpcCompatibility(): Promise<RpcCompatibilityReport> {
+		const checks: string[] = [];
+		try {
+			await this.getState();
+			checks.push("get_state");
+			await this.getCommands();
+			checks.push("get_commands");
+			await this.getAvailableModels();
+			checks.push("get_available_models");
+			return {
+				ok: true,
+				checks,
+				checkedAt: Date.now(),
+			};
+		} catch (err) {
+			return {
+				ok: false,
+				checks,
+				error: err instanceof Error ? err.message : String(err),
+				checkedAt: Date.now(),
+			};
+		}
+	}
+
+	// -------------------------------------------------------------------------
 	// Internal
-	// =========================================================================
+	// -------------------------------------------------------------------------
 
 	private handleLine(line: string): void {
 		let data: Record<string, unknown>;
 		try {
 			data = JSON.parse(line);
 		} catch {
-			return; // Ignore non-JSON lines
+			return;
 		}
 
-		// Check if it's a response to a pending request
 		if (data.type === "response" && typeof data.id === "string" && this.pendingRequests.has(data.id)) {
 			const pending = this.pendingRequests.get(data.id)!;
 			this.pendingRequests.delete(data.id);
@@ -263,10 +385,7 @@ export class RpcBridge {
 			return;
 		}
 
-		// Otherwise it's a streaming event -- dispatch to listeners
-		for (const listener of this.eventListeners) {
-			listener(data);
-		}
+		for (const listener of this.eventListeners) listener(data);
 	}
 
 	private async send(command: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -276,8 +395,8 @@ export class RpcBridge {
 		return new Promise((resolve, reject) => {
 			const timeout = setTimeout(() => {
 				this.pendingRequests.delete(id);
-				reject(new Error(`Timeout waiting for response to ${command.type}`));
-			}, 30000);
+				reject(new Error(`Timeout waiting for response to ${String(command.type)}`));
+			}, 35000);
 
 			this.pendingRequests.set(id, {
 				resolve: (response) => {
@@ -306,12 +425,20 @@ export class RpcBridge {
 	}
 
 	private rejectAllPending(reason: string): void {
-		for (const [_id, pending] of this.pendingRequests) {
+		for (const [, pending] of this.pendingRequests) {
 			pending.reject(new Error(reason));
 		}
 		this.pendingRequests.clear();
 	}
+
+	private async teardownListeners(): Promise<void> {
+		this.unlistenEvent?.();
+		this.unlistenClosed?.();
+		this.unlistenStderr?.();
+		this.unlistenEvent = null;
+		this.unlistenClosed = null;
+		this.unlistenStderr = null;
+	}
 }
 
-/** Singleton RPC bridge instance */
 export const rpcBridge = new RpcBridge();
