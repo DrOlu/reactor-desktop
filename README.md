@@ -54,9 +54,9 @@ Detailed capability map: [`FEATURE_MAPPING.md`](./FEATURE_MAPPING.md)
 ## Download
 
 Go to **[Releases](https://github.com/gustavonline/pi-desktop/releases)** and download:
-- macOS: `.dmg` / `.app.tar.gz`
-- Windows: `.msi` / `.nsis.zip` (depending on workflow output)
-- Linux: `.AppImage` / `.deb`
+- macOS: `.dmg` + app bundle archive (`.app.tar.gz`)
+- Windows: `.exe` (NSIS installer) and/or `.msi`
+- Linux: `.AppImage` and `.deb`
 
 If no release is available yet, follow **Build from source** below.
 
@@ -114,6 +114,8 @@ Short version:
 - **Tauri backend (Rust)**: native bridge, CLI process management, filesystem/window commands
 - **Pi RPC bridge**: typed JSON-RPC-style line protocol over stdin/stdout
 - **Packages/extensions**: opt-in behavior and UI integrations through the extension UI protocol
+
+> Stack note: this project uses **Lit**, not React.
 
 ---
 
