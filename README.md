@@ -60,6 +60,18 @@ Go to **[Releases](https://github.com/gustavonline/pi-desktop/releases)** and do
 
 If no release is available yet, follow **Build from source** below.
 
+### macOS Gatekeeper note (unsigned builds)
+
+Until notarized signing is configured, macOS may block downloaded builds with messages like “app is damaged”.
+
+Workaround:
+
+```bash
+xattr -cr /Applications/Pi\ Desktop.app
+```
+
+Then launch again (or right-click → Open).
+
 ---
 
 ## First run

@@ -16,6 +16,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - UI polish toward neutral/minimal design language
 - Stats ring percent now defaults to `0%` in fresh sessions
 - README expanded with architecture and release guidance
+- Release pipeline now includes explicit Tauri icon set and bundle icon config for cross-platform packaging
 
 ## [0.1.0] - 2026-03-18
 

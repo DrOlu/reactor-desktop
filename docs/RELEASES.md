@@ -62,3 +62,5 @@ For production distribution, configure platform signing:
 - macOS: Apple Developer signing + notarization
 - Windows: code signing certificate (recommended)
 - Linux: optional signature strategy depending on distro/channel
+
+Without macOS signing/notarization, some users may see Gatekeeper warnings (“app is damaged”).
