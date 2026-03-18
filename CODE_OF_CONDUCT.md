@@ -28,7 +28,7 @@ This Code of Conduct applies within all project spaces and when an individual is
 
 ## Enforcement
 
-Report unacceptable behavior to: **maintainers@gustavonline.dev**
+Report unacceptable behavior to: **hello@gustavonline.com**
 
 All reports will be reviewed and investigated promptly and fairly.
 
