@@ -33,6 +33,13 @@ Pi Desktop gives you a stable desktop UX for Pi without hardcoding product logic
 4. **Calm UI**
    - Minimal visuals, neutral colors, low noise, and predictable controls.
 
+### Current development direction
+
+- **Core app focus:** UI polish, interaction quality, and performance (lighter/faster desktop shell).
+- **Capability growth:** packages/extensions should drive optional workflows and policies.
+- **Hardcoding rule:** avoid embedding project-specific automation/policy logic in app core.
+- **Architecture intent:** Pi Desktop is a capability host for extensions, not a monolithic workflow engine.
+
 ---
 
 ## Features

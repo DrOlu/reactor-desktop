@@ -53,6 +53,12 @@ Own optional behavior:
 
 This keeps the desktop shell generic and maintainable.
 
+### Practical direction for ongoing development
+
+- Keep app-core work focused on **UI polish + performance + reliability**.
+- Add new user-facing workflows through **packages/extensions first** whenever possible.
+- Treat Pi Desktop as a **capability host** (`ctx.ui`, native shell bridge), not a hardcoded workflow layer.
+
 ---
 
 ## Runtime/session design
