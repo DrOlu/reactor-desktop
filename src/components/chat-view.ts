@@ -693,6 +693,38 @@ export class ChatView {
 		return images;
 	}
 
+	private extractAssistantPartialContent(assistantEvent: Record<string, unknown>, mode: "text" | "thinking"): string | null {
+		const partial = assistantEvent.partial;
+		if (!partial || typeof partial !== "object") return null;
+		const content = (partial as Record<string, unknown>).content;
+		if (!Array.isArray(content)) return null;
+
+		const fromPart = (part: unknown): string | null => {
+			if (!part || typeof part !== "object") return null;
+			const p = part as Record<string, unknown>;
+			const type = typeof p.type === "string" ? p.type : "";
+			if (mode === "text" && type === "text" && typeof p.text === "string") return p.text;
+			if (mode === "thinking" && type === "thinking") {
+				if (typeof p.thinking === "string") return p.thinking;
+				if (typeof p.text === "string") return p.text;
+			}
+			return null;
+		};
+
+		const contentIndex = assistantEvent.contentIndex;
+		if (typeof contentIndex === "number" && Number.isInteger(contentIndex) && contentIndex >= 0 && contentIndex < content.length) {
+			const indexed = fromPart(content[contentIndex]);
+			if (indexed !== null) return indexed;
+		}
+
+		for (let i = content.length - 1; i >= 0; i -= 1) {
+			const fallback = fromPart(content[i]);
+			if (fallback !== null) return fallback;
+		}
+
+		return null;
+	}
+
 	private async loadAvailableModels(): Promise<void> {
 		const push = (window as typeof window & {
 			__PI_DESKTOP_PUSH_TRACE__?: (message: string) => void;
@@ -1509,6 +1541,10 @@ export class ChatView {
 			case "message_start": {
 				const msg = event.message as Record<string, unknown>;
 				if ((msg.role as string) === "assistant") {
+					const last = this.messages[this.messages.length - 1];
+					if (last?.role === "assistant" && last.isStreaming) {
+						break;
+					}
 					this.messages.push({
 						id: uid("assistant"),
 						role: "assistant",
@@ -1530,14 +1566,24 @@ export class ChatView {
 				if (!last || last.role !== "assistant") break;
 
 				if (subtype === "text_delta") {
-					last.text += (assistantEvent.delta as string) || "";
+					const partialText = this.extractAssistantPartialContent(assistantEvent, "text");
+					if (partialText !== null) {
+						last.text = partialText;
+					} else {
+						last.text += (assistantEvent.delta as string) || "";
+					}
 					this.scheduleStreamingUiReconcile(1800);
 					this.render();
 					this.scrollToBottom();
 				} else if (subtype === "thinking_delta") {
-					last.thinking = (last.thinking || "") + ((assistantEvent.delta as string) || "");
+					const partialThinking = this.extractAssistantPartialContent(assistantEvent, "thinking");
+					if (partialThinking !== null) {
+						last.thinking = partialThinking;
+					} else {
+						last.thinking = (last.thinking || "") + ((assistantEvent.delta as string) || "");
+					}
 					this.scheduleStreamingUiReconcile(1800);
-					if ((last.thinking.length || 0) % 100 === 0) this.render();
+					if ((last.thinking?.length || 0) % 100 === 0) this.render();
 				} else if (subtype === "toolcall_end") {
 					const tc = assistantEvent.toolCall as Record<string, unknown>;
 					if (tc) {
@@ -1988,19 +2034,13 @@ export class ChatView {
 		let streaming = this.currentIsStreaming();
 		if (streaming) {
 			try {
-				const backendStreaming = await rpcBridge.refreshRunningState();
+				const backendState = await rpcBridge.getState();
+				const backendStreaming = Boolean(backendState.isStreaming);
+				this.state = backendState;
+				this.onStateChange?.(backendState);
 				if (!backendStreaming) {
 					streaming = false;
-					if (this.state) {
-						this.state = { ...this.state, isStreaming: false };
-					}
-					for (const message of this.messages) {
-						if (message.role === "assistant" && message.isStreaming) {
-							message.isStreaming = false;
-						}
-					}
-					this.pendingDeliveryMode = "prompt";
-					this.onRunStateChange?.(false);
+					this.clearStreamingUiState();
 					this.render();
 				}
 			} catch {
