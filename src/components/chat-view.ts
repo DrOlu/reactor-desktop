@@ -269,6 +269,7 @@ export class ChatView {
 	private historyRoleFilter: UiRole | "all" = "all";
 	private quickActionsOpen = false;
 	private disconnectNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+	private streamingReconcileTimer: ReturnType<typeof setTimeout> | null = null;
 	private sessionStats: SessionStatsSummary = {
 		tokens: null,
 		lifetimeTokens: null,
@@ -429,7 +430,24 @@ export class ChatView {
 		}
 	}
 
+	private scheduleStreamingUiReconcile(delayMs = 1800): void {
+		if (this.streamingReconcileTimer) {
+			clearTimeout(this.streamingReconcileTimer);
+		}
+		this.streamingReconcileTimer = setTimeout(() => {
+			this.streamingReconcileTimer = null;
+			void this.reconcileStreamingUiState();
+		}, delayMs);
+	}
+
+	private cancelStreamingUiReconcile(): void {
+		if (!this.streamingReconcileTimer) return;
+		clearTimeout(this.streamingReconcileTimer);
+		this.streamingReconcileTimer = null;
+	}
+
 	connect(): void {
+		this.unsubscribeEvents?.();
 		this.unsubscribeEvents = rpcBridge.onEvent((event) => this.handleEvent(event));
 		void this.bindNativeFileDropListener();
 		this.isConnected = rpcBridge.isConnected;
@@ -441,6 +459,7 @@ export class ChatView {
 	disconnect(): void {
 		this.unsubscribeEvents?.();
 		this.unsubscribeEvents = null;
+		this.cancelStreamingUiReconcile();
 		for (const unlisten of this.nativeFileDropUnlisteners) {
 			unlisten();
 		}
@@ -1460,10 +1479,12 @@ export class ChatView {
 			case "agent_start":
 				this.pendingDeliveryMode = "steer";
 				this.onRunStateChange?.(true);
+				this.scheduleStreamingUiReconcile(2400);
 				this.render();
 				break;
 
 			case "agent_end": {
+				this.cancelStreamingUiReconcile();
 				const last = this.messages[this.messages.length - 1];
 				if (last && last.role === "assistant") last.isStreaming = false;
 				this.retryStatus = "";
@@ -1510,10 +1531,12 @@ export class ChatView {
 
 				if (subtype === "text_delta") {
 					last.text += (assistantEvent.delta as string) || "";
+					this.scheduleStreamingUiReconcile(1800);
 					this.render();
 					this.scrollToBottom();
 				} else if (subtype === "thinking_delta") {
 					last.thinking = (last.thinking || "") + ((assistantEvent.delta as string) || "");
+					this.scheduleStreamingUiReconcile(1800);
 					if ((last.thinking.length || 0) % 100 === 0) this.render();
 				} else if (subtype === "toolcall_end") {
 					const tc = assistantEvent.toolCall as Record<string, unknown>;
@@ -1539,6 +1562,7 @@ export class ChatView {
 				if (last?.role === "assistant") {
 					last.isStreaming = false;
 				}
+				this.scheduleStreamingUiReconcile(350);
 				this.render();
 				break;
 			}
@@ -1636,6 +1660,7 @@ export class ChatView {
 
 			case "rpc_disconnected":
 				this.isConnected = false;
+				this.cancelStreamingUiReconcile();
 				this.bindingStatusText = this.projectPath ? "Reconnecting session…" : null;
 				this.modelLoadRequestSeq += 1;
 				this.loadingModels = false;
@@ -2109,6 +2134,7 @@ export class ChatView {
 	}
 
 	private clearStreamingUiState(): void {
+		this.cancelStreamingUiReconcile();
 		if (this.state) {
 			this.state = { ...this.state, isStreaming: false };
 			this.onStateChange?.(this.state);
@@ -2135,6 +2161,8 @@ export class ChatView {
 			this.onRunStateChange?.(Boolean(state.isStreaming));
 			if (!state.isStreaming) {
 				this.clearStreamingUiState();
+			} else {
+				this.scheduleStreamingUiReconcile(2200);
 			}
 		} catch {
 			this.clearStreamingUiState();
