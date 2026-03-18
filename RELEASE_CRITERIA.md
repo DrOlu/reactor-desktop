@@ -52,3 +52,8 @@ Promote `dev` to `main` only when:
 - [ ] Merge `dev` -> `main`
 - [ ] Tag release candidate (`v1.0.0-rcX`) then stable (`v1.0.0`)
 - [ ] Publish release notes with known limitations
+- [ ] Verify GitHub release artifacts:
+  - [ ] macOS (`.dmg` / `.app.tar.gz`)
+  - [ ] Windows (`.msi` / `nsis`)
+  - [ ] Linux (`.AppImage` / `.deb`)
+- [ ] Mark prerelease vs stable correctly

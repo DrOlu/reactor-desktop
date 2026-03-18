@@ -9,6 +9,8 @@
  * - notify: Display a notification (fire-and-forget)
  */
 
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { type Options as DesktopNotificationOptions, isPermissionGranted, onAction, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { html, render, type TemplateResult } from "lit";
 import { rpcBridge } from "../rpc/bridge.js";
 
@@ -40,6 +42,36 @@ interface ExtensionUiRequest {
 	widgetKey?: string;
 	widgetLines?: string[];
 	widgetPlacement?: "aboveEditor" | "belowEditor";
+	notifyTargetWorkspaceId?: string;
+	notifyTargetTabId?: string;
+	notifyTargetSessionPath?: string;
+}
+
+function sanitizeUiStatusText(text: string): string {
+	return text
+		.replace(/(?:\u001b|�)\[[0-9;?]*[ -/]*[@-~]/g, "")
+		.replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+		.replace(/ +/g, " ")
+		.trim();
+}
+
+function shouldSuppressUiStatusText(text: string): boolean {
+	if (!text) return true;
+	const normalized = text.toLowerCase();
+	if (/^(?:💰|\$|usd|eur|dkk|kr|€|£|¥)?\s*\$?\s*\d+(?:[\.,]\d+)?\s*(?:usd|eur|dkk|kr)?$/i.test(text)) {
+		return true;
+	}
+	if (/(?:↑\s*\d|↓\s*\d|(?:^|\s)r\d|(?:^|\s)w\d|\(sub\)|\(auto\)|\/\d+[km]|\bthinking\b)/i.test(normalized)) {
+		return true;
+	}
+	return false;
+}
+
+export interface NotificationActionTarget {
+	workspaceId?: string;
+	tabId?: string;
+	sessionPath?: string;
 }
 
 export class ExtensionUiHandler {
@@ -48,13 +80,164 @@ export class ExtensionUiHandler {
 	private widgetAboveContainer: HTMLElement | null = null;
 	private widgetBelowContainer: HTMLElement | null = null;
 	private onSetEditorText: ((text: string) => void) | null = null;
+	private onTrace: ((message: string) => void) | null = null;
+	private onNotificationActionTarget: ((target: NotificationActionTarget) => void) | null = null;
+	private appWindowFocused = typeof document !== "undefined" ? document.hasFocus() : true;
+	private notificationPermissionRequested = false;
+	private notificationActionListenerRegistered = false;
+	private lastNotificationActionTarget: NotificationActionTarget | null = null;
 
 	constructor() {
 		this.createContainers();
+		this.ensureAppFocusTracking();
+		this.ensureDesktopNotificationActionListener();
 	}
 
 	setEditorTextHandler(handler: (text: string) => void): void {
 		this.onSetEditorText = handler;
+	}
+
+	setTraceHandler(handler: ((message: string) => void) | null): void {
+		this.onTrace = handler;
+	}
+
+	setNotificationActionHandler(handler: ((target: NotificationActionTarget) => void) | null): void {
+		this.onNotificationActionTarget = handler;
+	}
+
+	primeNotificationPermission(): void {
+		void this.primeDesktopNotificationPermission();
+	}
+
+	private trace(message: string): void {
+		this.onTrace?.(message);
+		console.debug(`[extension-ui] ${message}`);
+	}
+
+	private isAppBackgrounded(): boolean {
+		if (typeof document === "undefined") return false;
+		return document.visibilityState === "hidden" || !this.appWindowFocused || !document.hasFocus();
+	}
+
+	private ensureAppFocusTracking(): void {
+		if (typeof window === "undefined" || typeof document === "undefined") return;
+		if ((window as typeof window & { __PI_DESKTOP_EXTENSION_UI_FOCUS_TRACKING__?: boolean }).__PI_DESKTOP_EXTENSION_UI_FOCUS_TRACKING__) {
+			return;
+		}
+		(window as typeof window & { __PI_DESKTOP_EXTENSION_UI_FOCUS_TRACKING__?: boolean }).__PI_DESKTOP_EXTENSION_UI_FOCUS_TRACKING__ = true;
+		window.addEventListener("focus", () => {
+			this.appWindowFocused = true;
+		});
+		window.addEventListener("blur", () => {
+			this.appWindowFocused = false;
+		});
+		document.addEventListener("visibilitychange", () => {
+			if (document.visibilityState === "hidden") {
+				this.appWindowFocused = false;
+			} else if (document.hasFocus()) {
+				this.appWindowFocused = true;
+			}
+		});
+	}
+
+	private getDesktopNotificationSound(): string | undefined {
+		if (typeof navigator === "undefined") return undefined;
+		const platform = `${navigator.userAgent} ${navigator.platform}`.toLowerCase();
+		if (platform.includes("mac")) return "Ping";
+		if (platform.includes("linux")) return "message-new-instant";
+		return undefined;
+	}
+
+	private describeNotificationContext(backgrounded: boolean): string {
+		const visibility = typeof document !== "undefined" ? document.visibilityState : "unknown";
+		const domFocused = typeof document !== "undefined" ? document.hasFocus() : false;
+		return `backgrounded=${backgrounded ? "yes" : "no"} visibility=${visibility} domFocus=${domFocused ? "yes" : "no"} appFocus=${this.appWindowFocused ? "yes" : "no"}`;
+	}
+
+	private buildNotificationActionTarget(request: ExtensionUiRequest): NotificationActionTarget | null {
+		const workspaceId = request.notifyTargetWorkspaceId?.trim();
+		const tabId = request.notifyTargetTabId?.trim();
+		const sessionPath = request.notifyTargetSessionPath?.trim();
+		if (!workspaceId && !tabId && !sessionPath) return null;
+		return {
+			workspaceId: workspaceId || undefined,
+			tabId: tabId || undefined,
+			sessionPath: sessionPath || undefined,
+		};
+	}
+
+	private extractNotificationActionTarget(notification: DesktopNotificationOptions): NotificationActionTarget | null {
+		const extra = notification.extra as Record<string, unknown> | undefined;
+		if (!extra) return null;
+		const workspaceId = typeof extra.notifyTargetWorkspaceId === "string" ? extra.notifyTargetWorkspaceId.trim() : "";
+		const tabId = typeof extra.notifyTargetTabId === "string" ? extra.notifyTargetTabId.trim() : "";
+		const sessionPath = typeof extra.notifyTargetSessionPath === "string" ? extra.notifyTargetSessionPath.trim() : "";
+		if (!workspaceId && !tabId && !sessionPath) return null;
+		return {
+			workspaceId: workspaceId || undefined,
+			tabId: tabId || undefined,
+			sessionPath: sessionPath || undefined,
+		};
+	}
+
+	private async ensureDesktopNotificationPermission(prompt = false): Promise<boolean> {
+		try {
+			const grantedInitially = await isPermissionGranted();
+			this.trace(`notify:permission-check prompt=${prompt ? "yes" : "no"} granted=${grantedInitially ? "yes" : "no"}`);
+			if (grantedInitially) {
+				return true;
+			}
+			if (!prompt) {
+				return false;
+			}
+			this.notificationPermissionRequested = true;
+			const permission = await requestPermission();
+			const granted = permission === "granted";
+			this.trace(`notify:permission-request result=${permission}`);
+			return granted;
+		} catch (err) {
+			this.trace(`notify:permission-check-failed ${err instanceof Error ? err.message : String(err)}`);
+			return false;
+		}
+	}
+
+	private async primeDesktopNotificationPermission(): Promise<void> {
+		if (this.notificationPermissionRequested) return;
+		if (this.isAppBackgrounded()) {
+			this.trace("notify:prime-skipped backgrounded=yes");
+			return;
+		}
+		this.trace("notify:prime-start");
+		await this.ensureDesktopNotificationPermission(true);
+	}
+
+	private async focusDesktopWindowFromNotification(): Promise<void> {
+		window.focus();
+		const currentWindow = getCurrentWindow();
+		await currentWindow.show().catch(() => {
+			/* ignore */
+		});
+		await currentWindow.setFocus().catch(() => {
+			/* ignore */
+		});
+	}
+
+	private ensureDesktopNotificationActionListener(): void {
+		if (this.notificationActionListenerRegistered) return;
+		this.notificationActionListenerRegistered = true;
+		void onAction(async (notification: DesktopNotificationOptions) => {
+			this.trace("notify:action-clicked");
+			await this.focusDesktopWindowFromNotification().catch(() => {
+				/* ignore */
+			});
+			const target = this.extractNotificationActionTarget(notification) ?? this.lastNotificationActionTarget;
+			if (!target) {
+				this.trace("notify:action-target missing");
+				return;
+			}
+			this.trace(`notify:action-target workspace=${target.workspaceId ?? "-"} tab=${target.tabId ?? "-"} session=${target.sessionPath ?? "-"}`);
+			this.onNotificationActionTarget?.(target);
+		});
 	}
 
 	private createContainers(): void {
@@ -100,7 +283,7 @@ export class ExtensionUiHandler {
 				await this.showEditorDialog(request);
 				break;
 			case "notify":
-				this.showNotification(request);
+				void this.showNotification(request);
 				break;
 			case "setStatus":
 				this.setStatus(request);
@@ -327,25 +510,63 @@ export class ExtensionUiHandler {
 		});
 	}
 
-	private showNotification(request: ExtensionUiRequest): void {
-		const type = request.notifyType || "info";
-		const bgColor =
-			type === "error"
-				? "bg-red-500"
-				: type === "warning"
-					? "bg-amber-500"
-					: "bg-primary";
+	private async showDesktopNotification(request: ExtensionUiRequest): Promise<boolean> {
+		const rawTitle = request.title?.trim() || "Pi Desktop";
+		const rawBody = request.message?.trim() || "";
+		const title = rawBody ? rawTitle : "Pi Desktop";
+		const body = rawBody || rawTitle;
 
-		const notification = document.createElement("div");
-		notification.className = `fixed bottom-4 right-4 ${bgColor} text-white px-4 py-3 rounded-lg shadow-lg z-50 text-sm animate-slide-in`;
-		notification.textContent = request.message || "";
+		let granted = await this.ensureDesktopNotificationPermission(false);
+		if (!granted) {
+			granted = await this.ensureDesktopNotificationPermission(true);
+		}
+		if (!granted) {
+			this.trace(`notify:skipped permission-missing message=${request.message ?? ""}`);
+			return false;
+		}
 
-		document.body.appendChild(notification);
+		const actionTarget = this.buildNotificationActionTarget(request);
+		if (actionTarget) {
+			this.lastNotificationActionTarget = actionTarget;
+		}
 
-		// Auto-remove after 5 seconds
-		setTimeout(() => {
-			notification.remove();
-		}, 5000);
+		const options: DesktopNotificationOptions = {
+			title,
+			body,
+			autoCancel: true,
+			extra: {
+				notifyType: request.notifyType ?? "info",
+				method: request.method,
+				...(actionTarget?.workspaceId ? { notifyTargetWorkspaceId: actionTarget.workspaceId } : {}),
+				...(actionTarget?.tabId ? { notifyTargetTabId: actionTarget.tabId } : {}),
+				...(actionTarget?.sessionPath ? { notifyTargetSessionPath: actionTarget.sessionPath } : {}),
+			},
+		};
+		const sound = this.getDesktopNotificationSound();
+		if (sound) {
+			options.sound = sound;
+		}
+		this.trace(
+			`notify:native-attempt type=${request.notifyType ?? "info"} title=${title} body=${body} target=${actionTarget?.tabId ?? "-"}`,
+		);
+		try {
+			sendNotification(options);
+			this.trace(`notify:native-dispatched type=${request.notifyType ?? "info"} sound=${sound ?? "none"} delivery=unverified`);
+			return true;
+		} catch (err) {
+			this.trace(`notify:native-failed ${err instanceof Error ? err.message : String(err)}`);
+			return false;
+		}
+	}
+
+	private async showNotification(request: ExtensionUiRequest): Promise<void> {
+		const backgrounded = this.isAppBackgrounded();
+		this.trace(`notify:request type=${request.notifyType ?? "info"} ${this.describeNotificationContext(backgrounded)}`);
+		const desktopShown = await this.showDesktopNotification(request);
+		if (!desktopShown) {
+			this.trace(`notify:desktop-missed message=${request.message ?? request.title ?? ""}`);
+		}
+		this.trace(`notify:dispatch backgrounded=${backgrounded ? "yes" : "no"} desktop=${desktopShown ? "yes" : "no"}`);
 	}
 
 	private setStatus(request: ExtensionUiRequest): void {
@@ -356,9 +577,15 @@ export class ExtensionUiHandler {
 			this.statusContainer.classList.add("hidden");
 			this.statusContainer.innerHTML = "";
 		} else {
+			const text = sanitizeUiStatusText(request.statusText);
+			if (!text || shouldSuppressUiStatusText(text)) {
+				this.statusContainer.classList.add("hidden");
+				this.statusContainer.innerHTML = "";
+				return;
+			}
 			this.statusContainer.classList.remove("hidden");
 			render(
-				html`<div class="text-xs text-muted-foreground px-3 py-1">${request.statusText}</div>`,
+				html`<div class="text-xs text-muted-foreground px-3 py-1">${text}</div>`,
 				this.statusContainer,
 			);
 		}
@@ -369,7 +596,10 @@ export class ExtensionUiHandler {
 			request.widgetPlacement === "belowEditor" ? this.widgetBelowContainer : this.widgetAboveContainer;
 		if (!container) return;
 
-		if (!request.widgetLines || request.widgetLines.length === 0) {
+		const lines = (request.widgetLines ?? [])
+			.map((line) => sanitizeUiStatusText(line))
+			.filter((line) => Boolean(line) && !shouldSuppressUiStatusText(line));
+		if (lines.length === 0) {
 			container.classList.add("hidden");
 			container.innerHTML = "";
 		} else {
@@ -377,7 +607,7 @@ export class ExtensionUiHandler {
 			render(
 				html`
 					<div class="text-xs text-muted-foreground px-3 py-2 bg-secondary/50 border-t border-b border-border">
-						${request.widgetLines.map((line) => html`<div>${line}</div>`)}
+						${lines.map((line) => html`<div>${line}</div>`)}
 					</div>
 				`,
 				container,

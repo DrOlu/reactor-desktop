@@ -1,66 +1,105 @@
 # Pi Desktop
 
-A native-feeling, cross-platform desktop client for the **pi coding agent** CLI, built with **Tauri 2 + Lit**.
+A native-feeling desktop shell for the **Pi Coding Agent** CLI (`pi --mode rpc`).
 
-Pi Desktop uses `pi --mode rpc` under the hood and maps core CLI capabilities into a desktop UI.
+<p align="left">
+  <a href="https://github.com/gustavonline/pi-desktop/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/gustavonline/pi-desktop/ci.yml?branch=main&style=for-the-badge" /></a>
+  <a href="https://github.com/gustavonline/pi-desktop/releases"><img alt="Release" src="https://img.shields.io/github/v/release/gustavonline/pi-desktop?include_prereleases&style=for-the-badge" /></a>
+  <a href="./LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-6b7280?style=for-the-badge" /></a>
+</p>
 
-## Highlights
-
-- Native window shell (custom titlebar, mac-like minimal controls)
-- Project sidebar with persisted folders + per-project sessions
-- Streaming chat with tool-call blocks, thinking blocks, and live status pills
-- Full RPC model controls (model switch, thinking levels, queue modes, compaction, retry)
-- Message queue UX (steer + follow-up)
-- Session workflows (new, resume, fork picker, history viewer, rename, export HTML)
-- Message-level actions (copy/edit/retry) with hover affordances
-- Command palette for extension commands, prompt templates, and skills
-- Built-in package manager panel (`pi install/remove/update/list`, global or project-local scope)
-- Settings account status panel (auth.json + env-provider detection)
-- In-app CLI runtime check (current vs latest version, RPC compatibility probe, one-click npm update for PATH installs)
-- Titlebar “Update CLI” badge when a newer PATH-installed CLI is available
-- Extension UI protocol support (select/confirm/input/editor/notify/status/widget/title/set_editor_text)
-- Image attachments (button, drag/drop, clipboard paste)
-
-Detailed capability matrix: **[`FEATURE_MAPPING.md`](./FEATURE_MAPPING.md)**
-
-Execution docs:
-- **[`ROADMAP_V1.md`](./ROADMAP_V1.md)**
-- **[`RELEASE_CRITERIA.md`](./RELEASE_CRITERIA.md)**
+Pi Desktop is intentionally **minimal** and **extension-first**:
+- the desktop app is the host/shell,
+- the `pi` CLI is the runtime,
+- packages/extensions provide optional behavior.
 
 ---
 
-## Prerequisites
+## Why Pi Desktop exists
 
-- Node.js >= 20
-- Rust >= 1.70
-- `pi` CLI available on PATH
+Pi Desktop gives you a stable desktop UX for Pi without hardcoding product logic into the app.
 
-Install CLI:
+### Core philosophy
+
+1. **Host boundary first**
+   - Desktop app handles windows, panes, files, tabs, notifications, and native UX.
+2. **Agent behavior stays in Pi + packages**
+   - Workflows/policies should be extension-driven where possible.
+3. **Multi-session reliability over gimmicks**
+   - Runtime isolation, generation-safe switching, and persistence matter most.
+4. **Calm UI**
+   - Minimal visuals, neutral colors, low noise, and predictable controls.
+
+---
+
+## Features
+
+- Workspace + project sidebar with pin/reorder semantics
+- Session tabs + file/terminal/packages tabs
+- Streaming chat UI with tool blocks and thinking blocks
+- Message actions (copy/resend, hover-revealed)
+- Context usage ring + session stats
+- Command palette + shortcuts panel
+- Package manager pane (`pi install/remove/update/list`)
+- Recommended package catalog
+- Settings panel with simplified IA and diagnostics
+- First-run CLI onboarding when `pi` is missing
+- In-app CLI update checks + update action
+- Native notifications via extension UI boundary (`ctx.ui.notify`)
+
+Detailed capability map: [`FEATURE_MAPPING.md`](./FEATURE_MAPPING.md)
+
+---
+
+## Download
+
+Go to **[Releases](https://github.com/gustavonline/pi-desktop/releases)** and download:
+- macOS: `.dmg` / `.app.tar.gz`
+- Windows: `.msi` / `.nsis.zip` (depending on workflow output)
+- Linux: `.AppImage` / `.deb`
+
+If no release is available yet, follow **Build from source** below.
+
+---
+
+## First run
+
+On launch, Pi Desktop checks for the `pi` CLI.
+
+If it is missing, the app shows an onboarding card with install instructions:
 
 ```bash
 npm install -g @mariozechner/pi-coding-agent
-pi --version
 ```
+
+Then click **Retry** in-app.
 
 ---
 
-## Development
+## Build from source
+
+### Prerequisites
+
+- Node.js >= 22
+- Rust toolchain
+- Platform build dependencies for Tauri 2
+
+### Dev
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
----
-
-## Build
+### Production build
 
 ```bash
+npm run check
 npm run build:frontend
 npm run tauri build
 ```
 
-App bundles land in:
+Artifacts are generated under:
 
 `src-tauri/target/release/bundle/`
 
@@ -68,38 +107,59 @@ App bundles land in:
 
 ## Architecture
 
-- **Frontend**: Lit + Tailwind CSS utilities + custom CSS
-- **Backend**: Rust (Tauri command bridge + package command runner)
-- **Protocol**: JSON-lines RPC over stdin/stdout to `pi --mode rpc`
+See: **[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)**
 
-Key files:
-
-- `src/rpc/bridge.ts` — typed RPC client
-- `src/components/chat-view.ts` — chat, streaming, tools, queueing, attachments
-- `src/components/sidebar.ts` — projects + sessions
-- `src/components/settings-panel.ts` — runtime config
-- `src-tauri/src/lib.rs` — process manager + session indexing
+Short version:
+- **Frontend (Lit/TypeScript)**: UI shell, panes, interactions
+- **Tauri backend (Rust)**: native bridge, CLI process management, filesystem/window commands
+- **Pi RPC bridge**: typed JSON-RPC-style line protocol over stdin/stdout
+- **Packages/extensions**: opt-in behavior and UI integrations through the extension UI protocol
 
 ---
 
-## Notes
+## Packages and extension model
 
-RPC mode does not expose every interactive TUI-only CLI command directly. Pi Desktop implements the RPC-exposed core feature set and desktop-native workflows around it.
+See: **[`docs/PACKAGES.md`](./docs/PACKAGES.md)**
 
-Runtime discovery order for the `pi` process is:
-1. explicit dev CLI path (if provided)
-2. bundled sidecar binary (if present)
-3. `pi` found on PATH
+Pi Desktop treats packages as first-class building blocks:
+- install globally or per project,
+- surface loaded resources in-app,
+- keep policy/automation outside the shell when possible.
 
-### Windows build-script policy errors
+---
 
-If `cargo check` / `tauri dev` fails with:
+## Security and permissions
 
-`An Application Control policy has blocked this file. (os error 4551)`
+See: **[`docs/PERMISSIONS.md`](./docs/PERMISSIONS.md)**
 
-this is an OS policy issue (build-script/proc-macro execution), not an app code error.
+Tauri capabilities currently include filesystem and shell permissions needed to run Pi and manage project resources. Review before deploying in restricted environments.
 
-Typical fixes:
-- run from a trusted development location (not a restricted folder)
-- remove enterprise/AppLocker/WDAC restrictions for Rust build artifacts
-- clear and rebuild target dir after policy changes (`cargo clean`)
+---
+
+## Releases
+
+See: **[`docs/RELEASES.md`](./docs/RELEASES.md)**
+
+GitHub Actions workflows are set up for:
+- CI validation
+- tagged cross-platform release builds (macOS + Windows + Linux)
+
+---
+
+## Contributing
+
+- Read [`CONTRIBUTING.md`](./CONTRIBUTING.md)
+- Open an issue before large changes
+- Keep changes aligned with extension-first architecture and minimal UX goals
+
+---
+
+## License
+
+MIT — see [`LICENSE`](./LICENSE)
+
+---
+
+## Star history
+
+[![Star History Chart](https://api.star-history.com/svg?repos=gustavonline/pi-desktop&type=Date)](https://www.star-history.com/#gustavonline/pi-desktop&Date)

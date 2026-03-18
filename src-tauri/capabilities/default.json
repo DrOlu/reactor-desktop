@@ -23,13 +23,19 @@
 		"core:path:default",
 		"core:event:default",
 		"shell:default",
+		"shell:allow-open",
 		"fs:default",
-		"fs:allow-read",
-		"fs:allow-write",
-		"fs:allow-exists",
-		"fs:allow-mkdir",
+		{
+			"identifier": "fs:allow-home-read-recursive",
+			"allow": ["$HOME/**", "$HOME/**/.*", "$HOME/**/.*/**"]
+		},
+		{
+			"identifier": "fs:allow-home-write-recursive",
+			"allow": ["$HOME/**", "$HOME/**/.*", "$HOME/**/.*/**"]
+		},
 		"dialog:default",
 		"dialog:allow-open",
+		"notification:default",
 		{
 			"identifier": "shell:allow-execute",
 			"allow": [

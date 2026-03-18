@@ -37,6 +37,7 @@ export class SettingsPanel {
 	private cliLoading = false;
 	private cliUpdating = false;
 	private cliActionMessage = "";
+	private onCliStatusChange: ((status: CliUpdateStatus | null) => void) | null = null;
 	private compatibilityReport: RpcCompatibilityReport | null = null;
 	private compatibilityLoading = false;
 
@@ -49,10 +50,20 @@ export class SettingsPanel {
 		this.onClose = callback;
 	}
 
+	setOnCliStatusChange(callback: (status: CliUpdateStatus | null) => void): void {
+		this.onCliStatusChange = callback;
+	}
+
+	isVisible(): boolean {
+		return this.isOpen;
+	}
+
 	async open(): Promise<void> {
 		this.isOpen = true;
 		this.loadTheme();
+		this.render();
 		await this.loadState();
+		if (!this.isOpen) return;
 		this.render();
 	}
 
@@ -131,6 +142,7 @@ export class SettingsPanel {
 		} finally {
 			this.cliLoading = false;
 			this.render();
+			this.onCliStatusChange?.(this.cliStatus);
 		}
 	}
 
@@ -291,57 +303,57 @@ export class SettingsPanel {
 					</div>
 
 					<div class="settings-section">
-						<div class="settings-section-title">Agent Behavior</div>
+						<div class="settings-section-title">Assistant</div>
 						${this.renderToggle(
 							"Auto-compaction",
-							"Automatically summarize older context before hitting context limits.",
+							"Summarize older context automatically when conversations get long.",
 							this.state.autoCompactionEnabled,
 							(v) => this.setAutoCompaction(v),
 						)}
 						${this.renderToggle(
 							"Auto-retry",
-							"Retry transient provider errors with exponential backoff.",
+							"Retry temporary provider errors automatically.",
 							this.state.autoRetryEnabled,
 							(v) => this.setAutoRetry(v),
 						)}
 					</div>
 
 					<div class="settings-section">
-						<div class="settings-section-title">Queue Modes</div>
+						<div class="settings-section-title">Message queue</div>
 						<div class="settings-row">
 							<div>
 								<div class="settings-label">Steering messages</div>
-								<div class="settings-desc">How queued steer messages are delivered while streaming.</div>
+								<div class="settings-desc">How queued steering messages are sent while a response is streaming.</div>
 							</div>
 							<select class="settings-select" .value=${this.state.steeringMode} @change=${(e: Event) => this.setSteeringMode((e.target as HTMLSelectElement).value as QueueMode)}>
-								<option value="one-at-a-time">one-at-a-time</option>
-								<option value="all">all</option>
+								<option value="one-at-a-time">One at a time</option>
+								<option value="all">All queued</option>
 							</select>
 						</div>
 						<div class="settings-row">
 							<div>
 								<div class="settings-label">Follow-up messages</div>
-								<div class="settings-desc">How queued follow-up messages are delivered after runs.</div>
+								<div class="settings-desc">How queued follow-up prompts are sent after each run.</div>
 							</div>
 							<select class="settings-select" .value=${this.state.followUpMode} @change=${(e: Event) => this.setFollowUpMode((e.target as HTMLSelectElement).value as QueueMode)}>
-								<option value="one-at-a-time">one-at-a-time</option>
-								<option value="all">all</option>
+								<option value="one-at-a-time">One at a time</option>
+								<option value="all">All queued</option>
 							</select>
 						</div>
 					</div>
 
 					<div class="settings-section">
-						<div class="settings-section-title">Account & Resources</div>
+						<div class="settings-section-title">Account</div>
 						${this.authLoading
-							? html`<div class="settings-desc">Checking auth status…</div>`
+							? html`<div class="settings-desc">Checking account status…</div>`
 							: html`
 								<div class="settings-desc">
 									${this.authStatus && this.authStatus.configured_providers.length > 0
-										? `Configured providers: ${this.authStatus.configured_providers.length}`
-										: "No providers configured yet."}
+										? `Connected providers: ${this.authStatus.configured_providers.length}`
+										: "No provider connected yet."}
 								</div>
 								<div class="settings-actions">
-									<button class="ghost-btn" @click=${() => this.refreshAuthStatus()}>Refresh auth status</button>
+									<button class="ghost-btn" @click=${() => this.refreshAuthStatus()}>Refresh account status</button>
 								</div>
 								${this.authStatus && this.authStatus.configured_providers.length > 0
 									? html`
@@ -352,31 +364,32 @@ export class SettingsPanel {
 										</div>
 									`
 									: null}
-								<div class="settings-desc">
-									OAuth <code>/login</code> is interactive-only in TUI mode. Configure auth once in terminal
-									(or set API keys) then restart desktop.
-								</div>
+								<div class="settings-desc">Tip: run <code>/login</code> in terminal once, then restart desktop.</div>
 								${this.authStatus?.auth_file
-									? html`<div class="settings-desc">Auth file: <code>${this.authStatus.auth_file}</code></div>`
+									? html`
+										<details class="settings-advanced">
+											<summary>Advanced account details</summary>
+											<div class="settings-desc">Auth file: <code>${this.authStatus.auth_file}</code></div>
+										</details>
+									`
 									: null}
 							`}
 					</div>
 
 					<div class="settings-section">
-						<div class="settings-section-title">CLI Runtime</div>
+						<div class="settings-section-title">CLI updates</div>
 						${this.cliLoading
-							? html`<div class="settings-desc">Checking CLI versions…</div>`
+							? html`<div class="settings-desc">Checking CLI version…</div>`
 							: html`
-								<div class="settings-desc">
-									Discovery: <code>${this.cliStatus?.discovery || rpcBridge.discoveryInfo || "unknown"}</code>
-								</div>
 								<div class="settings-desc">
 									Current: <code>${this.cliStatus?.current_version || "unknown"}</code>
 									 · Latest: <code>${this.cliStatus?.latest_version || "unknown"}</code>
 								</div>
-								${this.cliStatus?.update_available
-									? html`<div class="settings-desc">A newer CLI version is available.</div>`
-									: html`<div class="settings-desc">CLI is up to date or latest version could not be determined.</div>`}
+								${this.cliStatus
+									? this.cliStatus.update_available
+										? html`<div class="settings-desc">A newer Pi CLI is available.</div>`
+										: html`<div class="settings-desc">No update available right now.</div>`
+									: html`<div class="settings-desc">CLI status unavailable. Install or reconnect CLI, then refresh.</div>`}
 								${this.cliStatus?.note ? html`<div class="settings-desc">${this.cliStatus.note}</div>` : null}
 							`}
 						<div class="settings-actions">
@@ -391,31 +404,37 @@ export class SettingsPanel {
 								}
 								@click=${() => this.updateCliNow()}
 							>
-								${this.cliUpdating ? "Updating…" : "Update CLI"}
+								${this.cliUpdating ? "Updating…" : "Update CLI now"}
 							</button>
 						</div>
 						${this.cliActionMessage ? html`<div class="settings-desc">${this.cliActionMessage}</div>` : null}
-						${this.cliStatus?.update_command
-							? html`<div class="settings-desc">Manual update: <code>${this.cliStatus.update_command}</code></div>`
-							: null}
-						<div class="settings-actions">
-							<button class="ghost-btn" ?disabled=${this.compatibilityLoading} @click=${() => this.refreshCompatibilityStatus()}>
-								${this.compatibilityLoading ? "Checking RPC…" : "Run RPC compatibility check"}
-							</button>
-						</div>
-						${this.compatibilityReport
-							? html`
-								<div class="settings-desc">
-									RPC compatibility: ${this.compatibilityReport.ok ? "OK" : "Failed"}
-									${this.compatibilityReport.checks.length > 0
-										? html` (${this.compatibilityReport.checks.join(", ")})`
+						<details class="settings-advanced">
+							<summary>Advanced CLI diagnostics</summary>
+							<div class="settings-desc">
+								Discovery: <code>${this.cliStatus?.discovery || rpcBridge.discoveryInfo || "unknown"}</code>
+							</div>
+							${this.cliStatus?.update_command
+								? html`<div class="settings-desc">Manual update: <code>${this.cliStatus.update_command}</code></div>`
+								: null}
+							<div class="settings-actions">
+								<button class="ghost-btn" ?disabled=${this.compatibilityLoading} @click=${() => this.refreshCompatibilityStatus()}>
+									${this.compatibilityLoading ? "Checking RPC…" : "Run RPC compatibility check"}
+								</button>
+							</div>
+							${this.compatibilityReport
+								? html`
+									<div class="settings-desc">
+										RPC compatibility: ${this.compatibilityReport.ok ? "OK" : "Failed"}
+										${this.compatibilityReport.checks.length > 0
+											? html` (${this.compatibilityReport.checks.join(", ")})`
+											: null}
+									</div>
+									${this.compatibilityReport.error
+										? html`<div class="settings-desc">${this.compatibilityReport.error}</div>`
 										: null}
-								</div>
-								${this.compatibilityReport.error
-									? html`<div class="settings-desc">${this.compatibilityReport.error}</div>`
-									: null}
-							`
-							: null}
+								`
+								: null}
+						</details>
 					</div>
 				</div>
 			</div>

@@ -12,7 +12,7 @@ interface Shortcut {
 
 const SHORTCUTS: Shortcut[] = [
 	{ keys: ["Ctrl/Cmd+N"], description: "New session", category: "Session" },
-	{ keys: ["Ctrl/Cmd+R"], description: "Open sessions browser", category: "Session" },
+	{ keys: ["Ctrl/Cmd+Shift+R"], description: "Open sessions browser", category: "Session" },
 	{ keys: ["Ctrl/Cmd+Shift+H"], description: "Open session history viewer", category: "Session" },
 	{ keys: ["Ctrl/Cmd+K"], description: "Open command palette", category: "Navigation" },
 	{ keys: ["/"], description: "Open command palette (when editor not focused)", category: "Navigation" },

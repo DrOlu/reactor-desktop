@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -7,18 +8,61 @@ use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Emitter, Manager};
 
-/// State for managing the RPC child process
+#[derive(Default)]
+struct RpcProcessHandle {
+    generation: u64,
+    process: Option<Child>,
+    stdin_writer: Option<std::process::ChildStdin>,
+}
+
+/// State for managing multiple RPC child processes (one per instance)
 pub struct RpcState {
-    process: Arc<Mutex<Option<Child>>>,
-    stdin_writer: Arc<Mutex<Option<std::process::ChildStdin>>>,
+    instances: Arc<Mutex<HashMap<String, RpcProcessHandle>>>,
 }
 
 impl Default for RpcState {
     fn default() -> Self {
         Self {
-            process: Arc::new(Mutex::new(None)),
-            stdin_writer: Arc::new(Mutex::new(None)),
+            instances: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct RpcLineEventPayload {
+    instance_id: String,
+    generation: u64,
+    line: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct RpcClosedEventPayload {
+    instance_id: String,
+    generation: u64,
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RpcStartResult {
+    discovery: String,
+    generation: u64,
+}
+
+fn normalize_instance_id(instance_id: Option<String>) -> String {
+    let raw = instance_id.unwrap_or_else(|| "default".to_string());
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        "default".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn stop_rpc_instance(handle: &mut RpcProcessHandle) {
+    handle.stdin_writer = None;
+    if let Some(mut child) = handle.process.take() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -106,11 +150,110 @@ fn discover_sidecar(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+fn discover_pi_from_common_locations() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Ok(home) = std::env::var("HOME") {
+        let home_dir = PathBuf::from(home);
+
+        // nvm installations (common for npm global installs)
+        candidates.push(home_dir.join(".nvm/versions/node/current/bin/pi"));
+        let nvm_versions_dir = home_dir.join(".nvm/versions/node");
+        if let Ok(entries) = fs::read_dir(nvm_versions_dir) {
+            let mut version_dirs: Vec<PathBuf> = entries
+                .filter_map(|entry| {
+                    let path = entry.ok()?.path();
+                    if path.is_dir() {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            version_dirs.sort_by(|a, b| b.cmp(a));
+            for version_dir in version_dirs {
+                candidates.push(version_dir.join("bin/pi"));
+            }
+        }
+
+        // Other common per-user install locations
+        candidates.push(home_dir.join(".volta/bin/pi"));
+        candidates.push(home_dir.join(".local/bin/pi"));
+    }
+
+    // Common system install locations
+    candidates.push(PathBuf::from("/opt/homebrew/bin/pi"));
+    candidates.push(PathBuf::from("/usr/local/bin/pi"));
+    candidates.push(PathBuf::from("/usr/bin/pi"));
+
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn prepend_bin_dir_to_path(cmd: &mut Command, bin_dir: &Path) {
+    let mut path_entries = vec![bin_dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        path_entries.extend(std::env::split_paths(&existing));
+    }
+
+    if let Ok(joined) = std::env::join_paths(path_entries) {
+        cmd.env("PATH", joined);
+    }
+}
+
+fn discover_npm_path(pi: Option<&PiProcess>) -> Option<PathBuf> {
+    let npm = npm_executable();
+
+    if let Ok(path) = which::which(npm) {
+        return Some(path);
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(PiProcess::PathBinary { path }) = pi {
+        if let Some(parent) = path.parent() {
+            candidates.push(parent.join(npm));
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let home_dir = PathBuf::from(home);
+        candidates.push(home_dir.join(".nvm/versions/node/current/bin").join(npm));
+
+        let nvm_versions_dir = home_dir.join(".nvm/versions/node");
+        if let Ok(entries) = fs::read_dir(nvm_versions_dir) {
+            let mut version_dirs: Vec<PathBuf> = entries
+                .filter_map(|entry| {
+                    let path = entry.ok()?.path();
+                    if path.is_dir() {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            version_dirs.sort_by(|a, b| b.cmp(a));
+            for version_dir in version_dirs {
+                candidates.push(version_dir.join("bin").join(npm));
+            }
+        }
+
+        candidates.push(home_dir.join(".volta/bin").join(npm));
+        candidates.push(home_dir.join(".local/bin").join(npm));
+    }
+
+    candidates.push(PathBuf::from("/opt/homebrew/bin").join(npm));
+    candidates.push(PathBuf::from("/usr/local/bin").join(npm));
+    candidates.push(PathBuf::from("/usr/bin").join(npm));
+
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
 /// Discover the pi binary. Strategy:
 /// 1. If cli_path is provided (dev mode), use node + script
 /// 2. Try sidecar discovery (packaged app)
 /// 3. Try finding `pi` on PATH (globally installed CLI or standalone binary)
-/// 4. Fail with actionable error
+/// 4. Try common install locations (for GUI app launches without shell PATH)
+/// 5. Fail with actionable error
 fn discover_pi(app: &AppHandle, options: &RpcStartOptions) -> Result<PiProcess, String> {
     // Dev mode: cli_path explicitly provided
     if let Some(ref cli_path) = options.cli_path {
@@ -128,6 +271,11 @@ fn discover_pi(app: &AppHandle, options: &RpcStartOptions) -> Result<PiProcess, 
 
     // Fallback: pi on PATH
     if let Ok(path) = which::which("pi") {
+        return Ok(PiProcess::PathBinary { path });
+    }
+
+    // GUI launches on macOS often don't inherit shell PATH (e.g. nvm-managed node/npm bins)
+    if let Some(path) = discover_pi_from_common_locations() {
         return Ok(PiProcess::PathBinary { path });
     }
 
@@ -169,6 +317,14 @@ fn build_command(pi: &PiProcess, options: &RpcStartOptions) -> Command {
         }
     }
 
+    // If using a script-based pi binary (e.g. npm global install), ensure its bin dir
+    // is on PATH so shebangs like `#!/usr/bin/env node` can resolve node in GUI launches.
+    if let PiProcess::PathBinary { path } = pi {
+        if let Some(parent) = path.parent() {
+            prepend_bin_dir_to_path(&mut cmd, parent);
+        }
+    }
+
     // On Windows, prevent console window from appearing
     #[cfg(target_os = "windows")]
     {
@@ -179,6 +335,19 @@ fn build_command(pi: &PiProcess, options: &RpcStartOptions) -> Command {
     cmd
 }
 
+fn write_rpc_line(stdin: &mut std::process::ChildStdin, line: &str) -> Result<(), String> {
+    stdin
+        .write_all(line.as_bytes())
+        .map_err(|e| format!("Failed to write to stdin: {}", e))?;
+    stdin
+        .write_all(b"\n")
+        .map_err(|e| format!("Failed to write newline: {}", e))?;
+    stdin
+        .flush()
+        .map_err(|e| format!("Failed to flush stdin: {}", e))?;
+    Ok(())
+}
+
 /// Start the pi coding agent in RPC mode as a child process.
 /// Discovery order: dev cli_path -> sidecar -> PATH -> error.
 #[tauri::command]
@@ -186,13 +355,21 @@ async fn rpc_start(
     app: AppHandle,
     state: tauri::State<'_, RpcState>,
     options: RpcStartOptions,
-) -> Result<String, String> {
-    // Kill existing process if any
-    if let Ok(mut proc) = state.process.lock() {
-        if let Some(mut child) = proc.take() {
-            let _ = child.kill();
+    instance_id: Option<String>,
+) -> Result<RpcStartResult, String> {
+    let instance_id = normalize_instance_id(instance_id);
+
+    let generation = if let Ok(mut instances) = state.instances.lock() {
+        if let Some(handle) = instances.get_mut(&instance_id) {
+            let next_generation = handle.generation.saturating_add(1).max(1);
+            stop_rpc_instance(handle);
+            next_generation
+        } else {
+            1
         }
-    }
+    } else {
+        return Err("Failed to acquire RPC instances lock".to_string());
+    };
 
     let pi = discover_pi(&app, &options)?;
     let discovery_label = format!("{:?}", pi);
@@ -206,18 +383,24 @@ async fn rpc_start(
     let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
     let stderr = child.stderr.take().ok_or("Failed to get stderr")?;
 
-    // Store stdin writer for sending commands
-    if let Ok(mut writer) = state.stdin_writer.lock() {
-        *writer = Some(stdin);
-    }
-
-    // Store process handle
-    if let Ok(mut proc) = state.process.lock() {
-        *proc = Some(child);
+    // Store process + stdin handle for this instance
+    if let Ok(mut instances) = state.instances.lock() {
+        instances.insert(
+            instance_id.clone(),
+            RpcProcessHandle {
+                generation,
+                process: Some(child),
+                stdin_writer: Some(stdin),
+            },
+        );
+    } else {
+        return Err("Failed to acquire RPC instances lock".to_string());
     }
 
     // Spawn thread to read stdout and emit events to frontend
     let app_handle = app.clone();
+    let stdout_instance_id = instance_id.clone();
+    let stdout_generation = generation;
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
@@ -226,88 +409,127 @@ async fn rpc_start(
                     if line.trim().is_empty() {
                         continue;
                     }
-                    let _ = app_handle.emit("rpc-event", &line);
+                    let payload = RpcLineEventPayload {
+                        instance_id: stdout_instance_id.clone(),
+                        generation: stdout_generation,
+                        line,
+                    };
+                    let _ = app_handle.emit("rpc-event", payload);
                 }
                 Err(_) => break,
             }
         }
-        let _ = app_handle.emit("rpc-closed", "process exited");
+        let _ = app_handle.emit(
+            "rpc-closed",
+            RpcClosedEventPayload {
+                instance_id: stdout_instance_id,
+                generation: stdout_generation,
+                reason: "process exited".to_string(),
+            },
+        );
     });
 
     // Spawn thread to read stderr
     let app_handle_err = app.clone();
+    let stderr_instance_id = instance_id.clone();
+    let stderr_generation = generation;
     std::thread::spawn(move || {
         let reader = BufReader::new(stderr);
         for line in reader.lines() {
             match line {
                 Ok(line) => {
-                    let _ = app_handle_err.emit("rpc-stderr", &line);
+                    let payload = RpcLineEventPayload {
+                        instance_id: stderr_instance_id.clone(),
+                        generation: stderr_generation,
+                        line,
+                    };
+                    let _ = app_handle_err.emit("rpc-stderr", payload);
                 }
                 Err(_) => break,
             }
         }
     });
 
-    Ok(discovery_label)
+    Ok(RpcStartResult {
+        discovery: format!("{} [instance:{}]", discovery_label, instance_id),
+        generation,
+    })
 }
 
-/// Send a JSON command to the RPC process stdin
+/// Send a JSON command to an RPC process stdin
 #[tauri::command]
-async fn rpc_send(state: tauri::State<'_, RpcState>, command: String) -> Result<(), String> {
-    if let Ok(mut writer) = state.stdin_writer.lock() {
-        if let Some(ref mut stdin) = *writer {
-            stdin
-                .write_all(command.as_bytes())
-                .map_err(|e| format!("Failed to write to stdin: {}", e))?;
-            stdin
-                .write_all(b"\n")
-                .map_err(|e| format!("Failed to write newline: {}", e))?;
-            stdin
-                .flush()
-                .map_err(|e| format!("Failed to flush stdin: {}", e))?;
-            Ok(())
+async fn rpc_send(
+    state: tauri::State<'_, RpcState>,
+    command: String,
+    instance_id: Option<String>,
+) -> Result<(), String> {
+    let instance_id = normalize_instance_id(instance_id);
+    if let Ok(mut instances) = state.instances.lock() {
+        if let Some(handle) = instances.get_mut(&instance_id) {
+            if let Some(ref mut stdin) = handle.stdin_writer {
+                write_rpc_line(stdin, &command)
+            } else {
+                Err(format!("RPC process not started for instance '{}'", instance_id))
+            }
         } else {
-            Err("RPC process not started".to_string())
+            Err(format!("RPC process not started for instance '{}'", instance_id))
         }
     } else {
-        Err("Failed to acquire stdin lock".to_string())
+        Err("Failed to acquire RPC instances lock".to_string())
     }
 }
 
-/// Stop the RPC process
+/// Stop an RPC process instance
 #[tauri::command]
-async fn rpc_stop(state: tauri::State<'_, RpcState>) -> Result<(), String> {
-    // Drop stdin first to signal EOF
-    if let Ok(mut writer) = state.stdin_writer.lock() {
-        *writer = None;
-    }
-
-    // Kill process
-    if let Ok(mut proc) = state.process.lock() {
-        if let Some(mut child) = proc.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+async fn rpc_stop(state: tauri::State<'_, RpcState>, instance_id: Option<String>) -> Result<(), String> {
+    let instance_id = normalize_instance_id(instance_id);
+    if let Ok(mut instances) = state.instances.lock() {
+        if let Some(mut handle) = instances.remove(&instance_id) {
+            stop_rpc_instance(&mut handle);
         }
+        Ok(())
+    } else {
+        Err("Failed to acquire RPC instances lock".to_string())
     }
-
-    Ok(())
 }
 
-/// Check if the RPC process is running
+/// Stop all RPC process instances
 #[tauri::command]
-async fn rpc_is_running(state: tauri::State<'_, RpcState>) -> Result<bool, String> {
-    if let Ok(mut proc) = state.process.lock() {
-        if let Some(ref mut child) = *proc {
-            match child.try_wait() {
-                Ok(None) => Ok(true),
-                Ok(Some(_)) => Ok(false),
-                Err(_) => Ok(false),
+async fn rpc_stop_all(state: tauri::State<'_, RpcState>) -> Result<(), String> {
+    if let Ok(mut instances) = state.instances.lock() {
+        for (_, mut handle) in instances.drain() {
+            stop_rpc_instance(&mut handle);
+        }
+        Ok(())
+    } else {
+        Err("Failed to acquire RPC instances lock".to_string())
+    }
+}
+
+/// Check if an RPC process instance is running
+#[tauri::command]
+async fn rpc_is_running(state: tauri::State<'_, RpcState>, instance_id: Option<String>) -> Result<bool, String> {
+    let instance_id = normalize_instance_id(instance_id);
+    if let Ok(mut instances) = state.instances.lock() {
+        if let Some(handle) = instances.get_mut(&instance_id) {
+            if let Some(ref mut child) = handle.process {
+                match child.try_wait() {
+                    Ok(None) => Ok(true),
+                    Ok(Some(_)) => {
+                        handle.process = None;
+                        handle.stdin_writer = None;
+                        Ok(false)
+                    }
+                    Err(_) => Ok(false),
+                }
+            } else {
+                Ok(false)
             }
         } else {
             Ok(false)
         }
     } else {
-        Ok(false)
+        Err("Failed to acquire RPC instances lock".to_string())
     }
 }
 
@@ -316,35 +538,22 @@ async fn rpc_is_running(state: tauri::State<'_, RpcState>) -> Result<bool, Strin
 async fn rpc_ui_response(
     state: tauri::State<'_, RpcState>,
     response: String,
+    instance_id: Option<String>,
 ) -> Result<(), String> {
-    if let Ok(mut writer) = state.stdin_writer.lock() {
-        if let Some(ref mut stdin) = *writer {
-            stdin
-                .write_all(response.as_bytes())
-                .map_err(|e| format!("Failed to write to stdin: {}", e))?;
-            stdin
-                .write_all(b"\n")
-                .map_err(|e| format!("Failed to write newline: {}", e))?;
-            stdin
-                .flush()
-                .map_err(|e| format!("Failed to flush stdin: {}", e))?;
-            Ok(())
+    let instance_id = normalize_instance_id(instance_id);
+    if let Ok(mut instances) = state.instances.lock() {
+        if let Some(handle) = instances.get_mut(&instance_id) {
+            if let Some(ref mut stdin) = handle.stdin_writer {
+                write_rpc_line(stdin, &response)
+            } else {
+                Err(format!("RPC process not started for instance '{}'", instance_id))
+            }
         } else {
-            Err("RPC process not started".to_string())
+            Err(format!("RPC process not started for instance '{}'", instance_id))
         }
     } else {
-        Err("Failed to acquire stdin lock".to_string())
+        Err("Failed to acquire RPC instances lock".to_string())
     }
-}
-
-/// Get the app's data directory for storing config/sessions
-#[tauri::command]
-fn get_app_data_dir(app: AppHandle) -> Result<String, String> {
-    let path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    Ok(path.to_string_lossy().to_string())
 }
 
 /// Session info for listing
@@ -354,6 +563,7 @@ pub struct SessionInfo {
     pub name: Option<String>,
     pub path: String,
     pub cwd: Option<String>,
+    pub created_at: i64,
     pub modified_at: i64,
     pub tokens: u64,
     pub cost: f64,
@@ -434,6 +644,16 @@ fn get_modified_at_ms(path: &Path) -> i64 {
         .unwrap_or(0)
 }
 
+fn get_created_at_ms(path: &Path) -> i64 {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.created().ok())
+        .or_else(|| fs::metadata(path).ok().and_then(|m| m.modified().ok()))
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 fn parse_session_info(path: &Path) -> Option<SessionInfo> {
     let content = fs::read_to_string(path).ok()?;
 
@@ -506,6 +726,7 @@ fn parse_session_info(path: &Path) -> Option<SessionInfo> {
         name,
         path: path.to_string_lossy().to_string(),
         cwd,
+        created_at: get_created_at_ms(path),
         modified_at: get_modified_at_ms(path),
         tokens,
         cost,
@@ -765,6 +986,19 @@ struct NpmCommandResult {
     exit_code: i32,
 }
 
+#[derive(Debug, Deserialize)]
+struct GitCommandOptions {
+    args: Vec<String>,
+    cwd: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct GitCommandResult {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+}
+
 fn npm_executable() -> &'static str {
     if cfg!(target_os = "windows") {
         "npm.cmd"
@@ -841,22 +1075,25 @@ fn get_current_pi_version(pi: &PiProcess, options: &CliStatusOptions) -> Option<
     extract_version_from_output(&combined)
 }
 
-fn get_latest_npm_cli_version() -> (bool, Option<String>, Option<String>) {
-    let npm = npm_executable();
-    let npm_path = match which::which(npm) {
-        Ok(path) => path,
-        Err(_) => {
-            return (false, None, Some("npm not found on PATH".to_string()));
+fn get_latest_npm_cli_version(pi: Option<&PiProcess>) -> (bool, Option<String>, Option<String>) {
+    let npm_path = match discover_npm_path(pi) {
+        Some(path) => path,
+        None => {
+            return (false, None, Some("npm not found on PATH/common locations".to_string()));
         }
     };
 
-    let mut cmd = Command::new(npm_path);
+    let mut cmd = Command::new(&npm_path);
     cmd.arg("view")
         .arg("@mariozechner/pi-coding-agent")
         .arg("version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    if let Some(parent) = npm_path.parent() {
+        prepend_bin_dir_to_path(&mut cmd, parent);
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -930,6 +1167,12 @@ fn build_plain_command(pi: &PiProcess, options: &PiCliCommandOptions) -> Command
         }
     }
 
+    if let PiProcess::PathBinary { path } = pi {
+        if let Some(parent) = path.parent() {
+            prepend_bin_dir_to_path(&mut cmd, parent);
+        }
+    }
+
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -996,7 +1239,7 @@ async fn get_cli_update_status(
     let discovery = format!("{:?}", pi);
     let current_version = get_current_pi_version(&pi, &opts);
 
-    let (npm_available, latest_version, npm_note) = get_latest_npm_cli_version();
+    let (npm_available, latest_version, npm_note) = get_latest_npm_cli_version(Some(&pi));
 
     let can_update_in_app = matches!(pi, PiProcess::PathBinary { .. });
     let update_command = "npm install -g @mariozechner/pi-coding-agent@latest".to_string();
@@ -1035,17 +1278,20 @@ async fn get_cli_update_status(
 /// Update globally installed pi CLI via npm.
 #[tauri::command]
 async fn update_cli_via_npm() -> Result<NpmCommandResult, String> {
-    let npm = npm_executable();
-    let npm_path = which::which(npm)
-        .map_err(|_| "npm was not found on PATH. Install Node.js/npm first.".to_string())?;
+    let npm_path = discover_npm_path(None)
+        .ok_or_else(|| "npm was not found on PATH/common locations. Install Node.js/npm first.".to_string())?;
 
-    let mut cmd = Command::new(npm_path);
+    let mut cmd = Command::new(&npm_path);
     cmd.arg("install")
         .arg("-g")
         .arg("@mariozechner/pi-coding-agent@latest")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    if let Some(parent) = npm_path.parent() {
+        prepend_bin_dir_to_path(&mut cmd, parent);
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -1064,18 +1310,152 @@ async fn update_cli_via_npm() -> Result<NpmCommandResult, String> {
     })
 }
 
+#[tauri::command]
+async fn run_git_command(options: GitCommandOptions) -> Result<GitCommandResult, String> {
+    if options.args.is_empty() {
+        return Err("No git command arguments provided".to_string());
+    }
+
+    let git_path = which::which("git").map_err(|_| "git was not found on PATH".to_string())?;
+
+    let mut cmd = Command::new(git_path);
+    cmd.args(&options.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    if let Some(cwd) = options.cwd {
+        cmd.current_dir(cwd);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run git command: {}", e))?;
+
+    Ok(GitCommandResult {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+    })
+}
+
+#[tauri::command]
+async fn open_path_in_default_app(path: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("No path provided".to_string());
+    }
+
+    let target = PathBuf::from(trimmed);
+    if !target.exists() {
+        return Err(format!("Path does not exist: {}", trimmed));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let primary = Command::new("open")
+            .arg(&target)
+            .output()
+            .map_err(|e| format!("Failed to launch open command: {}", e))?;
+
+        if primary.status.success() {
+            return Ok(());
+        }
+
+        // Some files (e.g. .sample hooks in .git) have no associated app.
+        // Fall back to TextEdit so "Open in editor" still works.
+        let fallback = Command::new("open")
+            .arg("-a")
+            .arg("TextEdit")
+            .arg(&target)
+            .output()
+            .map_err(|e| format!("Failed to launch TextEdit fallback: {}", e))?;
+
+        if fallback.status.success() {
+            return Ok(());
+        }
+
+        let primary_stderr = String::from_utf8_lossy(&primary.stderr).trim().to_string();
+        let fallback_stderr = String::from_utf8_lossy(&fallback.stderr).trim().to_string();
+        return Err(format!(
+            "Could not open file. default-app error: {} | TextEdit fallback error: {}",
+            if primary_stderr.is_empty() {
+                format!("exit code {}", primary.status.code().unwrap_or(-1))
+            } else {
+                primary_stderr
+            },
+            if fallback_stderr.is_empty() {
+                format!("exit code {}", fallback.status.code().unwrap_or(-1))
+            } else {
+                fallback_stderr
+            }
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let output = Command::new("xdg-open")
+            .arg(&target)
+            .output()
+            .map_err(|e| format!("Failed to launch xdg-open command: {}", e))?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("Could not open file (exit code {})", output.status.code().unwrap_or(-1))
+        } else {
+            format!("Could not open file: {}", stderr)
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("cmd")
+            .arg("/C")
+            .arg("start")
+            .arg("")
+            .arg(target.as_os_str())
+            .output()
+            .map_err(|e| format!("Failed to launch start command: {}", e))?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("Could not open file (exit code {})", output.status.code().unwrap_or(-1))
+        } else {
+            format!("Could not open file: {}", stderr)
+        });
+    }
+
+    #[allow(unreachable_code)]
+    Err("Unsupported platform for open_path_in_default_app".to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(RpcState::default())
         .invoke_handler(tauri::generate_handler![
             rpc_start,
             rpc_send,
             rpc_stop,
+            rpc_stop_all,
             rpc_is_running,
-            get_app_data_dir,
             rpc_ui_response,
             list_sessions,
             get_session_content,
@@ -1086,6 +1466,8 @@ pub fn run() {
             run_pi_cli_command,
             get_cli_update_status,
             update_cli_via_npm,
+            run_git_command,
+            open_path_in_default_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
