@@ -11,6 +11,10 @@ The desktop app should not hardcode every behavior. Instead:
 
 This enables community-driven capability growth without turning the desktop shell into a monolith.
 
+### Capability host model
+
+Pi Desktop should expose capabilities that extensions can consume (UI primitives, native shell affordances, RPC bridge integration). In other words: extensions make the app do more, while app-core stays lightweight and maintainable.
+
 ---
 
 ## What Pi Desktop surfaces
