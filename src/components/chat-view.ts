@@ -229,6 +229,15 @@ function uiIcon(name: "edit" | "retry" | "copy" | "attach" | "send" | "stop" | "
 	}
 }
 
+function piGlyphIcon(): TemplateResult {
+	return html`
+		<svg viewBox="0 0 16 16" aria-hidden="true">
+			<path d="M3.3 3.3H10.3V8H8V10.3H5.7V12.7H3.3Z"></path>
+			<path d="M10.3 8H12.7V12.7H10.3Z"></path>
+		</svg>
+	`;
+}
+
 export class ChatView {
 	private container: HTMLElement;
 	private messages: UiMessage[] = [];
@@ -2401,6 +2410,38 @@ export class ChatView {
 		`;
 	}
 
+	private assistantHasVisibleStreamingContent(msg: UiMessage): boolean {
+		if (msg.text.trim().length > 0) return true;
+		if ((msg.thinking ?? "").trim().length > 0) return true;
+		return msg.toolCalls.some((tc) => {
+			const output = tc.streamingOutput ?? tc.result ?? "";
+			return tc.isRunning || output.trim().length > 0;
+		});
+	}
+
+	private renderWorkingChip(): TemplateResult {
+		return html`
+			<div class="chat-working-indicator" role="status" aria-live="polite">
+				<span class="chat-working-pi" aria-hidden="true">${piGlyphIcon()}</span>
+				<span class="chat-working-label">working</span>
+			</div>
+		`;
+	}
+
+	private shouldRenderDetachedWorkingIndicator(): boolean {
+		if (!this.currentIsStreaming()) return false;
+		return !this.messages.some((message) => message.role === "assistant" && message.isStreaming);
+	}
+
+	private renderDetachedWorkingIndicator(): TemplateResult {
+		return html`
+			<div class="chat-row assistant-row working-row">
+				<div class="message-shell assistant-message-shell">
+					<div class="assistant-block">${this.renderWorkingChip()}</div>
+				</div>
+			</div>
+		`;
+	}
 
 	private renderUserMessage(msg: UiMessage): TemplateResult {
 		return html`
@@ -2481,10 +2522,13 @@ export class ChatView {
 	}
 
 	private renderAssistantMessage(msg: UiMessage): TemplateResult {
+		const showWorkingChip = Boolean(msg.isStreaming && !this.assistantHasVisibleStreamingContent(msg));
+		const canCopy = Boolean(msg.text.trim().length > 0 || msg.toolCalls.length > 0 || (msg.thinking ?? "").trim().length > 0);
 		return html`
 			<div class="chat-row assistant-row" data-message-id=${msg.id}>
 				<div class="message-shell assistant-message-shell">
 					<div class="assistant-block">
+						${showWorkingChip ? this.renderWorkingChip() : nothing}
 						${this.renderThinking(msg)}
 						${msg.text
 							? html`
@@ -2496,7 +2540,9 @@ export class ChatView {
 						${msg.toolCalls.map((tc) => this.renderToolCall(tc))}
 					</div>
 					<div class="message-actions">
-						<button class="message-action-btn icon" title="Copy message" @click=${() => this.copyMessage(msg)}>${uiIcon("copy")}</button>
+						${canCopy
+							? html`<button class="message-action-btn icon" title="Copy message" @click=${() => this.copyMessage(msg)}>${uiIcon("copy")}</button>`
+							: nothing}
 					</div>
 				</div>
 			</div>
@@ -3174,6 +3220,7 @@ export class ChatView {
 	private doRender(): void {
 		const hasProject = Boolean(this.projectPath);
 		const hasMessages = this.messages.length > 0;
+		const showDetachedWorkingIndicator = hasProject && this.shouldRenderDetachedWorkingIndicator();
 		if (!hasProject && !this.welcomeDashboard.loading && this.welcomeDashboard.updatedAt === 0) {
 			void this.refreshWelcomeDashboard();
 		}
@@ -3220,6 +3267,7 @@ export class ChatView {
 							: this.bindingStatusText
 								? this.renderBindingState()
 								: this.renderEmptyState()}
+					${showDetachedWorkingIndicator ? this.renderDetachedWorkingIndicator() : nothing}
 				</div>
 				${hasProject ? this.renderComposer() : nothing}
 				${hasProject ? this.renderForkPicker() : nothing}

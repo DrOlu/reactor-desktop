@@ -6,6 +6,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+- Chat surface now shows a Pi `working` indicator while a run is active, including the initial wait state before streamed assistant text appears.
+
 ## [0.1.5] - 2026-03-19
 
 ### Fixed
