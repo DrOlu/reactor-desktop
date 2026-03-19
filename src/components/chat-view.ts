@@ -278,6 +278,11 @@ export class ChatView {
 	private historyRoleFilter: UiRole | "all" = "all";
 	private quickActionsOpen = false;
 	private autoFollowChat = true;
+	private readonly workingStatusPhrases = ["starting", "working on it", "running tools", "thinking through", "finalizing"];
+	private workingStatusPhraseIndex = 0;
+	private workingStatusPhase: "typing" | "hold" = "typing";
+	private workingStatusCharCount = 0;
+	private workingStatusTimer: ReturnType<typeof setTimeout> | null = null;
 	private disconnectNoticeTimer: ReturnType<typeof setTimeout> | null = null;
 	private streamingReconcileTimer: ReturnType<typeof setTimeout> | null = null;
 	private sessionStats: SessionStatsSummary = {
@@ -368,6 +373,7 @@ export class ChatView {
 			this.bindingStatusText = null;
 			this.modelLoadRequestSeq += 1;
 			this.loadingModels = false;
+			this.clearWorkingStatusTimer(true);
 			void this.refreshWelcomeDashboard(true);
 		}
 		void this.refreshGitSummary(true);
@@ -384,6 +390,7 @@ export class ChatView {
 		this.lastBackendSessionFile = null;
 		this.lastBackendRefreshError = null;
 		this.pendingDeliveryMode = "prompt";
+		this.clearWorkingStatusTimer(true);
 		this.bindingStatusText = projectPath ? (statusText ?? "Loading session…") : null;
 		this.render();
 	}
@@ -470,6 +477,7 @@ export class ChatView {
 		this.unsubscribeEvents?.();
 		this.unsubscribeEvents = null;
 		this.cancelStreamingUiReconcile();
+		this.clearWorkingStatusTimer(true);
 		for (const unlisten of this.nativeFileDropUnlisteners) {
 			unlisten();
 		}
@@ -2240,6 +2248,7 @@ export class ChatView {
 
 	private clearStreamingUiState(): void {
 		this.cancelStreamingUiReconcile();
+		this.clearWorkingStatusTimer(true);
 		if (this.state) {
 			this.state = { ...this.state, isStreaming: false };
 			this.onStateChange?.(this.state);
@@ -2437,11 +2446,83 @@ export class ChatView {
 		`;
 	}
 
+	private currentWorkingPhrase(): string {
+		const candidate = this.workingStatusPhrases[this.workingStatusPhraseIndex] ?? "working";
+		const normalized = candidate.trim();
+		return normalized.length > 0 ? normalized : "working";
+	}
+
+	private currentWorkingLabel(): string {
+		const phrase = this.currentWorkingPhrase();
+		const count = Math.max(1, Math.min(this.workingStatusCharCount, phrase.length));
+		return phrase.slice(0, count);
+	}
+
+	private clearWorkingStatusTimer(reset = false): void {
+		if (this.workingStatusTimer) {
+			clearTimeout(this.workingStatusTimer);
+		}
+		this.workingStatusTimer = null;
+		if (!reset) return;
+		this.workingStatusPhraseIndex = 0;
+		this.workingStatusPhase = "typing";
+		this.workingStatusCharCount = 0;
+	}
+
+	private scheduleWorkingStatusTick(delayMs: number): void {
+		this.clearWorkingStatusTimer(false);
+		this.workingStatusTimer = setTimeout(() => {
+			this.workingStatusTimer = null;
+			this.stepWorkingStatusText();
+		}, delayMs);
+	}
+
+	private stepWorkingStatusText(): void {
+		if (!this.currentIsStreaming()) {
+			this.clearWorkingStatusTimer(true);
+			return;
+		}
+
+		const phrase = this.currentWorkingPhrase();
+		let nextDelay = 120;
+		if (this.workingStatusPhase === "typing") {
+			this.workingStatusCharCount = Math.min(phrase.length, this.workingStatusCharCount + 1);
+			if (this.workingStatusCharCount >= phrase.length) {
+				this.workingStatusPhase = "hold";
+				nextDelay = 860;
+			} else {
+				nextDelay = 40 + Math.floor(Math.random() * 22);
+			}
+			this.render();
+		} else {
+			this.workingStatusPhase = "typing";
+			this.workingStatusPhraseIndex = (this.workingStatusPhraseIndex + 1) % this.workingStatusPhrases.length;
+			this.workingStatusCharCount = 0;
+			nextDelay = 180;
+			this.render();
+		}
+
+		this.scheduleWorkingStatusTick(nextDelay);
+	}
+
+	private syncWorkingStatusAnimation(): void {
+		if (this.currentIsStreaming()) {
+			if (!this.workingStatusTimer) {
+				this.scheduleWorkingStatusTick(120);
+			}
+			return;
+		}
+		this.clearWorkingStatusTimer(true);
+	}
+
 	private renderWorkingChip(): TemplateResult {
 		return html`
-			<div class="chat-working-indicator" role="status" aria-live="polite">
+			<div class="chat-working-indicator" aria-label="Pi is working" title="Pi is working">
 				<span class="chat-working-pi" aria-hidden="true">${piGlyphIcon()}</span>
-				<span class="chat-working-label">working</span>
+				<span class="chat-working-text">
+					<span class="chat-working-label">${this.currentWorkingLabel()}</span>
+					<span class="chat-working-dots">...</span>
+				</span>
 			</div>
 		`;
 	}
@@ -3294,6 +3375,7 @@ export class ChatView {
 	render(): void {
 		this.doRender();
 		this.scrollToBottom();
+		this.syncWorkingStatusAnimation();
 	}
 
 	notify(text: string, kind: "info" | "success" | "error" = "info"): void {

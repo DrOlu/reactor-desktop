@@ -7,7 +7,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Added
-- Chat surface now shows a persistent Pi `working` indicator during active runs (including tool phases and initial wait), styled to match tool cards with calmer animation and automatic bottom-follow while the conversation streams.
+- Chat surface now shows a persistent Pi status indicator during active runs (including tool phases and initial wait), with rotating typewriter-style status text, icon-only calm animation, transparent styling, and automatic bottom-follow while the conversation streams.
 
 ## [0.1.5] - 2026-03-19
 

@@ -3532,19 +3532,13 @@ body.sidebar-resizing {
 .chat-working-indicator {
 	display: inline-flex;
 	align-items: center;
-	gap: 8px;
-	height: 30px;
-	padding: 0 10px;
-	border-radius: 10px;
+	gap: 7px;
+	padding: 0;
 	border: none;
-	background: color-mix(in srgb, var(--bg-soft) 34%, transparent);
-	color: color-mix(in srgb, var(--text) 90%, var(--muted));
+	background: transparent;
+	color: color-mix(in srgb, var(--text) 88%, var(--muted));
 	width: fit-content;
-	animation: workingBreath 2.4s ease-in-out infinite;
-}
-
-:root.light .chat-working-indicator {
-	background: color-mix(in srgb, var(--bg-soft) 82%, #fff 18%);
+	min-height: 20px;
 }
 
 .chat-working-pi {
@@ -3553,7 +3547,8 @@ body.sidebar-resizing {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	opacity: 0.88;
+	opacity: 0.92;
+	animation: workingBreath 1.9s ease-in-out infinite;
 }
 
 .chat-working-pi svg {
@@ -3566,19 +3561,31 @@ body.sidebar-resizing {
 	fill: currentColor;
 }
 
-.chat-working-label {
+.chat-working-text {
+	display: inline-flex;
+	align-items: baseline;
+	white-space: nowrap;
+	min-height: 14px;
+}
+
+.chat-working-label,
+.chat-working-dots {
 	font-family: inherit;
 	font-size: 11px;
 	font-weight: 500;
-	color: color-mix(in srgb, var(--text) 90%, var(--muted));
+	color: color-mix(in srgb, var(--text) 88%, var(--muted));
 	line-height: 1;
 	text-transform: none;
+}
+
+.chat-working-dots {
+	margin-left: 1px;
 }
 
 @keyframes workingBreath {
 	0%,
 	100% {
-		opacity: 0.54;
+		opacity: 0.4;
 	}
 	50% {
 		opacity: 1;
