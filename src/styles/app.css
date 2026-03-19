@@ -3062,6 +3062,7 @@ body.sidebar-resizing {
 
 .sidebar-session-pi.running {
 	opacity: 1;
+	animation: pi-running-breath 5.4s ease-in-out infinite;
 }
 
 .sidebar-inline-input {
@@ -3355,6 +3356,40 @@ body.sidebar-resizing {
 	scrollbar-gutter: stable;
 }
 
+.chat-jump-latest {
+	position: absolute;
+	right: 22px;
+	bottom: 194px;
+	height: 28px;
+	padding: 0 10px;
+	border: none;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
+	color: color-mix(in srgb, var(--text) 86%, var(--muted));
+	font-size: 11px;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+	z-index: 18;
+	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+}
+
+.chat-jump-latest svg {
+	width: 12px;
+	height: 12px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.4;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.chat-jump-latest:hover {
+	background: color-mix(in srgb, var(--bg-elev) 96%, var(--bg-soft));
+	color: var(--text);
+}
+
 .chat-row {
 	width: min(1020px, calc(100% - 30px));
 	margin: 0 auto 16px;
@@ -3542,13 +3577,14 @@ body.sidebar-resizing {
 }
 
 .chat-working-pi {
-	width: 11px;
-	height: 11px;
+	width: 12px;
+	height: 12px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	opacity: 0.92;
-	animation: workingBreath 5.4s ease-in-out infinite;
+	color: color-mix(in srgb, var(--text) 86%, var(--muted) 14%);
+	opacity: 1;
+	animation: pi-running-breath 5.4s ease-in-out infinite;
 }
 
 .chat-working-pi svg {
@@ -3582,7 +3618,7 @@ body.sidebar-resizing {
 	margin-left: 1px;
 }
 
-@keyframes workingBreath {
+@keyframes pi-running-breath {
 	0%,
 	100% {
 		opacity: 0.4;

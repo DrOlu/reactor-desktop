@@ -7,14 +7,15 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Added
-- Chat surface now shows a persistent Pi status indicator during active runs (including tool phases and initial wait), with rotating typewriter-style status text, icon-only calm animation, transparent styling, and automatic bottom-follow while the conversation streams.
+- Chat now shows a “Latest” jump button when auto-follow is unlocked, so you can scroll up during streaming and relock to the live tail on demand.
 
 ### Fixed
 - Improved reasoning/thinking rendering compatibility by accepting both `thinking` and `reasoning` payload shapes during streaming updates and backend hydration.
-- Improved tool output parsing/merging so expanded tool cards surface more payload formats and show a clear placeholder while waiting for output.
+- Tool cards now hydrate outputs reliably from both tool execution events and streamed `toolResult` messages, with fallback matching for provider-specific tool call ids.
 
 ### Changed
 - Slowed the working-status animation cadence, phrase rotation, and typewriter speed so each status line stays visible longer.
+- Working indicator now appears only before assistant text starts, and its Pi glyph style/animation matches the sidebar running Pi indicator.
 
 ## [0.1.5] - 2026-03-19
 

@@ -278,6 +278,7 @@ export class ChatView {
 	private historyRoleFilter: UiRole | "all" = "all";
 	private quickActionsOpen = false;
 	private autoFollowChat = true;
+	private runHasAssistantText = false;
 	private readonly workingStatusPhrases = [
 		"starting",
 		"warming up",
@@ -389,6 +390,7 @@ export class ChatView {
 			this.bindingStatusText = null;
 			this.modelLoadRequestSeq += 1;
 			this.loadingModels = false;
+			this.runHasAssistantText = false;
 			this.clearWorkingStatusTimer(true);
 			void this.refreshWelcomeDashboard(true);
 		}
@@ -406,6 +408,7 @@ export class ChatView {
 		this.lastBackendSessionFile = null;
 		this.lastBackendRefreshError = null;
 		this.pendingDeliveryMode = "prompt";
+		this.runHasAssistantText = false;
 		this.clearWorkingStatusTimer(true);
 		this.bindingStatusText = projectPath ? (statusText ?? "Loading session…") : null;
 		this.render();
@@ -493,6 +496,7 @@ export class ChatView {
 		this.unsubscribeEvents?.();
 		this.unsubscribeEvents = null;
 		this.cancelStreamingUiReconcile();
+		this.runHasAssistantText = false;
 		this.clearWorkingStatusTimer(true);
 		for (const unlisten of this.nativeFileDropUnlisteners) {
 			unlisten();
@@ -533,6 +537,22 @@ export class ChatView {
 			this.onStateChange?.(state);
 			this.messages = this.mapBackendMessages(backendMessages);
 			this.lastAssistantContextTokens = this.deriveLatestAssistantContextTokens(backendMessages);
+			if (state.isStreaming) {
+				let lastUserIndex = -1;
+				for (let i = backendMessages.length - 1; i >= 0; i -= 1) {
+					if ((backendMessages[i].role as string) === "user") {
+						lastUserIndex = i;
+						break;
+					}
+				}
+				const streamWindow = lastUserIndex >= 0 ? backendMessages.slice(lastUserIndex + 1) : backendMessages;
+				this.runHasAssistantText = streamWindow.some((entry) => {
+					if ((entry.role as string) !== "assistant") return false;
+					return this.extractText((entry as Record<string, unknown>).content).trim().length > 0;
+				});
+			} else {
+				this.runHasAssistantText = false;
+			}
 			this.pendingDeliveryMode = state.isStreaming ? "steer" : "prompt";
 			this.bindingStatusText = null;
 			this.render();
@@ -1620,10 +1640,12 @@ export class ChatView {
 		switch (type) {
 			case "agent_start":
 				this.pendingDeliveryMode = "steer";
+				this.runHasAssistantText = false;
 				if (this.state) {
 					this.state = { ...this.state, isStreaming: true };
 					this.onStateChange?.(this.state);
 				}
+				this.autoFollowChat = true;
 				this.onRunStateChange?.(true);
 				this.scheduleStreamingUiReconcile(2400);
 				this.render();
@@ -1639,6 +1661,7 @@ export class ChatView {
 				const last = this.messages[this.messages.length - 1];
 				if (last && last.role === "assistant") last.isStreaming = false;
 				this.retryStatus = "";
+				this.runHasAssistantText = false;
 				this.onRunStateChange?.(false);
 				rpcBridge
 					.getState()
@@ -1659,20 +1682,53 @@ export class ChatView {
 
 			case "message_start": {
 				const msg = event.message as Record<string, unknown>;
-				if ((msg.role as string) === "assistant") {
+				const role = typeof msg.role === "string" ? msg.role : "";
+				if (role === "assistant") {
 					const last = this.messages[this.messages.length - 1];
 					if (last?.role === "assistant" && last.isStreaming) {
 						break;
 					}
+					const initialText = this.extractText(msg.content);
 					this.messages.push({
 						id: uid("assistant"),
 						role: "assistant",
-						text: "",
+						text: initialText,
 						toolCalls: [],
 						isStreaming: true,
 						thinkingExpanded: this.allThinkingExpanded,
 					});
+					if (initialText.trim().length > 0) this.runHasAssistantText = true;
 					this.render();
+					this.scrollToBottom();
+					break;
+				}
+
+				if (role === "toolResult") {
+					const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : "";
+					const output = this.extractToolOutput(msg.content ?? msg.result ?? msg);
+					const isError = Boolean(msg.isError);
+					const toolName = typeof msg.toolName === "string" ? msg.toolName : "";
+					let tool = toolCallId ? this.findToolCall(toolCallId) : null;
+					if (!tool && toolName) {
+						tool = this.findMostRecentRunningToolByName(toolName);
+					}
+					if (tool) {
+						tool.result = output || "(no output)";
+						tool.isError = isError;
+						tool.isRunning = false;
+						tool.streamingOutput = undefined;
+						tool.isExpanded = false;
+					} else {
+						this.messages.push({
+							id: uid("toolResult"),
+							role: "system",
+							text: `Tool result${isError ? " (error)" : ""}:\n${output || "(no output)"}`,
+							label: "tool-result",
+							toolCalls: [],
+						});
+					}
+					this.render();
+					this.scrollToBottom();
 				}
 				break;
 			}
@@ -1687,6 +1743,7 @@ export class ChatView {
 				if (subtype === "text_delta") {
 					const partialText = this.extractAssistantPartialContent(assistantEvent, "text");
 					last.text = this.mergeStreamingText(last.text, partialText, assistantEvent.delta);
+					if (last.text.trim().length > 0) this.runHasAssistantText = true;
 					this.scheduleStreamingUiReconcile(1800);
 					this.render();
 					this.scrollToBottom();
@@ -1872,6 +1929,21 @@ export class ChatView {
 			const message = this.messages[i];
 			const found = message.toolCalls.find((tc) => tc.id === id);
 			if (found) return found;
+		}
+		return null;
+	}
+
+	private findMostRecentRunningToolByName(name: string): ToolCallBlock | null {
+		const normalized = name.trim().toLowerCase();
+		if (!normalized) return null;
+		for (let i = this.messages.length - 1; i >= 0; i--) {
+			const message = this.messages[i];
+			for (let j = message.toolCalls.length - 1; j >= 0; j--) {
+				const tool = message.toolCalls[j];
+				if (tool.name.trim().toLowerCase() !== normalized) continue;
+				if (!tool.isRunning && tool.result) continue;
+				return tool;
+			}
 		}
 		return null;
 	}
@@ -2161,6 +2233,7 @@ export class ChatView {
 			deliveryMode: mode,
 		});
 		this.autoFollowChat = true;
+		this.runHasAssistantText = false;
 		this.render();
 		this.scrollToBottom(true);
 	}
@@ -2344,6 +2417,7 @@ export class ChatView {
 		}
 		this.retryStatus = "";
 		this.pendingDeliveryMode = "prompt";
+		this.runHasAssistantText = false;
 		this.onRunStateChange?.(false);
 	}
 
@@ -2494,15 +2568,30 @@ export class ChatView {
 	private handleChatScroll(event: Event): void {
 		const target = event.currentTarget as HTMLElement | null;
 		if (!target) return;
-		if (this.currentIsStreaming()) {
-			this.autoFollowChat = true;
-			return;
-		}
-		this.autoFollowChat = this.isNearChatBottom(target);
+		const nextFollow = this.isNearChatBottom(target);
+		if (this.autoFollowChat === nextFollow) return;
+		this.autoFollowChat = nextFollow;
+		this.render();
+	}
+
+	private jumpToLatest(): void {
+		this.autoFollowChat = true;
+		this.scrollToBottom(true);
+		this.render();
+	}
+
+	private renderJumpToLatest(): TemplateResult | typeof nothing {
+		if (this.autoFollowChat) return nothing;
+		return html`
+			<button class="chat-jump-latest" title="Jump to latest" @click=${() => this.jumpToLatest()}>
+				<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2v7.9"></path><path d="M5.2 8.3L8 11.1l2.8-2.8"></path></svg>
+				<span>Latest</span>
+			</button>
+		`;
 	}
 
 	private scrollToBottom(force = false): void {
-		const shouldFollow = force || this.currentIsStreaming() || this.autoFollowChat;
+		const shouldFollow = force || this.autoFollowChat;
 		if (!shouldFollow) return;
 		requestAnimationFrame(() => {
 			if (!this.scrollContainer) return;
@@ -2559,7 +2648,7 @@ export class ChatView {
 	}
 
 	private stepWorkingStatusText(): void {
-		if (!this.currentIsStreaming()) {
+		if (!this.shouldShowWorkingIndicator()) {
 			this.clearWorkingStatusTimer(true);
 			return;
 		}
@@ -2587,7 +2676,7 @@ export class ChatView {
 	}
 
 	private syncWorkingStatusAnimation(): void {
-		if (this.currentIsStreaming()) {
+		if (this.shouldShowWorkingIndicator()) {
 			if (!this.workingStatusTimer) {
 				this.scheduleWorkingStatusTick(320);
 			}
@@ -2606,6 +2695,11 @@ export class ChatView {
 				</span>
 			</div>
 		`;
+	}
+
+	private shouldShowWorkingIndicator(): boolean {
+		if (!this.currentIsStreaming()) return false;
+		return !this.runHasAssistantText;
 	}
 
 	private renderWorkingIndicatorRow(): TemplateResult {
@@ -3398,7 +3492,7 @@ export class ChatView {
 	private doRender(): void {
 		const hasProject = Boolean(this.projectPath);
 		const hasMessages = this.messages.length > 0;
-		const showWorkingIndicator = hasProject && this.currentIsStreaming();
+		const showWorkingIndicator = hasProject && this.shouldShowWorkingIndicator();
 		if (!hasProject && !this.welcomeDashboard.loading && this.welcomeDashboard.updatedAt === 0) {
 			void this.refreshWelcomeDashboard();
 		}
@@ -3450,6 +3544,7 @@ export class ChatView {
 				${hasProject ? this.renderComposer() : nothing}
 				${hasProject ? this.renderForkPicker() : nothing}
 				${hasProject ? this.renderHistoryViewer() : nothing}
+				${hasProject ? this.renderJumpToLatest() : nothing}
 				${this.renderNotices()}
 			</div>
 		`;
