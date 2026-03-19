@@ -2583,9 +2583,8 @@ export class ChatView {
 	private renderJumpToLatest(): TemplateResult | typeof nothing {
 		if (this.autoFollowChat) return nothing;
 		return html`
-			<button class="chat-jump-latest" title="Jump to latest" @click=${() => this.jumpToLatest()}>
+			<button class="chat-jump-latest" aria-label="Jump to latest" title="Jump to latest" @click=${() => this.jumpToLatest()}>
 				<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2v7.9"></path><path d="M5.2 8.3L8 11.1l2.8-2.8"></path></svg>
-				<span>Latest</span>
 			</button>
 		`;
 	}
@@ -2748,17 +2747,9 @@ export class ChatView {
 		if (!msg.thinking) return nothing;
 		const expanded = msg.thinkingExpanded ?? false;
 		return html`
-			<div class="thinking-block">
-				<button
-					class="thinking-toggle"
-					@click=${() => {
-						msg.thinkingExpanded = !expanded;
-						this.render();
-					}}
-				>
-					${expanded ? "▾" : "▸"} Thinking
-				</button>
-				${expanded ? html`<div class="thinking-content">${msg.thinking}</div>` : nothing}
+			<div class="thinking-block ${expanded ? "expanded" : ""}" title="Hover to preview reasoning">
+				<div class="thinking-toggle">thinking…</div>
+				<div class="thinking-content">${msg.thinking}</div>
 			</div>
 		`;
 	}
