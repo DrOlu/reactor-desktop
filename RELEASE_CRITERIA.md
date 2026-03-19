@@ -46,11 +46,12 @@ Promote `dev` to `main` only when:
 6. Settings shows auth + CLI runtime info.
 7. CLI update check runs; update action behaves as expected for PATH installs.
 8. Command palette and key shortcuts operate correctly.
+9. Repeat assistant runs 3+ times: no duplicated streaming deltas; run exits streaming state; follow-up input uses normal prompt mode (not stuck in steer).
 
 ## Release cut checklist
 - [ ] `dev` fully green and smoke-tested
 - [ ] Merge `dev` -> `main`
-- [ ] Tag release candidate (`v1.0.0-rcX`) then stable (`v1.0.0`)
+- [ ] Tag release candidate (`v0.x.y-rcX`) then stable (`v0.x.y`)
 - [ ] Publish release notes with known limitations
 - [ ] Verify GitHub release artifacts:
   - [ ] macOS (`.dmg` / `.app.tar.gz`)
