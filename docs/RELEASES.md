@@ -54,6 +54,16 @@ You can run `release.yml` manually from the Actions tab and provide a tag input.
 
 ---
 
+## In-app desktop update behavior
+
+Pi Desktop now checks for new desktop releases in-app (startup + periodic check).
+
+- Update detection source: GitHub `releases/latest`
+- Update entry points: Sidebar update banner and Settings → Desktop updates
+- Update action: opens the best-matching installer asset for the current platform (or release page fallback)
+
+This reduces manual steps for users (no need to browse releases manually each time).
+
 ## Notes about signing
 
 Current workflow produces unsigned artifacts unless signing secrets/certificates are configured.

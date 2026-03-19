@@ -6,6 +6,12 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+- In-app desktop update flow: checks latest GitHub release, surfaces update availability in sidebar/settings, and opens matching installer download from Settings.
+
+### Changed
+- Release documentation now includes in-app desktop update behavior and fallback logic.
+
 ## [0.1.3] - 2026-03-19
 
 ### Fixed

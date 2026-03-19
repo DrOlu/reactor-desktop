@@ -212,6 +212,8 @@ export class Sidebar {
 	private packagesOpen = false;
 	private openProjectMenuId: string | null = null;
 	private modeFilterMenuOpen = false;
+	private desktopUpdateAvailable = false;
+	private desktopUpdateLatestVersion: string | null = null;
 	private cliUpdateAvailable = false;
 	private cliUpdateLatestVersion: string | null = null;
 	private sessionOrganize: "byProject" | "chronological" = "byProject";
@@ -402,6 +404,14 @@ export class Sidebar {
 	setPackagesOpen(open: boolean): void {
 		if (this.packagesOpen === open) return;
 		this.packagesOpen = open;
+		this.render();
+	}
+
+	setDesktopUpdateStatus(updateAvailable: boolean, latestVersion: string | null = null): void {
+		const normalizedLatest = latestVersion && latestVersion.trim().length > 0 ? latestVersion.trim() : null;
+		if (this.desktopUpdateAvailable === updateAvailable && this.desktopUpdateLatestVersion === normalizedLatest) return;
+		this.desktopUpdateAvailable = updateAvailable;
+		this.desktopUpdateLatestVersion = normalizedLatest;
 		this.render();
 	}
 
@@ -3142,6 +3152,16 @@ export class Sidebar {
 				${this.renderWorkspaceSwitcher()}
 
 				<div class="sidebar-topbar" data-tauri-drag-region>
+					${this.desktopUpdateAvailable
+						? html`
+							<button class="sidebar-cli-update-banner sidebar-desktop-update-banner" @click=${() => this.onOpenSettings?.()}>
+								<span>
+									Desktop update available${this.desktopUpdateLatestVersion ? ` · v${this.desktopUpdateLatestVersion}` : ""}
+								</span>
+								<span class="sidebar-cli-update-cta">Open settings</span>
+							</button>
+						`
+						: nothing}
 					${this.cliUpdateAvailable
 						? html`
 							<button class="sidebar-cli-update-banner" @click=${() => this.onOpenSettings?.()}>

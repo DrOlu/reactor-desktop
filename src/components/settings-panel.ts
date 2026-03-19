@@ -3,6 +3,7 @@
  */
 
 import { html, render, type TemplateResult } from "lit";
+import { fetchDesktopUpdateStatus, openDesktopUpdate, type DesktopUpdateStatus } from "../desktop-updates.js";
 import {
 	type CliUpdateStatus,
 	type PiAuthStatus,
@@ -33,6 +34,11 @@ export class SettingsPanel {
 	private saving = false;
 	private authStatus: PiAuthStatus | null = null;
 	private authLoading = false;
+	private desktopStatus: DesktopUpdateStatus | null = null;
+	private desktopLoading = false;
+	private desktopOpening = false;
+	private desktopActionMessage = "";
+	private onDesktopStatusChange: ((status: DesktopUpdateStatus | null) => void) | null = null;
 	private cliStatus: CliUpdateStatus | null = null;
 	private cliLoading = false;
 	private cliUpdating = false;
@@ -48,6 +54,10 @@ export class SettingsPanel {
 
 	setOnClose(callback: () => void): void {
 		this.onClose = callback;
+	}
+
+	setOnDesktopStatusChange(callback: (status: DesktopUpdateStatus | null) => void): void {
+		this.onDesktopStatusChange = callback;
 	}
 
 	setOnCliStatusChange(callback: (status: CliUpdateStatus | null) => void): void {
@@ -114,6 +124,7 @@ export class SettingsPanel {
 
 		await Promise.all([
 			this.refreshAuthStatus(),
+			this.refreshDesktopStatus(),
 			this.refreshCliStatus(),
 			this.refreshCompatibilityStatus(),
 		]);
@@ -128,6 +139,39 @@ export class SettingsPanel {
 			this.authStatus = null;
 		} finally {
 			this.authLoading = false;
+			this.render();
+		}
+	}
+
+	private async refreshDesktopStatus(): Promise<void> {
+		this.desktopLoading = true;
+		this.render();
+		try {
+			this.desktopStatus = await fetchDesktopUpdateStatus();
+		} catch {
+			this.desktopStatus = null;
+		} finally {
+			this.desktopLoading = false;
+			this.render();
+			this.onDesktopStatusChange?.(this.desktopStatus);
+		}
+	}
+
+	private async openDesktopUpdateNow(): Promise<void> {
+		if (this.desktopOpening) return;
+		if (!this.desktopStatus?.updateAvailable) return;
+		this.desktopOpening = true;
+		this.desktopActionMessage = this.desktopStatus.assetUrl ? "Opening desktop installer…" : "Opening release page…";
+		this.render();
+		try {
+			await openDesktopUpdate(this.desktopStatus);
+			this.desktopActionMessage = this.desktopStatus.assetName
+				? `Opened ${this.desktopStatus.assetName} for download.`
+				: "Opened release page.";
+		} catch (err) {
+			this.desktopActionMessage = err instanceof Error ? err.message : "Failed to open desktop update.";
+		} finally {
+			this.desktopOpening = false;
 			this.render();
 		}
 	}
@@ -374,6 +418,42 @@ export class SettingsPanel {
 									`
 									: null}
 							`}
+					</div>
+
+					<div class="settings-section">
+						<div class="settings-section-title">Desktop updates</div>
+						${this.desktopLoading
+							? html`<div class="settings-desc">Checking desktop release…</div>`
+							: html`
+								<div class="settings-desc">
+									Current: <code>${this.desktopStatus?.currentVersion || "unknown"}</code>
+									 · Latest: <code>${this.desktopStatus?.latestVersion || "unknown"}</code>
+								</div>
+								${this.desktopStatus
+									? this.desktopStatus.updateAvailable
+										? html`<div class="settings-desc">A newer Pi Desktop release is available.</div>`
+										: html`<div class="settings-desc">No desktop update available right now.</div>`
+									: html`<div class="settings-desc">Desktop update status unavailable. Check your network and try again.</div>`}
+								${this.desktopStatus?.assetName
+									? html`<div class="settings-desc">Recommended installer: <code>${this.desktopStatus.assetName}</code></div>`
+									: null}
+								${this.desktopStatus?.note ? html`<div class="settings-desc">${this.desktopStatus.note}</div>` : null}
+							`}
+						<div class="settings-actions">
+							<button class="ghost-btn" ?disabled=${this.desktopLoading} @click=${() => this.refreshDesktopStatus()}>Refresh desktop status</button>
+							<button
+								class="ghost-btn"
+								?disabled=${this.desktopOpening || !this.desktopStatus?.updateAvailable}
+								@click=${() => this.openDesktopUpdateNow()}
+							>
+								${this.desktopOpening
+									? "Opening…"
+									: this.desktopStatus?.assetUrl
+										? "Download desktop update"
+										: "Open release page"}
+							</button>
+						</div>
+						${this.desktopActionMessage ? html`<div class="settings-desc">${this.desktopActionMessage}</div>` : null}
 					</div>
 
 					<div class="settings-section">
