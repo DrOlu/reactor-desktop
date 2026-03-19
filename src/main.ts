@@ -15,6 +15,7 @@ import { ShortcutsPanel } from "./components/shortcuts-panel.js";
 import { Sidebar, type SidebarMode, type SidebarWorkspaceItem } from "./components/sidebar.js";
 import { TerminalPanel } from "./components/terminal-panel.js";
 import type { WorkspaceTabs } from "./components/workspace-tabs.js";
+import { fetchDesktopUpdateStatus, type DesktopUpdateStatus } from "./desktop-updates.js";
 import { type CliUpdateStatus, RpcBridge, type RpcSessionState, rpcBridge, setActiveRpcBridge } from "./rpc/bridge.js";
 import "./styles/app.css";
 
@@ -85,7 +86,8 @@ const NEW_SESSION_TAB_TITLE = "New session";
 const NEW_FILE_TAB_TITLE = "New file";
 const DEBUG_OVERLAY_STORAGE_KEY = "pi-desktop.debug-overlay.v1";
 const CLI_UPDATE_NOTICE_STORAGE_KEY = "pi-desktop.cli-update-notice-at.v1";
-const CLI_UPDATE_NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const DESKTOP_UPDATE_NOTICE_STORAGE_KEY = "pi-desktop.desktop-update-notice-at.v1";
+const UPDATE_NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CLI_INSTALL_COMMAND = "npm install -g @mariozechner/pi-coding-agent";
 const SESSION_ATTENTION_MESSAGES = [
 	"I’m waiting for you — Pi",
@@ -110,8 +112,11 @@ let shortcutsPanel: ShortcutsPanel | null = null;
 let extensionUiHandler: ExtensionUiHandler | null = null;
 
 let cliUpdateStatus: CliUpdateStatus | null = null;
+let desktopUpdateStatus: DesktopUpdateStatus | null = null;
 let cliUpdatePollingTimer: ReturnType<typeof setInterval> | null = null;
+let desktopUpdatePollingTimer: ReturnType<typeof setInterval> | null = null;
 let cliUpdateChecking = false;
+let desktopUpdateChecking = false;
 
 let projectSwitchTask: Promise<void> = Promise.resolve();
 let projectSwitchVersion = 0;
@@ -194,9 +199,9 @@ async function copyCliInstallCommand(): Promise<void> {
 	}
 }
 
-function readLastCliUpdateNoticeAt(): number {
+function readLastUpdateNoticeAt(storageKey: string): number {
 	try {
-		const raw = localStorage.getItem(CLI_UPDATE_NOTICE_STORAGE_KEY);
+		const raw = localStorage.getItem(storageKey);
 		const parsed = raw ? Number(raw) : 0;
 		return Number.isFinite(parsed) ? parsed : 0;
 	} catch {
@@ -204,16 +209,32 @@ function readLastCliUpdateNoticeAt(): number {
 	}
 }
 
-function shouldNotifyCliUpdate(now = Date.now()): boolean {
-	return now - readLastCliUpdateNoticeAt() >= CLI_UPDATE_NOTICE_INTERVAL_MS;
+function shouldNotifyUpdate(storageKey: string, now = Date.now()): boolean {
+	return now - readLastUpdateNoticeAt(storageKey) >= UPDATE_NOTICE_INTERVAL_MS;
 }
 
-function markCliUpdateNotified(now = Date.now()): void {
+function markUpdateNotified(storageKey: string, now = Date.now()): void {
 	try {
-		localStorage.setItem(CLI_UPDATE_NOTICE_STORAGE_KEY, String(now));
+		localStorage.setItem(storageKey, String(now));
 	} catch {
 		// ignore
 	}
+}
+
+function shouldNotifyCliUpdate(now = Date.now()): boolean {
+	return shouldNotifyUpdate(CLI_UPDATE_NOTICE_STORAGE_KEY, now);
+}
+
+function markCliUpdateNotified(now = Date.now()): void {
+	markUpdateNotified(CLI_UPDATE_NOTICE_STORAGE_KEY, now);
+}
+
+function shouldNotifyDesktopUpdate(now = Date.now()): boolean {
+	return shouldNotifyUpdate(DESKTOP_UPDATE_NOTICE_STORAGE_KEY, now);
+}
+
+function markDesktopUpdateNotified(now = Date.now()): void {
+	markUpdateNotified(DESKTOP_UPDATE_NOTICE_STORAGE_KEY, now);
 }
 
 function normalizeProjectPath(path: string | null | undefined): string {
@@ -1472,6 +1493,10 @@ function syncCliUpdateUiHint(): void {
 	sidebar?.setCliUpdateStatus(Boolean(cliUpdateStatus?.update_available), cliUpdateStatus?.latest_version ?? null);
 }
 
+function syncDesktopUpdateUiHint(): void {
+	sidebar?.setDesktopUpdateStatus(Boolean(desktopUpdateStatus?.updateAvailable), desktopUpdateStatus?.latestVersion ?? null);
+}
+
 function syncDebugOverlay(): void {
 	const el = document.getElementById("runtime-debug-overlay");
 	if (!el) return;
@@ -2061,13 +2086,43 @@ async function refreshCliUpdateStatus(): Promise<void> {
 	}
 }
 
+async function refreshDesktopUpdateStatus(): Promise<void> {
+	if (desktopUpdateChecking) return;
+	desktopUpdateChecking = true;
+	try {
+		desktopUpdateStatus = await fetchDesktopUpdateStatus();
+		if (desktopUpdateStatus.updateAvailable && shouldNotifyDesktopUpdate()) {
+			chatView?.notify(
+				`A Pi Desktop update is available${desktopUpdateStatus.latestVersion ? ` (v${desktopUpdateStatus.latestVersion})` : ""}. Open Settings → Desktop updates to install it.`,
+				"info",
+			);
+			markDesktopUpdateNotified();
+		}
+	} catch (err) {
+		console.warn("Failed to refresh desktop update status:", err);
+		desktopUpdateStatus = null;
+	} finally {
+		desktopUpdateChecking = false;
+		syncDesktopUpdateUiHint();
+	}
+}
+
 function startCliUpdatePolling(): void {
 	if (cliUpdatePollingTimer) {
 		clearInterval(cliUpdatePollingTimer);
 	}
 	cliUpdatePollingTimer = setInterval(() => {
 		void refreshCliUpdateStatus();
-	}, CLI_UPDATE_NOTICE_INTERVAL_MS);
+	}, UPDATE_NOTICE_INTERVAL_MS);
+}
+
+function startDesktopUpdatePolling(): void {
+	if (desktopUpdatePollingTimer) {
+		clearInterval(desktopUpdatePollingTimer);
+	}
+	desktopUpdatePollingTimer = setInterval(() => {
+		void refreshDesktopUpdateStatus();
+	}, UPDATE_NOTICE_INTERVAL_MS);
 }
 
 async function initialize(): Promise<void> {
@@ -2235,7 +2290,9 @@ async function initialize(): Promise<void> {
 
 		await runStartupCompatibilityCheck();
 		await refreshCliUpdateStatus();
+		await refreshDesktopUpdateStatus();
 		startCliUpdatePolling();
+		startDesktopUpdatePolling();
 	} catch (err) {
 		connectionError = err instanceof Error ? err.message : String(err);
 		recordDebugTrace(`initialize-fatal: ${connectionError}`);
@@ -2252,6 +2309,10 @@ function mountSettingsPanel(): SettingsPanel {
 	settingsContainer.id = "settings-container";
 	document.body.appendChild(settingsContainer);
 	const panel = new SettingsPanel(settingsContainer);
+	panel.setOnDesktopStatusChange((status) => {
+		desktopUpdateStatus = status;
+		syncDesktopUpdateUiHint();
+	});
 	panel.setOnCliStatusChange((status) => {
 		cliUpdateStatus = status;
 		syncCliUpdateUiHint();
@@ -2937,6 +2998,7 @@ function renderApp(): void {
 	});
 	syncSidebarCollapseToggleButton();
 	syncCliUpdateUiHint();
+	syncDesktopUpdateUiHint();
 
 	sidebar.setOnWorkspaceSelect((workspaceId) => {
 		void queueProjectTask(

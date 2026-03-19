@@ -2270,6 +2270,10 @@ body.sidebar-resizing {
 	background: color-mix(in srgb, var(--accent) 22%, var(--bg-soft));
 }
 
+.sidebar-desktop-update-banner {
+	background: color-mix(in srgb, var(--accent) 18%, var(--bg-soft));
+}
+
 .sidebar-cli-update-cta {
 	font-size: 10px;
 	color: var(--muted);

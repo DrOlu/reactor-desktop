@@ -999,6 +999,13 @@ struct GitCommandResult {
     exit_code: i32,
 }
 
+#[derive(Debug, Serialize)]
+struct DesktopRuntimeInfo {
+    platform: String,
+    arch: String,
+    version: String,
+}
+
 fn npm_executable() -> &'static str {
     if cfg!(target_os = "windows") {
         "npm.cmd"
@@ -1346,6 +1353,15 @@ async fn run_git_command(options: GitCommandOptions) -> Result<GitCommandResult,
 }
 
 #[tauri::command]
+async fn get_desktop_runtime_info(app: AppHandle) -> Result<DesktopRuntimeInfo, String> {
+    Ok(DesktopRuntimeInfo {
+        platform: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        version: app.package_info().version.to_string(),
+    })
+}
+
+#[tauri::command]
 async fn open_path_in_default_app(path: String) -> Result<(), String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -1467,6 +1483,7 @@ pub fn run() {
             get_cli_update_status,
             update_cli_via_npm,
             run_git_command,
+            get_desktop_runtime_info,
             open_path_in_default_app,
         ])
         .run(tauri::generate_context!())
