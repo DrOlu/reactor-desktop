@@ -10,7 +10,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Chat now shows a “Latest” jump button when auto-follow is unlocked, so you can scroll up during streaming and relock to the live tail on demand.
 - Settings now include an auto-rename model picker that writes `~/.pi/agent/extensions/pi-session-auto-rename.json` from currently available authenticated models.
 - Sidebar session context menu now includes **Fork from message…** which opens message history for the selected session.
-- Session history rows for user messages now include a direct **Fork** action.
+- Fork history now provides a direct **Fork** action on timeline entries (assistant entries fork from their preceding user prompt).
 
 ### Fixed
 - Improved reasoning/thinking rendering compatibility by accepting both `thinking` and `reasoning` payload shapes during streaming updates and backend hydration.

@@ -37,6 +37,7 @@ interface ToolCallBlock {
 
 interface UiMessage {
 	id: string;
+	sessionEntryId?: string;
 	role: UiRole;
 	text: string;
 	toolCalls: ToolCallBlock[];
@@ -278,6 +279,8 @@ export class ChatView {
 	private historyViewerMode: "browse" | "fork" = "browse";
 	private historyViewerLoading = false;
 	private historyViewerSessionLabel = "";
+	private forkEntryIdByMessageId = new Map<string, string>();
+	private forkTargetsRequestSeq = 0;
 	private historyQuery = "";
 	private historyRoleFilter: UiRole | "all" = "all";
 	private quickActionsOpen = false;
@@ -540,6 +543,7 @@ export class ChatView {
 			this.lastBackendRefreshError = null;
 			this.onStateChange?.(state);
 			this.messages = this.mapBackendMessages(backendMessages);
+			this.forkEntryIdByMessageId.clear();
 			this.lastAssistantContextTokens = this.deriveLatestAssistantContextTokens(backendMessages);
 			if (state.isStreaming) {
 				let lastUserIndex = -1;
@@ -588,6 +592,7 @@ export class ChatView {
 		for (const raw of backendMessages) {
 			const role = raw.role as string | undefined;
 			if (!role) continue;
+			const sessionEntryId = typeof raw.id === "string" && raw.id.trim().length > 0 ? raw.id.trim() : undefined;
 
 			switch (role) {
 				case "user": {
@@ -595,6 +600,7 @@ export class ChatView {
 					const attachments = this.extractImages(raw.content);
 					mapped.push({
 						id: uid("user"),
+						sessionEntryId,
 						role: "user",
 						text,
 						attachments,
@@ -647,6 +653,7 @@ export class ChatView {
 
 					mapped.push({
 						id: uid("assistant"),
+						sessionEntryId,
 						role: "assistant",
 						text,
 						thinking: thinking || undefined,
@@ -668,6 +675,7 @@ export class ChatView {
 					} else {
 						mapped.push({
 							id: uid("toolResult"),
+							sessionEntryId,
 							role: "system",
 							text: `Tool result${isError ? " (error)" : ""}:\n${content || "(no output)"}`,
 							label: "tool-result",
@@ -681,6 +689,7 @@ export class ChatView {
 					const output = typeof raw.output === "string" ? raw.output : "";
 					mapped.push({
 						id: uid("bash"),
+						sessionEntryId,
 						role: "system",
 						text: `!${command}\n${output}`,
 						label: "bash",
@@ -693,6 +702,7 @@ export class ChatView {
 					const summary = typeof raw.summary === "string" ? raw.summary : this.extractText(raw.content);
 					mapped.push({
 						id: uid(role),
+						sessionEntryId,
 						role: "system",
 						text: summary,
 						label: role === "branchSummary" ? "branch summary" : "compaction summary",
@@ -705,6 +715,7 @@ export class ChatView {
 					const content = this.extractText(raw.content);
 					mapped.push({
 						id: uid("custom"),
+						sessionEntryId,
 						role: "custom",
 						text: content,
 						label: customType,
@@ -2554,6 +2565,9 @@ export class ChatView {
 		this.historyQuery = "";
 		this.historyRoleFilter = "all";
 		this.render();
+		if (!this.historyViewerLoading) {
+			void this.loadForkTargetsForHistory();
+		}
 	}
 
 	private closeHistoryViewer(): void {
@@ -2563,7 +2577,61 @@ export class ChatView {
 		this.historyViewerSessionLabel = "";
 		this.historyQuery = "";
 		this.historyRoleFilter = "all";
+		this.forkEntryIdByMessageId.clear();
 		this.render();
+	}
+
+	private normalizeForkText(value: string): string {
+		return value.replace(/\s+/g, " ").trim();
+	}
+
+	private hydrateForkTargetsFromOptions(options: ForkOption[]): void {
+		const userMessages = this.messages.filter((msg) => msg.role === "user");
+		const byText = new Map<string, string[]>();
+		for (const option of options) {
+			const key = this.normalizeForkText(option.text);
+			if (!key) continue;
+			const queue = byText.get(key) ?? [];
+			queue.push(option.entryId);
+			byText.set(key, queue);
+		}
+
+		const map = new Map<string, string>();
+		for (const msg of userMessages) {
+			const key = this.normalizeForkText(msg.text);
+			const queue = byText.get(key);
+			if (queue && queue.length > 0) {
+				const entryId = queue.shift();
+				if (entryId) map.set(msg.id, entryId);
+				continue;
+			}
+			if (msg.sessionEntryId) {
+				map.set(msg.id, msg.sessionEntryId);
+			}
+		}
+
+		this.forkEntryIdByMessageId = map;
+	}
+
+	private async loadForkTargetsForHistory(): Promise<void> {
+		if (this.historyViewerMode !== "fork") return;
+		const requestId = ++this.forkTargetsRequestSeq;
+		this.historyViewerLoading = true;
+		this.render();
+		try {
+			const options = await rpcBridge.getForkMessages();
+			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
+			this.hydrateForkTargetsFromOptions(options);
+		} catch (err) {
+			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
+			console.error("Failed to load fork points:", err);
+			this.pushNotice("Failed to load fork points", "error");
+			this.forkEntryIdByMessageId.clear();
+		} finally {
+			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
+			this.historyViewerLoading = false;
+			this.render();
+		}
 	}
 
 	private revealMessage(messageId: string): void {
@@ -3467,6 +3535,21 @@ export class ChatView {
 		`;
 	}
 
+	private resolveForkEntryId(messages: UiMessage[], index: number): string | null {
+		const current = messages[index];
+		if (!current) return null;
+		if (current.role === "user") {
+			return this.forkEntryIdByMessageId.get(current.id) ?? current.sessionEntryId ?? null;
+		}
+		for (let i = index; i >= 0; i--) {
+			const candidate = messages[i];
+			if (!candidate || candidate.role !== "user") continue;
+			const entryId = this.forkEntryIdByMessageId.get(candidate.id) ?? candidate.sessionEntryId;
+			if (entryId) return entryId;
+		}
+		return null;
+	}
+
 	private renderHistoryViewer(): TemplateResult | typeof nothing {
 		if (!this.historyViewerOpen) return nothing;
 
@@ -3481,7 +3564,12 @@ export class ChatView {
 			const haystack = `${msg.role} ${msg.label || ""} ${this.messagePreview(msg)}`.toLowerCase();
 			return haystack.includes(query);
 		});
-		const forkableCount = filtered.filter((msg) => msg.role === "user").length;
+		const forkableEntryIds = new Set<string>();
+		for (let i = 0; i < filtered.length; i++) {
+			const id = this.resolveForkEntryId(filtered, i);
+			if (id) forkableEntryIds.add(id);
+		}
+		const forkableCount = forkableEntryIds.size;
 
 		return html`
 			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.closeHistoryViewer()}>
@@ -3530,8 +3618,13 @@ export class ChatView {
 							: filtered.length === 0
 								? html`<div class="overlay-empty">${forkMode ? "No messages available for forking." : "No messages match your filters."}</div>`
 								: forkMode
-									? filtered.map(
-											(msg, idx) => html`
+									? filtered.map((msg, idx) => {
+											const forkEntryId = this.resolveForkEntryId(filtered, idx);
+											const assistantThinking = msg.role === "assistant"
+												? truncate((msg.thinking ?? "").replace(/\s+/g, " ").trim(), 140)
+												: "";
+											const assistantTools = msg.role === "assistant" ? msg.toolCalls : [];
+											return html`
 												<div class="fork-history-item role-${msg.role}">
 													<div class="fork-history-rail" aria-hidden="true">
 														<span class="fork-history-dot"></span>
@@ -3543,15 +3636,29 @@ export class ChatView {
 															<span>#${idx + 1}</span>
 														</div>
 														<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 220)}</div>
+														${msg.role === "assistant" && (assistantThinking || assistantTools.length > 0)
+															? html`
+																<div class="fork-history-subentries">
+																	${assistantThinking
+																		? html`<div class="fork-history-subentry thinking"><span class="fork-subentry-label">thinking</span><span class="fork-subentry-preview">${assistantThinking}</span></div>`
+																		: nothing}
+																	${assistantTools.map((tc) => {
+																		const toolStatus = tc.isError ? "error" : tc.isRunning ? "running" : "done";
+																		const toolPreview = truncate((tc.result ?? tc.streamingOutput ?? "").replace(/\s+/g, " ").trim(), 96);
+																		return html`<div class="fork-history-subentry tool"><span class="fork-subentry-label">tool</span><span class="fork-subentry-name">${tc.name} · ${toolStatus}</span>${toolPreview ? html`<span class="fork-subentry-preview">${toolPreview}</span>` : nothing}</div>`;
+																	})}
+																</div>
+															`
+															: nothing}
 													</div>
 													<div class="fork-history-actions">
-														${msg.role === "user"
-															? html`<button class="message-action-btn" @click=${() => void this.forkFrom(msg.id)}>Fork here</button>`
+														${forkEntryId
+															? html`<button class="message-action-btn" @click=${() => void this.forkFrom(forkEntryId)} title=${msg.role === "assistant" ? "Fork from preceding user message" : "Fork from this user message"}>Fork</button>`
 															: nothing}
 													</div>
 												</div>
-											`,
-									  )
+											`;
+									  })
 									: filtered.map(
 											(msg, idx) => html`
 												<div class="history-item">

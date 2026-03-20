@@ -5086,6 +5086,45 @@ body.sidebar-resizing {
 	color: color-mix(in srgb, var(--text) 76%, var(--muted));
 }
 
+.fork-history-subentries {
+	margin-top: 6px;
+	display: grid;
+	gap: 4px;
+}
+
+.fork-history-subentry {
+	padding-left: 9px;
+	border-left: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	min-width: 0;
+}
+
+.fork-history-subentry .fork-subentry-label {
+	font-size: 9px;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--muted-2);
+	flex-shrink: 0;
+}
+
+.fork-history-subentry .fork-subentry-name {
+	font-size: 10px;
+	color: var(--muted);
+	flex-shrink: 0;
+}
+
+.fork-history-subentry .fork-subentry-preview {
+	font-size: 10px;
+	line-height: 1.35;
+	color: color-mix(in srgb, var(--muted) 90%, var(--text));
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+
 .fork-history-actions {
 	display: flex;
 	align-items: center;
