@@ -43,6 +43,7 @@ interface UiMessage {
 	attachments?: PendingImage[];
 	thinking?: string;
 	thinkingExpanded?: boolean;
+	thinkingScrollTop?: number;
 	isStreaming?: boolean;
 	deliveryMode?: DeliveryMode;
 	label?: string;
@@ -2551,6 +2552,11 @@ export class ChatView {
 		this.closeHistoryViewer();
 	}
 
+	private thinkingContentElement(messageId: string): HTMLElement | null {
+		const escaped = (window as any).CSS?.escape ? (window as any).CSS.escape(messageId) : messageId;
+		return this.container.querySelector(`[data-thinking-for="${escaped}"]`) as HTMLElement | null;
+	}
+
 	toggleThinkingBlocks(): void {
 		this.allThinkingExpanded = !this.allThinkingExpanded;
 		for (const message of this.messages) {
@@ -2757,13 +2763,33 @@ export class ChatView {
 					aria-label="Toggle thinking"
 					title="Toggle thinking"
 					@click=${() => {
+						if (expanded) {
+							const content = this.thinkingContentElement(msg.id);
+							if (content) msg.thinkingScrollTop = content.scrollTop;
+						}
+						this.autoFollowChat = false;
 						msg.thinkingExpanded = !expanded;
 						this.render();
+						if (!expanded) {
+							requestAnimationFrame(() => {
+								const content = this.thinkingContentElement(msg.id);
+								if (!content) return;
+								content.scrollTop = msg.thinkingScrollTop ?? 0;
+							});
+						}
 					}}
 				>
 					${label.split("").map((char, index) => html`<span class="thinking-char" style=${`--thinking-char-index:${index};`}>${char}</span>`)}
 				</button>
-				<div class="thinking-content">${msg.thinking}</div>
+				<div
+					class="thinking-content"
+					data-thinking-for=${msg.id}
+					@scroll=${(event: Event) => {
+						msg.thinkingScrollTop = (event.currentTarget as HTMLElement).scrollTop;
+					}}
+				>
+					${msg.thinking}
+				</div>
 			</div>
 		`;
 	}
