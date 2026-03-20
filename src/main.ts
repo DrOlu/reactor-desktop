@@ -2493,8 +2493,8 @@ function wireCommandPaletteBuiltins(): void {
 		},
 		{
 			name: "fork",
-			description: "Fork from previous user message",
-			action: async () => chatView?.openForkPicker(),
+			description: "Fork from previous message",
+			action: async () => chatView?.openHistoryViewerForFork({ loading: false, sessionName: null }),
 		},
 		{
 			name: "history",
@@ -3272,7 +3272,7 @@ function renderApp(): void {
 		projectId: string,
 		sessionPath: string,
 		sessionName?: string,
-		options?: { label?: string; onActivated?: () => void | Promise<void> },
+		options?: { label?: string; onActivated?: () => void | Promise<void>; onFailed?: (err: unknown) => void },
 	): void => {
 		const workspace = getActiveWorkspace();
 		const project = sidebar?.getProjectById(projectId);
@@ -3312,6 +3312,7 @@ function renderApp(): void {
 			(err) => {
 				console.error("Failed to switch session:", err);
 				chatView?.notify("Failed to switch session", "error");
+				options?.onFailed?.(err);
 			},
 			{ label: options?.label ?? "sidebar-session-select" },
 		);
@@ -3322,10 +3323,14 @@ function renderApp(): void {
 	});
 
 	sidebar.setOnSessionFork((projectId, sessionPath, sessionName) => {
+		chatView?.openHistoryViewerForFork({ loading: true, sessionName });
 		activateSidebarSession(projectId, sessionPath, sessionName, {
 			label: "sidebar-session-fork",
 			onActivated: () => {
-				chatView?.openHistoryViewerForFork();
+				chatView?.openHistoryViewerForFork({ loading: false, sessionName });
+			},
+			onFailed: () => {
+				chatView?.openHistoryViewerForFork({ loading: false, sessionName });
 			},
 		});
 	});

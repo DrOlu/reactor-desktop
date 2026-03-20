@@ -275,6 +275,9 @@ export class ChatView {
 	private forkPickerOpen = false;
 	private forkOptions: ForkOption[] = [];
 	private historyViewerOpen = false;
+	private historyViewerMode: "browse" | "fork" = "browse";
+	private historyViewerLoading = false;
+	private historyViewerSessionLabel = "";
 	private historyQuery = "";
 	private historyRoleFilter: UiRole | "all" = "all";
 	private quickActionsOpen = false;
@@ -2526,6 +2529,9 @@ export class ChatView {
 			await this.refreshFromBackend();
 			this.pushNotice(result.cancelled ? "Fork cancelled" : "Fork ready in editor", "success");
 			this.closeForkPicker();
+			if (this.historyViewerMode === "fork") {
+				this.closeHistoryViewer();
+			}
 		} catch (err) {
 			console.error("Failed to fork:", err);
 			this.pushNotice("Failed to fork session", "error");
@@ -2534,18 +2540,27 @@ export class ChatView {
 
 	openHistoryViewer(): void {
 		this.historyViewerOpen = true;
+		this.historyViewerMode = "browse";
+		this.historyViewerLoading = false;
+		this.historyViewerSessionLabel = "";
 		this.render();
 	}
 
-	openHistoryViewerForFork(): void {
+	openHistoryViewerForFork(options?: { loading?: boolean; sessionName?: string | null }): void {
 		this.historyViewerOpen = true;
+		this.historyViewerMode = "fork";
+		this.historyViewerLoading = options?.loading ?? false;
+		this.historyViewerSessionLabel = options?.sessionName?.trim() || this.state?.sessionName?.trim() || "";
 		this.historyQuery = "";
-		this.historyRoleFilter = "user";
+		this.historyRoleFilter = "all";
 		this.render();
 	}
 
 	private closeHistoryViewer(): void {
 		this.historyViewerOpen = false;
+		this.historyViewerMode = "browse";
+		this.historyViewerLoading = false;
+		this.historyViewerSessionLabel = "";
 		this.historyQuery = "";
 		this.historyRoleFilter = "all";
 		this.render();
@@ -3210,7 +3225,7 @@ export class ChatView {
 									<button @click=${() => {
 										this.quickActionsOpen = false;
 										this.render();
-										void this.openForkPicker();
+										this.openHistoryViewerForFork({ loading: false, sessionName: this.state?.sessionName ?? null });
 									}}>Fork from message</button>
 									<button @click=${() => {
 										this.quickActionsOpen = false;
@@ -3455,77 +3470,101 @@ export class ChatView {
 	private renderHistoryViewer(): TemplateResult | typeof nothing {
 		if (!this.historyViewerOpen) return nothing;
 
+		const forkMode = this.historyViewerMode === "fork";
 		const query = this.historyQuery.trim().toLowerCase();
-		const filtered = this.messages.filter((msg) => {
-			if (this.historyRoleFilter !== "all" && msg.role !== this.historyRoleFilter) return false;
+		const source = forkMode
+			? this.messages.filter((msg) => msg.role === "user" || msg.role === "assistant")
+			: this.messages;
+		const filtered = source.filter((msg) => {
+			if (!forkMode && this.historyRoleFilter !== "all" && msg.role !== this.historyRoleFilter) return false;
 			if (!query) return true;
 			const haystack = `${msg.role} ${msg.label || ""} ${this.messagePreview(msg)}`.toLowerCase();
 			return haystack.includes(query);
 		});
+		const forkableCount = filtered.filter((msg) => msg.role === "user").length;
 
 		return html`
 			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.closeHistoryViewer()}>
-				<div class="overlay-card history-card">
+				<div class="overlay-card history-card ${forkMode ? "fork-mode" : ""}">
 					<div class="overlay-header">
-						<div>Session history</div>
+						<div>
+							<div>${forkMode ? "Fork from message" : "Session history"}</div>
+							${forkMode
+								? html`<div class="history-subtitle">${this.historyViewerSessionLabel || "Current session"} · ${forkableCount} fork points</div>`
+								: nothing}
+						</div>
 						<button @click=${() => this.closeHistoryViewer()}>✕</button>
 					</div>
-					<div class="history-controls">
+					<div class="history-controls ${forkMode ? "fork" : ""}">
 						<input
 							type="text"
-							placeholder="Search messages"
+							placeholder=${forkMode ? "Search visible messages" : "Search messages"}
 							.value=${this.historyQuery}
 							@input=${(e: Event) => {
 								this.historyQuery = (e.target as HTMLInputElement).value;
 								this.render();
 							}}
 						/>
-						<select
-							class="settings-select"
-							.value=${this.historyRoleFilter}
-							@change=${(e: Event) => {
-								this.historyRoleFilter = (e.target as HTMLSelectElement).value as UiRole | "all";
-								this.render();
-							}}
-						>
-							<option value="all">all roles</option>
-							<option value="user">user</option>
-							<option value="assistant">assistant</option>
-							<option value="system">system</option>
-							<option value="custom">custom</option>
-						</select>
+						${forkMode
+							? nothing
+							: html`
+								<select
+									class="settings-select"
+									.value=${this.historyRoleFilter}
+									@change=${(e: Event) => {
+										this.historyRoleFilter = (e.target as HTMLSelectElement).value as UiRole | "all";
+										this.render();
+									}}
+								>
+									<option value="all">all roles</option>
+									<option value="user">user</option>
+									<option value="assistant">assistant</option>
+									<option value="system">system</option>
+									<option value="custom">custom</option>
+								</select>
+							`}
 					</div>
-					<div class="overlay-body history-list">
-						${filtered.length === 0
-							? html`<div class="overlay-empty">No messages match your filters.</div>`
-							: filtered.map(
-									(msg, idx) => html`
-										<div class="history-item">
-											<button class="history-jump" @click=${() => this.revealMessage(msg.id)}>
-												<div class="history-meta">
-													<span class="history-role role-${msg.role}">${msg.role}</span>
-													<span>#${idx + 1}</span>
+					<div class="overlay-body history-list ${forkMode ? "fork-history-list" : ""}">
+						${this.historyViewerLoading
+							? html`<div class="overlay-empty">Loading session history…</div>`
+							: filtered.length === 0
+								? html`<div class="overlay-empty">${forkMode ? "No messages available for forking." : "No messages match your filters."}</div>`
+								: forkMode
+									? filtered.map(
+											(msg, idx) => html`
+												<div class="fork-history-item role-${msg.role}">
+													<div class="fork-history-rail" aria-hidden="true">
+														<span class="fork-history-dot"></span>
+														${idx < filtered.length - 1 ? html`<span class="fork-history-line"></span>` : nothing}
+													</div>
+													<div class="fork-history-main">
+														<div class="history-meta">
+															<span class="history-role role-${msg.role}">${msg.role}</span>
+															<span>#${idx + 1}</span>
+														</div>
+														<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 220)}</div>
+													</div>
+													<div class="fork-history-actions">
+														${msg.role === "user"
+															? html`<button class="message-action-btn" @click=${() => void this.forkFrom(msg.id)}>Fork here</button>`
+															: nothing}
+													</div>
 												</div>
-												<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 180)}</div>
-											</button>
-											<div class="history-item-actions">
-												${msg.role === "user"
-													? html`
-														<button class="message-action-btn" @click=${() => {
-															this.editUserMessage(msg);
-															this.closeHistoryViewer();
-														}}>Load</button>
-														<button class="message-action-btn" @click=${() => {
-															void this.forkFrom(msg.id);
-															this.closeHistoryViewer();
-														}}>Fork</button>
-													`
-													: nothing}
-												<button class="message-action-btn" @click=${() => this.copyMessage(msg)}>Copy</button>
-											</div>
-										</div>
-									`,
-								)}
+											`,
+									  )
+									: filtered.map(
+											(msg, idx) => html`
+												<div class="history-item">
+													<button class="history-jump" @click=${() => this.revealMessage(msg.id)}>
+														<div class="history-meta">
+															<span class="history-role role-${msg.role}">${msg.role}</span>
+															<span>#${idx + 1}</span>
+														</div>
+														<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 200)}</div>
+													</button>
+												</div>
+											`,
+									  )}
 					</div>
 				</div>
 			</div>

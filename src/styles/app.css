@@ -4946,12 +4946,26 @@ body.sidebar-resizing {
 	max-width: 860px;
 }
 
+.history-card.fork-mode {
+	max-width: 920px;
+}
+
+.history-subtitle {
+	margin-top: 2px;
+	font-size: 11px;
+	color: var(--muted);
+}
+
 .history-controls {
 	display: grid;
 	grid-template-columns: 1fr auto;
 	gap: 8px;
 	padding: 12px 14px;
 	border-bottom: 1px solid var(--border);
+}
+
+.history-controls.fork {
+	grid-template-columns: 1fr;
 }
 
 .history-controls input {
@@ -4970,14 +4984,12 @@ body.sidebar-resizing {
 }
 
 .history-item {
-	display: grid;
-	grid-template-columns: 1fr auto;
-	gap: 8px;
-	padding: 9px 12px;
+	padding: 10px 12px;
 	border-bottom: 1px solid var(--border);
 }
 
 .history-jump {
+	width: 100%;
 	background: transparent;
 	border: none;
 	padding: 0;
@@ -5029,9 +5041,53 @@ body.sidebar-resizing {
 	color: var(--text);
 }
 
-.history-item-actions {
+.fork-history-list {
+	padding: 4px 0;
+}
+
+.fork-history-item {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr) auto;
+	gap: 10px;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--border);
+}
+
+.fork-history-rail {
 	display: flex;
-	gap: 6px;
+	flex-direction: column;
+	align-items: center;
+	padding-top: 4px;
+}
+
+.fork-history-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--accent) 72%, var(--muted));
+}
+
+.fork-history-item.role-assistant .fork-history-dot {
+	background: color-mix(in srgb, var(--success) 64%, var(--muted));
+}
+
+.fork-history-line {
+	width: 1px;
+	flex: 1;
+	background: color-mix(in srgb, var(--border) 82%, transparent);
+	margin-top: 4px;
+}
+
+.fork-history-main {
+	min-width: 0;
+}
+
+.fork-history-item.role-assistant .history-preview {
+	color: color-mix(in srgb, var(--text) 76%, var(--muted));
+}
+
+.fork-history-actions {
+	display: flex;
 	align-items: center;
 }
 
