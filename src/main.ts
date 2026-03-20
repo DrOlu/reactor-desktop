@@ -141,6 +141,7 @@ let runningSessionPollInFlight = false;
 let debugOverlayInterval: ReturnType<typeof setInterval> | null = null;
 let debugTraceLines: string[] = [];
 let notificationAttentionListenersBound = false;
+let lastEscapePressAt = 0;
 
 function recordDebugTrace(message: string): void {
 	const stamp = new Date().toISOString().slice(11, 23);
@@ -2652,7 +2653,19 @@ function setupKeyboardShortcuts(): void {
 			return;
 		}
 
-		if (e.key === "Escape") {
+		if (e.key === "Escape" && !isCtrlOrMeta && !isShift && !e.altKey) {
+			if (e.repeat) {
+				chatView?.abortCurrentRun();
+				return;
+			}
+			const now = Date.now();
+			const deltaMs = now - lastEscapePressAt;
+			lastEscapePressAt = now;
+			if (deltaMs < 420) {
+				e.preventDefault();
+				void sessionBrowser?.open();
+				return;
+			}
 			chatView?.abortCurrentRun();
 			return;
 		}

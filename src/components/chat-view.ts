@@ -2754,6 +2754,7 @@ export class ChatView {
 		const expanded = msg.thinkingExpanded ?? false;
 		const label = "thinking…";
 		const toggleClass = `thinking-toggle ${msg.isStreaming ? "animating" : "done"}`;
+		const thinkingText = msg.thinking.replace(/^\s+/, "");
 		return html`
 			<div class="thinking-block ${expanded ? "expanded" : ""}">
 				<button
@@ -2787,9 +2788,7 @@ export class ChatView {
 					@scroll=${(event: Event) => {
 						msg.thinkingScrollTop = (event.currentTarget as HTMLElement).scrollTop;
 					}}
-				>
-					${msg.thinking}
-				</div>
+				>${thinkingText}</div>
 			</div>
 		`;
 	}
@@ -3504,10 +3503,16 @@ export class ChatView {
 											</button>
 											<div class="history-item-actions">
 												${msg.role === "user"
-													? html`<button class="message-action-btn" @click=${() => {
-														this.editUserMessage(msg);
-														this.closeHistoryViewer();
-													}}>Load</button>`
+													? html`
+														<button class="message-action-btn" @click=${() => {
+															this.editUserMessage(msg);
+															this.closeHistoryViewer();
+														}}>Load</button>
+														<button class="message-action-btn" @click=${() => {
+															void this.forkFrom(msg.id);
+															this.closeHistoryViewer();
+														}}>Fork</button>
+													`
 													: nothing}
 												<button class="message-action-btn" @click=${() => this.copyMessage(msg)}>Copy</button>
 											</div>
