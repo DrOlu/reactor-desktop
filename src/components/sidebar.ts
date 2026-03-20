@@ -240,6 +240,7 @@ export class Sidebar {
 	private onSessionSelect: ((projectId: string, sessionPath: string, sessionName?: string) => void) | null = null;
 	private onSessionRename: ((projectId: string, sessionPath: string, currentName: string, nextName: string) => void) | null = null;
 	private onSessionDelete: ((projectId: string, sessionPath: string) => void) | null = null;
+	private onSessionFork: ((projectId: string, sessionPath: string, sessionName?: string) => void) | null = null;
 	private onNewSessionInProject: ((project: { id: string; name: string; path: string }) => void) | null = null;
 	private onNewFileInProject: ((project: { id: string; name: string; path: string }) => void) | null = null;
 	private onFileOpen: ((projectId: string, filePath: string) => void) | null = null;
@@ -439,6 +440,10 @@ export class Sidebar {
 		this.onSessionDelete = cb;
 	}
 
+	setOnSessionFork(cb: (projectId: string, sessionPath: string, sessionName?: string) => void): void {
+		this.onSessionFork = cb;
+	}
+
 	setOnNewSessionInProject(cb: (project: { id: string; name: string; path: string }) => void): void {
 		this.onNewSessionInProject = cb;
 	}
@@ -482,7 +487,7 @@ export class Sidebar {
 		e.preventDefault();
 		e.stopPropagation();
 		const menuWidth = 170;
-		const menuHeight = target.kind === "workspace" ? 116 : 92;
+		const menuHeight = target.kind === "workspace" ? 116 : target.kind === "session" ? 132 : 92;
 		const padding = 8;
 		const x = Math.max(padding, Math.min(e.clientX, window.innerWidth - menuWidth - padding));
 		const y = Math.max(padding, Math.min(e.clientY, window.innerHeight - menuHeight - padding));
@@ -1032,7 +1037,7 @@ export class Sidebar {
 		this.openContextMenu(e, { kind: "workspace", workspaceId });
 	}
 
-	private runSessionContextAction(action: "rename" | "delete"): void {
+	private runSessionContextAction(action: "rename" | "delete" | "fork"): void {
 		const target = this.contextMenu?.target;
 		if (!target || target.kind !== "session") return;
 		this.closeContextMenu(false);
@@ -1043,6 +1048,10 @@ export class Sidebar {
 		}
 		if (action === "rename") {
 			this.startSessionRename(found.project, found.session);
+			return;
+		}
+		if (action === "fork") {
+			this.onSessionFork?.(found.project.id, found.session.path, found.session.name);
 			return;
 		}
 		void this.deleteSession(found.project, found.session);
@@ -1106,6 +1115,8 @@ export class Sidebar {
 		if (target.kind === "session") {
 			menuContent = html`
 				<div class="sidebar-context-menu" style=${`left:${menu.x}px;top:${menu.y}px`} @click=${(e: Event) => e.stopPropagation()}>
+					<button @click=${() => this.runSessionContextAction("fork")}>Fork from message…</button>
+					<div class="sidebar-context-menu-divider"></div>
 					<button @click=${() => this.runSessionContextAction("rename")}>Rename session</button>
 					<button class="danger" @click=${() => this.runSessionContextAction("delete")}>Delete session</button>
 				</div>
