@@ -2540,9 +2540,23 @@ export class ChatView {
 		this.render();
 	}
 
+	private deriveForkSessionName(sourceName: string): string {
+		const base = sourceName.trim() || "session";
+		return `fork-${base}`;
+	}
+
 	private async forkFrom(entryId: string): Promise<void> {
+		const sourceSessionName = this.historyViewerSessionLabel.trim() || this.state?.sessionName?.trim() || "";
+		const forkSessionName = this.deriveForkSessionName(sourceSessionName);
 		try {
 			const result = await rpcBridge.fork(entryId);
+			if (!result.cancelled) {
+				try {
+					await rpcBridge.setSessionName(forkSessionName);
+				} catch (renameErr) {
+					console.warn("Failed to rename fork session:", renameErr);
+				}
+			}
 			if (!result.cancelled && result.text) {
 				this.setInputText(result.text);
 			}
