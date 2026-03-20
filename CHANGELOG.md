@@ -6,6 +6,29 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+- Chat now shows a “Latest” jump button when auto-follow is unlocked, so you can scroll up during streaming and relock to the live tail on demand.
+- Settings now include an auto-rename model picker that writes `~/.pi/agent/extensions/pi-session-auto-rename.json` from currently available authenticated models.
+- Sidebar session context menu now includes **Fork from message…** which opens message history for the selected session.
+- Fork history now provides a direct **Fork** action on timeline entries (assistant entries fork from their preceding user prompt).
+
+### Fixed
+- Improved reasoning/thinking rendering compatibility by accepting both `thinking` and `reasoning` payload shapes during streaming updates and backend hydration.
+- Thinking dropdown text no longer starts with template-introduced leading whitespace.
+- Tool cards now hydrate outputs reliably from both tool execution events and streamed `toolResult` messages, with fallback matching for provider-specific tool call ids.
+- Extension notify handling now suppresses foreground notifications and throttles duplicate/burst notifications to reduce Control Center spam.
+- Extension method normalization now accepts `set_title`, `set_status`, and `set_widget`, and `setTitle` now attempts to persist session rename via RPC.
+
+### Changed
+- Slowed the working-status animation cadence, phrase rotation, and typewriter speed so each status line stays visible longer.
+- Working indicator now appears only before assistant text starts, and its Pi glyph style/animation matches the sidebar running Pi indicator.
+- Refined chat affordances: the “Latest” button is now a centered icon-only circle, and thinking previews use a calmer italic click-to-toggle presentation without a background panel plus a per-letter sweep animation while reasoning streams.
+- Thinking toggle interactions now preserve reading context better by storing/restoring scroll position and unlocking auto-follow on manual expand/collapse.
+- Fork browsing now opens in a tighter focused history mode that shows user + assistant context with a timeline-style list and minimal fork-only actions.
+- Fork timeline now keeps tool/thinking subentries scoped to assistant rows, collapses long tool lists behind an inline expand control, and lets you expand long message previews before choosing where to fork.
+- Fork actions now only appear on user entries and assistant entries with actual assistant text (tool-only assistant activity rows are no longer forkable).
+- Forked sessions are now auto-renamed to `fork-<source-session-name>` so they no longer appear as ambiguous duplicates in the sidebar list.
+
 ## [0.1.5] - 2026-03-19
 
 ### Fixed

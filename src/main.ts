@@ -2493,8 +2493,8 @@ function wireCommandPaletteBuiltins(): void {
 		},
 		{
 			name: "fork",
-			description: "Fork from previous user message",
-			action: async () => chatView?.openForkPicker(),
+			description: "Fork from previous message",
+			action: async () => chatView?.openHistoryViewerForFork({ loading: false, sessionName: null }),
 		},
 		{
 			name: "history",
@@ -3268,7 +3268,12 @@ function renderApp(): void {
 		);
 	});
 
-	sidebar.setOnSessionSelect((projectId, sessionPath, sessionName) => {
+	const activateSidebarSession = (
+		projectId: string,
+		sessionPath: string,
+		sessionName?: string,
+		options?: { label?: string; onActivated?: () => void | Promise<void>; onFailed?: (err: unknown) => void },
+	): void => {
 		const workspace = getActiveWorkspace();
 		const project = sidebar?.getProjectById(projectId);
 		if (!workspace || !project) return;
@@ -3300,13 +3305,34 @@ function renderApp(): void {
 				assertProjectTaskCurrent(version);
 				removeRuntimeKeys(oldRuntimeKeys.filter((key) => key !== activeSessionRuntimeKey));
 				await applyWorkspacePane(workspace);
+				if (options?.onActivated) {
+					await options.onActivated();
+				}
 			},
 			(err) => {
 				console.error("Failed to switch session:", err);
 				chatView?.notify("Failed to switch session", "error");
+				options?.onFailed?.(err);
 			},
-			{ label: "sidebar-session-select" },
+			{ label: options?.label ?? "sidebar-session-select" },
 		);
+	};
+
+	sidebar.setOnSessionSelect((projectId, sessionPath, sessionName) => {
+		activateSidebarSession(projectId, sessionPath, sessionName, { label: "sidebar-session-select" });
+	});
+
+	sidebar.setOnSessionFork((projectId, sessionPath, sessionName) => {
+		chatView?.openHistoryViewerForFork({ loading: true, sessionName });
+		activateSidebarSession(projectId, sessionPath, sessionName, {
+			label: "sidebar-session-fork",
+			onActivated: () => {
+				chatView?.openHistoryViewerForFork({ loading: false, sessionName });
+			},
+			onFailed: () => {
+				chatView?.openHistoryViewerForFork({ loading: false, sessionName });
+			},
+		});
 	});
 
 	sidebar.setOnSessionRename((projectId, sessionPath, _currentName, nextName) => {

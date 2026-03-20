@@ -37,12 +37,14 @@ interface ToolCallBlock {
 
 interface UiMessage {
 	id: string;
+	sessionEntryId?: string;
 	role: UiRole;
 	text: string;
 	toolCalls: ToolCallBlock[];
 	attachments?: PendingImage[];
 	thinking?: string;
 	thinkingExpanded?: boolean;
+	thinkingScrollTop?: number;
 	isStreaming?: boolean;
 	deliveryMode?: DeliveryMode;
 	label?: string;
@@ -65,6 +67,13 @@ interface ModelOption {
 interface ForkOption {
 	entryId: string;
 	text: string;
+}
+
+interface ForkTimelineRow {
+	main: UiMessage;
+	sourceIndex: number;
+	thinkingSnippets: string[];
+	tools: ToolCallBlock[];
 }
 
 interface SessionStatsSummary {
@@ -229,6 +238,15 @@ function uiIcon(name: "edit" | "retry" | "copy" | "attach" | "send" | "stop" | "
 	}
 }
 
+function piGlyphIcon(): TemplateResult {
+	return html`
+		<svg viewBox="0 0 16 16" aria-hidden="true">
+			<path d="M3.3 3.3H10.3V8H8V10.3H5.7V12.7H3.3Z"></path>
+			<path d="M10.3 8H12.7V12.7H10.3Z"></path>
+		</svg>
+	`;
+}
+
 export class ChatView {
 	private container: HTMLElement;
 	private messages: UiMessage[] = [];
@@ -265,9 +283,39 @@ export class ChatView {
 	private forkPickerOpen = false;
 	private forkOptions: ForkOption[] = [];
 	private historyViewerOpen = false;
+	private historyViewerMode: "browse" | "fork" = "browse";
+	private historyViewerLoading = false;
+	private historyViewerSessionLabel = "";
+	private forkEntryIdByMessageId = new Map<string, string>();
+	private forkTargetsRequestSeq = 0;
+	private forkExpandedMessageRows = new Set<string>();
+	private forkExpandedToolRows = new Set<string>();
 	private historyQuery = "";
 	private historyRoleFilter: UiRole | "all" = "all";
 	private quickActionsOpen = false;
+	private autoFollowChat = true;
+	private runHasAssistantText = false;
+	private readonly workingStatusPhrases = [
+		"starting",
+		"warming up",
+		"working on it",
+		"planning next steps",
+		"running tools",
+		"checking files",
+		"reading context",
+		"mapping dependencies",
+		"editing safely",
+		"verifying output",
+		"reviewing details",
+		"applying changes",
+		"thinking through",
+		"finalizing",
+		"wrapping up",
+	];
+	private workingStatusPhraseIndex = 0;
+	private workingStatusPhase: "typing" | "hold" = "typing";
+	private workingStatusCharCount = 0;
+	private workingStatusTimer: ReturnType<typeof setTimeout> | null = null;
 	private disconnectNoticeTimer: ReturnType<typeof setTimeout> | null = null;
 	private streamingReconcileTimer: ReturnType<typeof setTimeout> | null = null;
 	private sessionStats: SessionStatsSummary = {
@@ -358,6 +406,8 @@ export class ChatView {
 			this.bindingStatusText = null;
 			this.modelLoadRequestSeq += 1;
 			this.loadingModels = false;
+			this.runHasAssistantText = false;
+			this.clearWorkingStatusTimer(true);
 			void this.refreshWelcomeDashboard(true);
 		}
 		void this.refreshGitSummary(true);
@@ -374,6 +424,8 @@ export class ChatView {
 		this.lastBackendSessionFile = null;
 		this.lastBackendRefreshError = null;
 		this.pendingDeliveryMode = "prompt";
+		this.runHasAssistantText = false;
+		this.clearWorkingStatusTimer(true);
 		this.bindingStatusText = projectPath ? (statusText ?? "Loading session…") : null;
 		this.render();
 	}
@@ -460,6 +512,8 @@ export class ChatView {
 		this.unsubscribeEvents?.();
 		this.unsubscribeEvents = null;
 		this.cancelStreamingUiReconcile();
+		this.runHasAssistantText = false;
+		this.clearWorkingStatusTimer(true);
 		for (const unlisten of this.nativeFileDropUnlisteners) {
 			unlisten();
 		}
@@ -498,7 +552,24 @@ export class ChatView {
 			this.lastBackendRefreshError = null;
 			this.onStateChange?.(state);
 			this.messages = this.mapBackendMessages(backendMessages);
+			this.forkEntryIdByMessageId.clear();
 			this.lastAssistantContextTokens = this.deriveLatestAssistantContextTokens(backendMessages);
+			if (state.isStreaming) {
+				let lastUserIndex = -1;
+				for (let i = backendMessages.length - 1; i >= 0; i -= 1) {
+					if ((backendMessages[i].role as string) === "user") {
+						lastUserIndex = i;
+						break;
+					}
+				}
+				const streamWindow = lastUserIndex >= 0 ? backendMessages.slice(lastUserIndex + 1) : backendMessages;
+				this.runHasAssistantText = streamWindow.some((entry) => {
+					if ((entry.role as string) !== "assistant") return false;
+					return this.extractText((entry as Record<string, unknown>).content).trim().length > 0;
+				});
+			} else {
+				this.runHasAssistantText = false;
+			}
 			this.pendingDeliveryMode = state.isStreaming ? "steer" : "prompt";
 			this.bindingStatusText = null;
 			this.render();
@@ -530,6 +601,7 @@ export class ChatView {
 		for (const raw of backendMessages) {
 			const role = raw.role as string | undefined;
 			if (!role) continue;
+			const sessionEntryId = typeof raw.id === "string" && raw.id.trim().length > 0 ? raw.id.trim() : undefined;
 
 			switch (role) {
 				case "user": {
@@ -537,6 +609,7 @@ export class ChatView {
 					const attachments = this.extractImages(raw.content);
 					mapped.push({
 						id: uid("user"),
+						sessionEntryId,
 						role: "user",
 						text,
 						attachments,
@@ -558,8 +631,11 @@ export class ChatView {
 						if (type === "text" && typeof p.text === "string") {
 							text += p.text;
 						}
-						if (type === "thinking" && typeof p.thinking === "string") {
-							thinking += p.thinking;
+						const typeLower = (type ?? "").toLowerCase();
+						if (typeLower === "thinking" || typeLower === "reasoning" || typeLower.includes("thinking") || typeLower.includes("reason")) {
+							if (typeof p.thinking === "string") thinking += p.thinking;
+							else if (typeof p.reasoning === "string") thinking += p.reasoning;
+							else if (typeof p.text === "string") thinking += p.text;
 						}
 						if (type === "toolCall") {
 							const id = typeof p.id === "string" && p.id.trim().length > 0 ? p.id.trim() : uid("tc");
@@ -586,6 +662,7 @@ export class ChatView {
 
 					mapped.push({
 						id: uid("assistant"),
+						sessionEntryId,
 						role: "assistant",
 						text,
 						thinking: thinking || undefined,
@@ -596,7 +673,7 @@ export class ChatView {
 				}
 				case "toolResult": {
 					const toolCallId = raw.toolCallId as string | undefined;
-					const content = this.extractText(raw.content);
+					const content = this.extractToolOutput(raw.content ?? raw.result ?? raw);
 					const isError = Boolean(raw.isError);
 					if (toolCallId && toolCallMap.has(toolCallId)) {
 						const tool = toolCallMap.get(toolCallId)!;
@@ -607,8 +684,9 @@ export class ChatView {
 					} else {
 						mapped.push({
 							id: uid("toolResult"),
+							sessionEntryId,
 							role: "system",
-							text: `Tool result${isError ? " (error)" : ""}:\n${content}`,
+							text: `Tool result${isError ? " (error)" : ""}:\n${content || "(no output)"}`,
 							label: "tool-result",
 							toolCalls: [],
 						});
@@ -620,6 +698,7 @@ export class ChatView {
 					const output = typeof raw.output === "string" ? raw.output : "";
 					mapped.push({
 						id: uid("bash"),
+						sessionEntryId,
 						role: "system",
 						text: `!${command}\n${output}`,
 						label: "bash",
@@ -632,6 +711,7 @@ export class ChatView {
 					const summary = typeof raw.summary === "string" ? raw.summary : this.extractText(raw.content);
 					mapped.push({
 						id: uid(role),
+						sessionEntryId,
 						role: "system",
 						text: summary,
 						label: role === "branchSummary" ? "branch summary" : "compaction summary",
@@ -644,6 +724,7 @@ export class ChatView {
 					const content = this.extractText(raw.content);
 					mapped.push({
 						id: uid("custom"),
+						sessionEntryId,
 						role: "custom",
 						text: content,
 						label: customType,
@@ -683,6 +764,66 @@ export class ChatView {
 		return "";
 	}
 
+	private stringifyData(value: unknown): string {
+		try {
+			return JSON.stringify(value, null, 2);
+		} catch {
+			return String(value);
+		}
+	}
+
+	private extractToolOutput(payload: unknown, depth = 0): string {
+		if (depth > 6 || payload === null || typeof payload === "undefined") return "";
+		if (typeof payload === "string") return payload;
+		if (typeof payload === "number" || typeof payload === "boolean") return String(payload);
+		if (Array.isArray(payload)) {
+			const parts = payload
+				.map((item) => this.extractToolOutput(item, depth + 1).trim())
+				.filter(Boolean);
+			return parts.join("\n").trim();
+		}
+		if (typeof payload !== "object") return "";
+
+		const source = payload as Record<string, unknown>;
+		const textFirst = this.extractText(source.content ?? payload).trim();
+		const chunks: string[] = textFirst ? [textFirst] : [];
+		const append = (value: unknown): void => {
+			const text = this.extractToolOutput(value, depth + 1).trim();
+			if (!text) return;
+			if (!chunks.includes(text)) chunks.push(text);
+		};
+
+		for (const key of ["output", "stdout", "stderr", "result", "message", "error", "text", "delta", "reasoning", "thinking"]) {
+			if (key in source) append(source[key]);
+		}
+		if ("content" in source) append(source.content);
+		if ("parts" in source) append(source.parts);
+		if ("messages" in source) append(source.messages);
+
+		if (chunks.length > 0) return chunks.join("\n").trim();
+		return this.stringifyData(source);
+	}
+
+	private mergeStreamingText(current: string, partial: string | null, deltaCandidate: unknown): string {
+		const delta = typeof deltaCandidate === "string" ? deltaCandidate : "";
+		if (partial !== null) {
+			if (!current) return partial;
+			if (partial === current) return current;
+			if (partial.startsWith(current)) return partial;
+			if (current.startsWith(partial) && delta) return current + delta;
+			if (partial.length > current.length + 24) {
+				const overlap = current.slice(Math.max(0, current.length - 24));
+				if (!overlap || partial.includes(overlap)) return partial;
+			}
+		}
+		if (delta) return current + delta;
+		if (partial !== null) {
+			if (current.endsWith(partial)) return current;
+			return current + partial;
+		}
+		return current;
+	}
+
 	private extractImages(content: unknown): PendingImage[] {
 		if (!Array.isArray(content)) return [];
 		const images: PendingImage[] = [];
@@ -712,9 +853,11 @@ export class ChatView {
 			if (!part || typeof part !== "object") return null;
 			const p = part as Record<string, unknown>;
 			const type = typeof p.type === "string" ? p.type : "";
-			if (mode === "text" && type === "text" && typeof p.text === "string") return p.text;
-			if (mode === "thinking" && type === "thinking") {
+			const typeLower = type.toLowerCase();
+			if (mode === "text" && typeLower === "text" && typeof p.text === "string") return p.text;
+			if (mode === "thinking" && (typeLower.includes("thinking") || typeLower.includes("reason"))) {
 				if (typeof p.thinking === "string") return p.thinking;
+				if (typeof p.reasoning === "string") return p.reasoning;
 				if (typeof p.text === "string") return p.text;
 			}
 			return null;
@@ -898,8 +1041,10 @@ export class ChatView {
 					const type = typeof block.type === "string" ? block.type : "";
 					if (type === "text" && typeof block.text === "string") {
 						chars += block.text.length;
-					} else if (type === "thinking" && typeof block.thinking === "string") {
-						chars += block.thinking.length;
+					} else if (type === "thinking" || type === "reasoning") {
+						if (typeof block.thinking === "string") chars += block.thinking.length;
+						else if (typeof block.reasoning === "string") chars += block.reasoning.length;
+						else if (typeof block.text === "string") chars += block.text.length;
 					} else if (type === "toolCall") {
 						const name = typeof block.name === "string" ? block.name : "";
 						const args = JSON.stringify(block.arguments ?? {});
@@ -1519,16 +1664,28 @@ export class ChatView {
 		switch (type) {
 			case "agent_start":
 				this.pendingDeliveryMode = "steer";
+				this.runHasAssistantText = false;
+				if (this.state) {
+					this.state = { ...this.state, isStreaming: true };
+					this.onStateChange?.(this.state);
+				}
+				this.autoFollowChat = true;
 				this.onRunStateChange?.(true);
 				this.scheduleStreamingUiReconcile(2400);
 				this.render();
+				this.scrollToBottom();
 				break;
 
 			case "agent_end": {
 				this.cancelStreamingUiReconcile();
+				if (this.state) {
+					this.state = { ...this.state, isStreaming: false };
+					this.onStateChange?.(this.state);
+				}
 				const last = this.messages[this.messages.length - 1];
 				if (last && last.role === "assistant") last.isStreaming = false;
 				this.retryStatus = "";
+				this.runHasAssistantText = false;
 				this.onRunStateChange?.(false);
 				rpcBridge
 					.getState()
@@ -1549,20 +1706,53 @@ export class ChatView {
 
 			case "message_start": {
 				const msg = event.message as Record<string, unknown>;
-				if ((msg.role as string) === "assistant") {
+				const role = typeof msg.role === "string" ? msg.role : "";
+				if (role === "assistant") {
 					const last = this.messages[this.messages.length - 1];
 					if (last?.role === "assistant" && last.isStreaming) {
 						break;
 					}
+					const initialText = this.extractText(msg.content);
 					this.messages.push({
 						id: uid("assistant"),
 						role: "assistant",
-						text: "",
+						text: initialText,
 						toolCalls: [],
 						isStreaming: true,
 						thinkingExpanded: this.allThinkingExpanded,
 					});
+					if (initialText.trim().length > 0) this.runHasAssistantText = true;
 					this.render();
+					this.scrollToBottom();
+					break;
+				}
+
+				if (role === "toolResult") {
+					const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : "";
+					const output = this.extractToolOutput(msg.content ?? msg.result ?? msg);
+					const isError = Boolean(msg.isError);
+					const toolName = typeof msg.toolName === "string" ? msg.toolName : "";
+					let tool = toolCallId ? this.findToolCall(toolCallId) : null;
+					if (!tool && toolName) {
+						tool = this.findMostRecentRunningToolByName(toolName);
+					}
+					if (tool) {
+						tool.result = output || "(no output)";
+						tool.isError = isError;
+						tool.isRunning = false;
+						tool.streamingOutput = undefined;
+						tool.isExpanded = false;
+					} else {
+						this.messages.push({
+							id: uid("toolResult"),
+							role: "system",
+							text: `Tool result${isError ? " (error)" : ""}:\n${output || "(no output)"}`,
+							label: "tool-result",
+							toolCalls: [],
+						});
+					}
+					this.render();
+					this.scrollToBottom();
 				}
 				break;
 			}
@@ -1570,27 +1760,21 @@ export class ChatView {
 			case "message_update": {
 				const assistantEvent = event.assistantMessageEvent as Record<string, unknown>;
 				if (!assistantEvent) break;
-				const subtype = assistantEvent.type as string;
+				const subtype = typeof assistantEvent.type === "string" ? assistantEvent.type : "";
 				const last = this.messages[this.messages.length - 1];
 				if (!last || last.role !== "assistant") break;
 
 				if (subtype === "text_delta") {
 					const partialText = this.extractAssistantPartialContent(assistantEvent, "text");
-					if (partialText !== null) {
-						last.text = partialText;
-					} else {
-						last.text += (assistantEvent.delta as string) || "";
-					}
+					last.text = this.mergeStreamingText(last.text, partialText, assistantEvent.delta);
+					if (last.text.trim().length > 0) this.runHasAssistantText = true;
 					this.scheduleStreamingUiReconcile(1800);
 					this.render();
 					this.scrollToBottom();
-				} else if (subtype === "thinking_delta") {
+				} else if (subtype === "thinking_delta" || subtype === "reasoning_delta" || subtype.includes("thinking") || subtype.includes("reason")) {
 					const partialThinking = this.extractAssistantPartialContent(assistantEvent, "thinking");
-					if (partialThinking !== null) {
-						last.thinking = partialThinking;
-					} else {
-						last.thinking = (last.thinking || "") + ((assistantEvent.delta as string) || "");
-					}
+					const currentThinking = last.thinking || "";
+					last.thinking = this.mergeStreamingText(currentThinking, partialThinking, assistantEvent.delta);
 					this.scheduleStreamingUiReconcile(1800);
 					if ((last.thinking?.length || 0) % 100 === 0) this.render();
 				} else if (subtype === "toolcall_end") {
@@ -1650,8 +1834,11 @@ export class ChatView {
 				if (!toolCallId || !partialResult) break;
 				const tool = this.findToolCall(toolCallId);
 				if (!tool) break;
-				const text = this.extractText(partialResult.content);
-				tool.streamingOutput = text;
+				const partialText = this.extractToolOutput(partialResult);
+				if (partialText) {
+					const currentOutput = tool.streamingOutput ?? tool.result ?? "";
+					tool.streamingOutput = this.mergeStreamingText(currentOutput, partialText, partialResult.delta);
+				}
 				tool.isRunning = true;
 				this.render();
 				this.scrollToBottom();
@@ -1671,8 +1858,10 @@ export class ChatView {
 				if (typeof result === "string") {
 					tool.result = result;
 				} else if (result && typeof result === "object") {
-					const content = this.extractText((result as Record<string, unknown>).content);
-					tool.result = content || JSON.stringify(result, null, 2);
+					const content = this.extractToolOutput(result);
+					tool.result = content || "(no output)";
+				} else {
+					tool.result = tool.result || "(no output)";
 				}
 				tool.isExpanded = false;
 				this.render();
@@ -1764,6 +1953,21 @@ export class ChatView {
 			const message = this.messages[i];
 			const found = message.toolCalls.find((tc) => tc.id === id);
 			if (found) return found;
+		}
+		return null;
+	}
+
+	private findMostRecentRunningToolByName(name: string): ToolCallBlock | null {
+		const normalized = name.trim().toLowerCase();
+		if (!normalized) return null;
+		for (let i = this.messages.length - 1; i >= 0; i--) {
+			const message = this.messages[i];
+			for (let j = message.toolCalls.length - 1; j >= 0; j--) {
+				const tool = message.toolCalls[j];
+				if (tool.name.trim().toLowerCase() !== normalized) continue;
+				if (!tool.isRunning && tool.result) continue;
+				return tool;
+			}
 		}
 		return null;
 	}
@@ -2052,8 +2256,10 @@ export class ChatView {
 			attachments: images,
 			deliveryMode: mode,
 		});
+		this.autoFollowChat = true;
+		this.runHasAssistantText = false;
 		this.render();
-		this.scrollToBottom();
+		this.scrollToBottom(true);
 	}
 
 	private clearComposer(): void {
@@ -2220,6 +2426,7 @@ export class ChatView {
 
 	private clearStreamingUiState(): void {
 		this.cancelStreamingUiReconcile();
+		this.clearWorkingStatusTimer(true);
 		if (this.state) {
 			this.state = { ...this.state, isStreaming: false };
 			this.onStateChange?.(this.state);
@@ -2234,6 +2441,7 @@ export class ChatView {
 		}
 		this.retryStatus = "";
 		this.pendingDeliveryMode = "prompt";
+		this.runHasAssistantText = false;
 		this.onRunStateChange?.(false);
 	}
 
@@ -2332,15 +2540,32 @@ export class ChatView {
 		this.render();
 	}
 
+	private deriveForkSessionName(sourceName: string): string {
+		const base = sourceName.trim() || "session";
+		return `fork-${base}`;
+	}
+
 	private async forkFrom(entryId: string): Promise<void> {
+		const sourceSessionName = this.historyViewerSessionLabel.trim() || this.state?.sessionName?.trim() || "";
+		const forkSessionName = this.deriveForkSessionName(sourceSessionName);
 		try {
 			const result = await rpcBridge.fork(entryId);
+			if (!result.cancelled) {
+				try {
+					await rpcBridge.setSessionName(forkSessionName);
+				} catch (renameErr) {
+					console.warn("Failed to rename fork session:", renameErr);
+				}
+			}
 			if (!result.cancelled && result.text) {
 				this.setInputText(result.text);
 			}
 			await this.refreshFromBackend();
 			this.pushNotice(result.cancelled ? "Fork cancelled" : "Fork ready in editor", "success");
 			this.closeForkPicker();
+			if (this.historyViewerMode === "fork") {
+				this.closeHistoryViewer();
+			}
 		} catch (err) {
 			console.error("Failed to fork:", err);
 			this.pushNotice("Failed to fork session", "error");
@@ -2349,14 +2574,93 @@ export class ChatView {
 
 	openHistoryViewer(): void {
 		this.historyViewerOpen = true;
+		this.historyViewerMode = "browse";
+		this.historyViewerLoading = false;
+		this.historyViewerSessionLabel = "";
+		this.forkExpandedMessageRows.clear();
+		this.forkExpandedToolRows.clear();
 		this.render();
+	}
+
+	openHistoryViewerForFork(options?: { loading?: boolean; sessionName?: string | null }): void {
+		this.historyViewerOpen = true;
+		this.historyViewerMode = "fork";
+		this.historyViewerLoading = options?.loading ?? false;
+		this.historyViewerSessionLabel = options?.sessionName?.trim() || this.state?.sessionName?.trim() || "";
+		this.historyQuery = "";
+		this.historyRoleFilter = "all";
+		this.forkExpandedMessageRows.clear();
+		this.forkExpandedToolRows.clear();
+		this.render();
+		if (!this.historyViewerLoading) {
+			void this.loadForkTargetsForHistory();
+		}
 	}
 
 	private closeHistoryViewer(): void {
 		this.historyViewerOpen = false;
+		this.historyViewerMode = "browse";
+		this.historyViewerLoading = false;
+		this.historyViewerSessionLabel = "";
 		this.historyQuery = "";
 		this.historyRoleFilter = "all";
+		this.forkEntryIdByMessageId.clear();
+		this.forkExpandedMessageRows.clear();
+		this.forkExpandedToolRows.clear();
 		this.render();
+	}
+
+	private normalizeForkText(value: string): string {
+		return value.replace(/\s+/g, " ").trim();
+	}
+
+	private hydrateForkTargetsFromOptions(options: ForkOption[]): void {
+		const userMessages = this.messages.filter((msg) => msg.role === "user");
+		const byText = new Map<string, string[]>();
+		for (const option of options) {
+			const key = this.normalizeForkText(option.text);
+			if (!key) continue;
+			const queue = byText.get(key) ?? [];
+			queue.push(option.entryId);
+			byText.set(key, queue);
+		}
+
+		const map = new Map<string, string>();
+		for (const msg of userMessages) {
+			const key = this.normalizeForkText(msg.text);
+			const queue = byText.get(key);
+			if (queue && queue.length > 0) {
+				const entryId = queue.shift();
+				if (entryId) map.set(msg.id, entryId);
+				continue;
+			}
+			if (msg.sessionEntryId) {
+				map.set(msg.id, msg.sessionEntryId);
+			}
+		}
+
+		this.forkEntryIdByMessageId = map;
+	}
+
+	private async loadForkTargetsForHistory(): Promise<void> {
+		if (this.historyViewerMode !== "fork") return;
+		const requestId = ++this.forkTargetsRequestSeq;
+		this.historyViewerLoading = true;
+		this.render();
+		try {
+			const options = await rpcBridge.getForkMessages();
+			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
+			this.hydrateForkTargetsFromOptions(options);
+		} catch (err) {
+			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
+			console.error("Failed to load fork points:", err);
+			this.pushNotice("Failed to load fork points", "error");
+			this.forkEntryIdByMessageId.clear();
+		} finally {
+			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
+			this.historyViewerLoading = false;
+			this.render();
+		}
 	}
 
 	private revealMessage(messageId: string): void {
@@ -2365,6 +2669,11 @@ export class ChatView {
 		if (!target) return;
 		target.scrollIntoView({ behavior: "smooth", block: "center" });
 		this.closeHistoryViewer();
+	}
+
+	private thinkingContentElement(messageId: string): HTMLElement | null {
+		const escaped = (window as any).CSS?.escape ? (window as any).CSS.escape(messageId) : messageId;
+		return this.container.querySelector(`[data-thinking-for="${escaped}"]`) as HTMLElement | null;
 	}
 
 	toggleThinkingBlocks(): void {
@@ -2377,7 +2686,37 @@ export class ChatView {
 		this.render();
 	}
 
-	private scrollToBottom(): void {
+	private isNearChatBottom(target: HTMLElement, threshold = 84): boolean {
+		return target.scrollHeight - target.scrollTop - target.clientHeight <= threshold;
+	}
+
+	private handleChatScroll(event: Event): void {
+		const target = event.currentTarget as HTMLElement | null;
+		if (!target) return;
+		const nextFollow = this.isNearChatBottom(target);
+		if (this.autoFollowChat === nextFollow) return;
+		this.autoFollowChat = nextFollow;
+		this.render();
+	}
+
+	private jumpToLatest(): void {
+		this.autoFollowChat = true;
+		this.scrollToBottom(true);
+		this.render();
+	}
+
+	private renderJumpToLatest(): TemplateResult | typeof nothing {
+		if (this.autoFollowChat) return nothing;
+		return html`
+			<button class="chat-jump-latest" aria-label="Jump to latest" title="Jump to latest" @click=${() => this.jumpToLatest()}>
+				<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2v7.9"></path><path d="M5.2 8.3L8 11.1l2.8-2.8"></path></svg>
+			</button>
+		`;
+	}
+
+	private scrollToBottom(force = false): void {
+		const shouldFollow = force || this.autoFollowChat;
+		if (!shouldFollow) return;
 		requestAnimationFrame(() => {
 			if (!this.scrollContainer) return;
 			this.scrollContainer.scrollTop = this.scrollContainer.scrollHeight;
@@ -2401,6 +2740,101 @@ export class ChatView {
 		`;
 	}
 
+	private currentWorkingPhrase(): string {
+		const candidate = this.workingStatusPhrases[this.workingStatusPhraseIndex] ?? "working";
+		const normalized = candidate.trim();
+		return normalized.length > 0 ? normalized : "working";
+	}
+
+	private currentWorkingLabel(): string {
+		const phrase = this.currentWorkingPhrase();
+		const count = Math.max(1, Math.min(this.workingStatusCharCount, phrase.length));
+		return phrase.slice(0, count);
+	}
+
+	private clearWorkingStatusTimer(reset = false): void {
+		if (this.workingStatusTimer) {
+			clearTimeout(this.workingStatusTimer);
+		}
+		this.workingStatusTimer = null;
+		if (!reset) return;
+		this.workingStatusPhraseIndex = 0;
+		this.workingStatusPhase = "typing";
+		this.workingStatusCharCount = 0;
+	}
+
+	private scheduleWorkingStatusTick(delayMs: number): void {
+		this.clearWorkingStatusTimer(false);
+		this.workingStatusTimer = setTimeout(() => {
+			this.workingStatusTimer = null;
+			this.stepWorkingStatusText();
+		}, delayMs);
+	}
+
+	private stepWorkingStatusText(): void {
+		if (!this.shouldShowWorkingIndicator()) {
+			this.clearWorkingStatusTimer(true);
+			return;
+		}
+
+		const phrase = this.currentWorkingPhrase();
+		let nextDelay = 320;
+		if (this.workingStatusPhase === "typing") {
+			this.workingStatusCharCount = Math.min(phrase.length, this.workingStatusCharCount + 1);
+			if (this.workingStatusCharCount >= phrase.length) {
+				this.workingStatusPhase = "hold";
+				nextDelay = 4600;
+			} else {
+				nextDelay = 130 + Math.floor(Math.random() * 80);
+			}
+			this.render();
+		} else {
+			this.workingStatusPhase = "typing";
+			this.workingStatusPhraseIndex = (this.workingStatusPhraseIndex + 1) % this.workingStatusPhrases.length;
+			this.workingStatusCharCount = 0;
+			nextDelay = 920;
+			this.render();
+		}
+
+		this.scheduleWorkingStatusTick(nextDelay);
+	}
+
+	private syncWorkingStatusAnimation(): void {
+		if (this.shouldShowWorkingIndicator()) {
+			if (!this.workingStatusTimer) {
+				this.scheduleWorkingStatusTick(320);
+			}
+			return;
+		}
+		this.clearWorkingStatusTimer(true);
+	}
+
+	private renderWorkingChip(): TemplateResult {
+		return html`
+			<div class="chat-working-indicator" aria-label="Pi is working" title="Pi is working">
+				<span class="chat-working-pi" aria-hidden="true">${piGlyphIcon()}</span>
+				<span class="chat-working-text">
+					<span class="chat-working-label">${this.currentWorkingLabel()}</span>
+					<span class="chat-working-dots">...</span>
+				</span>
+			</div>
+		`;
+	}
+
+	private shouldShowWorkingIndicator(): boolean {
+		if (!this.currentIsStreaming()) return false;
+		return !this.runHasAssistantText;
+	}
+
+	private renderWorkingIndicatorRow(): TemplateResult {
+		return html`
+			<div class="chat-row assistant-row working-row">
+				<div class="message-shell assistant-message-shell">
+					<div class="assistant-block">${this.renderWorkingChip()}</div>
+				</div>
+			</div>
+		`;
+	}
 
 	private renderUserMessage(msg: UiMessage): TemplateResult {
 		return html`
@@ -2437,18 +2871,43 @@ export class ChatView {
 	private renderThinking(msg: UiMessage): TemplateResult | typeof nothing {
 		if (!msg.thinking) return nothing;
 		const expanded = msg.thinkingExpanded ?? false;
+		const label = "thinking…";
+		const toggleClass = `thinking-toggle ${msg.isStreaming ? "animating" : "done"}`;
+		const thinkingText = msg.thinking.replace(/^\s+/, "");
 		return html`
-			<div class="thinking-block">
+			<div class="thinking-block ${expanded ? "expanded" : ""}">
 				<button
-					class="thinking-toggle"
+					type="button"
+					class=${toggleClass}
+					aria-expanded=${expanded ? "true" : "false"}
+					aria-label="Toggle thinking"
+					title="Toggle thinking"
 					@click=${() => {
+						if (expanded) {
+							const content = this.thinkingContentElement(msg.id);
+							if (content) msg.thinkingScrollTop = content.scrollTop;
+						}
+						this.autoFollowChat = false;
 						msg.thinkingExpanded = !expanded;
 						this.render();
+						if (!expanded) {
+							requestAnimationFrame(() => {
+								const content = this.thinkingContentElement(msg.id);
+								if (!content) return;
+								content.scrollTop = msg.thinkingScrollTop ?? 0;
+							});
+						}
 					}}
 				>
-					${expanded ? "▾" : "▸"} Thinking
+					${label.split("").map((char, index) => html`<span class="thinking-char" style=${`--thinking-char-index:${index};`}>${char}</span>`)}
 				</button>
-				${expanded ? html`<div class="thinking-content">${msg.thinking}</div>` : nothing}
+				<div
+					class="thinking-content"
+					data-thinking-for=${msg.id}
+					@scroll=${(event: Event) => {
+						msg.thinkingScrollTop = (event.currentTarget as HTMLElement).scrollTop;
+					}}
+				>${thinkingText}</div>
 			</div>
 		`;
 	}
@@ -2456,8 +2915,9 @@ export class ChatView {
 	private renderToolCall(tc: ToolCallBlock): TemplateResult {
 		const statusClass = tc.isRunning ? "status-running" : tc.isError ? "status-error" : "status-ok";
 		const titleHint = tc.name === "bash" && typeof tc.args.command === "string" ? (tc.args.command as string) : "";
-		const output = tc.streamingOutput ?? tc.result;
-		const hasOutput = Boolean(output && output.length > 0);
+		const output = (tc.streamingOutput ?? tc.result ?? "").trimEnd();
+		const hasOutput = output.length > 0;
+		const placeholder = tc.isRunning ? "Waiting for tool output…" : "No output reported.";
 
 		return html`
 			<div class="tool-card">
@@ -2473,14 +2933,19 @@ export class ChatView {
 					${titleHint ? html`<span class="tool-hint" title=${titleHint}>${truncate(titleHint, 56)}</span>` : nothing}
 					<span class="tool-chevron">${tc.isExpanded ? "▾" : "▸"}</span>
 				</button>
-				${tc.isExpanded && hasOutput
-					? html`<pre class="tool-output">${output}${tc.isRunning ? html`<span class="streaming-inline"></span>` : nothing}</pre>`
+				${tc.isExpanded
+					? html`
+						<pre class="tool-output ${hasOutput ? "" : "tool-output-empty"}">${hasOutput ? output : placeholder}${tc.isRunning
+							? html`<span class="streaming-inline"></span>`
+							: nothing}</pre>
+					`
 					: nothing}
 			</div>
 		`;
 	}
 
 	private renderAssistantMessage(msg: UiMessage): TemplateResult {
+		const canCopy = Boolean(msg.text.trim().length > 0 || msg.toolCalls.length > 0 || (msg.thinking ?? "").trim().length > 0);
 		return html`
 			<div class="chat-row assistant-row" data-message-id=${msg.id}>
 				<div class="message-shell assistant-message-shell">
@@ -2488,15 +2953,17 @@ export class ChatView {
 						${this.renderThinking(msg)}
 						${msg.text
 							? html`
-								<div class="assistant-content">
-									<markdown-block .content=${msg.text} class=${msg.isStreaming ? "streaming-cursor" : ""}></markdown-block>
+								<div class="assistant-content ${msg.isStreaming ? "streaming-cursor" : ""}">
+									<markdown-block .content=${msg.text}></markdown-block>
 								</div>
 							`
 							: nothing}
 						${msg.toolCalls.map((tc) => this.renderToolCall(tc))}
 					</div>
 					<div class="message-actions">
-						<button class="message-action-btn icon" title="Copy message" @click=${() => this.copyMessage(msg)}>${uiIcon("copy")}</button>
+						${canCopy
+							? html`<button class="message-action-btn icon" title="Copy message" @click=${() => this.copyMessage(msg)}>${uiIcon("copy")}</button>`
+							: nothing}
 					</div>
 				</div>
 			</div>
@@ -2855,7 +3322,7 @@ export class ChatView {
 									<button @click=${() => {
 										this.quickActionsOpen = false;
 										this.render();
-										void this.openForkPicker();
+										this.openHistoryViewerForFork({ loading: false, sessionName: this.state?.sessionName ?? null });
 									}}>Fork from message</button>
 									<button @click=${() => {
 										this.quickActionsOpen = false;
@@ -3097,74 +3564,244 @@ export class ChatView {
 		`;
 	}
 
+	private buildForkTimelineRows(source: UiMessage[]): ForkTimelineRow[] {
+		const rows: ForkTimelineRow[] = [];
+		let latestAssistantRow: ForkTimelineRow | null = null;
+		for (let i = 0; i < source.length; i++) {
+			const msg = source[i];
+			if (!msg) continue;
+			if (msg.role === "user") {
+				rows.push({ main: msg, sourceIndex: i, thinkingSnippets: [], tools: [] });
+				latestAssistantRow = null;
+				continue;
+			}
+			if (msg.role !== "assistant") continue;
+
+			const text = msg.text.trim();
+			const thinking = (msg.thinking ?? "").trim();
+			const tools = msg.toolCalls ?? [];
+			if (text) {
+				const row: ForkTimelineRow = {
+					main: msg,
+					sourceIndex: i,
+					thinkingSnippets: thinking ? [thinking] : [],
+					tools: [...tools],
+				};
+				rows.push(row);
+				latestAssistantRow = row;
+				continue;
+			}
+
+			if (!thinking && tools.length === 0) continue;
+			if (!latestAssistantRow) {
+				latestAssistantRow = {
+					main: msg,
+					sourceIndex: i,
+					thinkingSnippets: [],
+					tools: [],
+				};
+				rows.push(latestAssistantRow);
+			}
+			if (thinking) latestAssistantRow.thinkingSnippets.push(thinking);
+			if (tools.length > 0) latestAssistantRow.tools.push(...tools);
+		}
+		return rows;
+	}
+
+	private forkRowKey(row: ForkTimelineRow): string {
+		const base = row.main.sessionEntryId ?? row.main.id;
+		return `${base}:${row.sourceIndex}`;
+	}
+
+	private toggleForkMessageExpanded(rowKey: string): void {
+		if (this.forkExpandedMessageRows.has(rowKey)) {
+			this.forkExpandedMessageRows.delete(rowKey);
+		} else {
+			this.forkExpandedMessageRows.add(rowKey);
+		}
+		this.render();
+	}
+
+	private toggleForkToolsExpanded(rowKey: string): void {
+		if (this.forkExpandedToolRows.has(rowKey)) {
+			this.forkExpandedToolRows.delete(rowKey);
+		} else {
+			this.forkExpandedToolRows.add(rowKey);
+		}
+		this.render();
+	}
+
+	private forkRowPreview(row: ForkTimelineRow): string {
+		const normalized = this.messagePreview(row.main).replace(/\s+/g, " ").trim();
+		if (normalized && normalized !== "(empty message)") return normalized;
+		if (row.main.role === "assistant" && (row.thinkingSnippets.length > 0 || row.tools.length > 0)) {
+			return "assistant activity";
+		}
+		return normalized || "(empty message)";
+	}
+
+	private resolveForkEntryId(messages: UiMessage[], index: number): string | null {
+		const current = messages[index];
+		if (!current) return null;
+		if (current.role === "user") {
+			return this.forkEntryIdByMessageId.get(current.id) ?? current.sessionEntryId ?? null;
+		}
+		for (let i = index; i >= 0; i--) {
+			const candidate = messages[i];
+			if (!candidate || candidate.role !== "user") continue;
+			const entryId = this.forkEntryIdByMessageId.get(candidate.id) ?? candidate.sessionEntryId;
+			if (entryId) return entryId;
+		}
+		return null;
+	}
+
 	private renderHistoryViewer(): TemplateResult | typeof nothing {
 		if (!this.historyViewerOpen) return nothing;
 
+		const forkMode = this.historyViewerMode === "fork";
 		const query = this.historyQuery.trim().toLowerCase();
-		const filtered = this.messages.filter((msg) => {
-			if (this.historyRoleFilter !== "all" && msg.role !== this.historyRoleFilter) return false;
-			if (!query) return true;
-			const haystack = `${msg.role} ${msg.label || ""} ${this.messagePreview(msg)}`.toLowerCase();
-			return haystack.includes(query);
-		});
-
+		const sourceMessages: UiMessage[] = forkMode
+			? this.messages.filter((msg) => msg.role === "user" || msg.role === "assistant")
+			: this.messages;
+		const forkTimelineRows: ForkTimelineRow[] = forkMode ? this.buildForkTimelineRows(sourceMessages) : [];
+		const filteredRows: ForkTimelineRow[] = forkMode
+			? forkTimelineRows.filter((row) => {
+				if (!query) return true;
+				const toolsText = row.tools
+					.map((tc) => `${tc.name} ${(tc.result ?? tc.streamingOutput ?? "").toString()}`)
+					.join(" ");
+				const thinkingText = row.thinkingSnippets.join(" ");
+				const haystack = `${row.main.role} ${row.main.label || ""} ${this.messagePreview(row.main)} ${thinkingText} ${toolsText}`.toLowerCase();
+				return haystack.includes(query);
+			})
+			: [];
+		const filteredMessages: UiMessage[] = forkMode
+			? []
+			: sourceMessages.filter((msg) => {
+				if (this.historyRoleFilter !== "all" && msg.role !== this.historyRoleFilter) return false;
+				if (!query) return true;
+				const haystack = `${msg.role} ${msg.label || ""} ${this.messagePreview(msg)}`.toLowerCase();
+				return haystack.includes(query);
+			});
 		return html`
 			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.closeHistoryViewer()}>
-				<div class="overlay-card history-card">
+				<div class="overlay-card history-card ${forkMode ? "fork-mode" : ""}">
 					<div class="overlay-header">
-						<div>Session history</div>
+						<div>
+							<div>${forkMode ? "Fork from message" : "Session history"}</div>
+							${forkMode
+								? html`<div class="history-subtitle">${this.historyViewerSessionLabel || "Current session"}</div>`
+								: nothing}
+						</div>
 						<button @click=${() => this.closeHistoryViewer()}>✕</button>
 					</div>
-					<div class="history-controls">
+					<div class="history-controls ${forkMode ? "fork" : ""}">
 						<input
 							type="text"
-							placeholder="Search messages"
+							placeholder=${forkMode ? "Search visible messages" : "Search messages"}
 							.value=${this.historyQuery}
 							@input=${(e: Event) => {
 								this.historyQuery = (e.target as HTMLInputElement).value;
 								this.render();
 							}}
 						/>
-						<select
-							class="settings-select"
-							.value=${this.historyRoleFilter}
-							@change=${(e: Event) => {
-								this.historyRoleFilter = (e.target as HTMLSelectElement).value as UiRole | "all";
-								this.render();
-							}}
-						>
-							<option value="all">all roles</option>
-							<option value="user">user</option>
-							<option value="assistant">assistant</option>
-							<option value="system">system</option>
-							<option value="custom">custom</option>
-						</select>
+						${forkMode
+							? nothing
+							: html`
+								<select
+									class="settings-select"
+									.value=${this.historyRoleFilter}
+									@change=${(e: Event) => {
+										this.historyRoleFilter = (e.target as HTMLSelectElement).value as UiRole | "all";
+										this.render();
+									}}
+								>
+									<option value="all">all roles</option>
+									<option value="user">user</option>
+									<option value="assistant">assistant</option>
+									<option value="system">system</option>
+									<option value="custom">custom</option>
+								</select>
+							`}
 					</div>
-					<div class="overlay-body history-list">
-						${filtered.length === 0
-							? html`<div class="overlay-empty">No messages match your filters.</div>`
-							: filtered.map(
-									(msg, idx) => html`
-										<div class="history-item">
-											<button class="history-jump" @click=${() => this.revealMessage(msg.id)}>
-												<div class="history-meta">
-													<span class="history-role role-${msg.role}">${msg.role}</span>
-													<span>#${idx + 1}</span>
+					<div class="overlay-body history-list ${forkMode ? "fork-history-list" : ""}">
+						${this.historyViewerLoading
+							? html`<div class="overlay-empty">Loading session history…</div>`
+							: (forkMode ? filteredRows.length === 0 : filteredMessages.length === 0)
+								? html`<div class="overlay-empty">${forkMode ? "No messages available for forking." : "No messages match your filters."}</div>`
+								: forkMode
+									? filteredRows.map((row, idx) => {
+											const msg = row.main;
+											const rowKey = this.forkRowKey(row);
+											const forkEntryId = this.resolveForkEntryId(sourceMessages, row.sourceIndex);
+											const rowCanFork = Boolean(forkEntryId) && (msg.role === "user" || msg.text.trim().length > 0);
+											const fullPreview = this.forkRowPreview(row);
+											const messageExpanded = this.forkExpandedMessageRows.has(rowKey);
+											const canExpandMessage = fullPreview.length > 220;
+											const previewText = messageExpanded ? fullPreview : truncate(fullPreview, 220);
+											const thinkingSnippets = row.thinkingSnippets
+												.map((snippet: string) => snippet.replace(/\s+/g, " ").trim())
+												.filter(Boolean)
+												.map((snippet: string) => truncate(snippet, 140));
+											const tools = row.tools;
+											const toolsExpanded = this.forkExpandedToolRows.has(rowKey);
+											const visibleTools = toolsExpanded ? tools : tools.slice(0, 3);
+											const hiddenToolCount = Math.max(0, tools.length - visibleTools.length);
+											return html`
+												<div class="fork-history-item role-${msg.role}">
+													<div class="fork-history-rail" aria-hidden="true">
+														<span class="fork-history-dot"></span>
+														${idx < filteredRows.length - 1 ? html`<span class="fork-history-line"></span>` : nothing}
+													</div>
+													<div class="fork-history-main">
+														<div class="history-meta">
+															<span class="history-role role-${msg.role}">${msg.role}</span>
+															<span>#${idx + 1}</span>
+														</div>
+														<div class="history-preview ${messageExpanded ? "expanded" : ""}">${previewText}</div>
+														${canExpandMessage
+															? html`<button class="fork-inline-toggle" @click=${() => this.toggleForkMessageExpanded(rowKey)}>${messageExpanded ? "Show less" : "Show full message"}</button>`
+															: nothing}
+														${thinkingSnippets.length > 0 || tools.length > 0
+															? html`
+																<div class="fork-history-subentries">
+																	${thinkingSnippets.map(
+																		(snippet: string) => html`<div class="fork-history-subentry thinking"><span class="fork-subentry-label">thinking</span><span class="fork-subentry-preview">${snippet}</span></div>`,
+																	)}
+																	${visibleTools.map((tc: ToolCallBlock) => {
+																		const toolStatus = tc.isError ? "error" : tc.isRunning ? "running" : "done";
+																		const rawToolPreview = (tc.result ?? tc.streamingOutput ?? "").replace(/\s+/g, " ").trim();
+																		const toolPreview = toolsExpanded ? truncate(rawToolPreview, 240) : truncate(rawToolPreview, 96);
+																		return html`<div class="fork-history-subentry tool"><span class="fork-subentry-label">tool</span><span class="fork-subentry-name">${tc.name} · ${toolStatus}</span>${toolPreview ? html`<span class="fork-subentry-preview">${toolPreview}</span>` : nothing}</div>`;
+																	})}
+																	${tools.length > 3
+																		? html`<button class="fork-inline-toggle" @click=${() => this.toggleForkToolsExpanded(rowKey)}>${toolsExpanded ? "Show fewer tools" : `Show ${hiddenToolCount} more tools`}</button>`
+																		: nothing}
+																</div>
+															`
+															: nothing}
+													</div>
+													<div class="fork-history-actions">
+														${rowCanFork && forkEntryId
+															? html`<button class="message-action-btn" @click=${() => void this.forkFrom(forkEntryId)} title=${msg.role === "assistant" ? "Fork from preceding user message" : "Fork from this user message"}>Fork</button>`
+															: nothing}
+													</div>
 												</div>
-												<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 180)}</div>
-											</button>
-											<div class="history-item-actions">
-												${msg.role === "user"
-													? html`<button class="message-action-btn" @click=${() => {
-														this.editUserMessage(msg);
-														this.closeHistoryViewer();
-													}}>Load</button>`
-													: nothing}
-												<button class="message-action-btn" @click=${() => this.copyMessage(msg)}>Copy</button>
-											</div>
-										</div>
-									`,
-								)}
+											`;
+									  })
+									: filteredMessages.map(
+											(msg: UiMessage, idx: number) => html`
+												<div class="history-item">
+													<button class="history-jump" @click=${() => this.revealMessage(msg.id)}>
+														<div class="history-meta">
+															<span class="history-role role-${msg.role}">${msg.role}</span>
+															<span>#${idx + 1}</span>
+														</div>
+														<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 200)}</div>
+													</button>
+												</div>
+											`,
+									  )}
 					</div>
 				</div>
 			</div>
@@ -3174,6 +3811,7 @@ export class ChatView {
 	private doRender(): void {
 		const hasProject = Boolean(this.projectPath);
 		const hasMessages = this.messages.length > 0;
+		const showWorkingIndicator = hasProject && this.shouldShowWorkingIndicator();
 		if (!hasProject && !this.welcomeDashboard.loading && this.welcomeDashboard.updatedAt === 0) {
 			void this.refreshWelcomeDashboard();
 		}
@@ -3208,7 +3846,7 @@ export class ChatView {
 					this.handleDroppedDataTransfer(e.dataTransfer ?? null);
 				}}
 			>
-				<div class="chat-scroll ${hasProject ? "" : "welcome-scroll"}" id="chat-scroll">
+				<div class="chat-scroll ${hasProject ? "" : "welcome-scroll"}" id="chat-scroll" @scroll=${(e: Event) => this.handleChatScroll(e)}>
 					${!hasProject
 						? this.renderWelcomeDashboard()
 						: hasMessages
@@ -3220,10 +3858,12 @@ export class ChatView {
 							: this.bindingStatusText
 								? this.renderBindingState()
 								: this.renderEmptyState()}
+					${showWorkingIndicator ? this.renderWorkingIndicatorRow() : nothing}
 				</div>
 				${hasProject ? this.renderComposer() : nothing}
 				${hasProject ? this.renderForkPicker() : nothing}
 				${hasProject ? this.renderHistoryViewer() : nothing}
+				${hasProject ? this.renderJumpToLatest() : nothing}
 				${this.renderNotices()}
 			</div>
 		`;
@@ -3234,6 +3874,8 @@ export class ChatView {
 
 	render(): void {
 		this.doRender();
+		this.scrollToBottom();
+		this.syncWorkingStatusAnimation();
 	}
 
 	notify(text: string, kind: "info" | "success" | "error" = "info"): void {
