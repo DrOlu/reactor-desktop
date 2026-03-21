@@ -202,6 +202,7 @@ export class Sidebar {
 	private workspaceSwipeAccumulatorX = 0;
 	private workspaceSwipeLastInputAt = 0;
 	private workspaceSwipeLastSwitchAt = 0;
+	private workspaceSwipeGestureConsumed = false;
 	private workspaceHydrationToken = 0;
 	private projectEmojiPickerProjectId: string | null = null;
 	private projectEmojiPickerX = 0;
@@ -426,6 +427,7 @@ export class Sidebar {
 		}
 		this.workspaceSwipeAccumulatorX = 0;
 		this.workspaceSwipeLastInputAt = 0;
+		this.workspaceSwipeGestureConsumed = false;
 		this.render();
 		if (this.workspaceRenameDraft && this.workspaceRenameDraft.workspaceId === this.activeWorkspaceId) {
 			this.focusWorkspaceRenameInput(this.workspaceRenameDraft.workspaceId);
@@ -2642,6 +2644,13 @@ export class Sidebar {
 		if (event.defaultPrevented) return;
 		if (this.workspaces.length <= 1) return;
 		if (this.pendingWorkspaceDragId || this.draggingWorkspaceId) return;
+
+		const now = Date.now();
+		if (now - this.workspaceSwipeLastInputAt > WORKSPACE_SWIPE_IDLE_MS) {
+			this.workspaceSwipeAccumulatorX = 0;
+			this.workspaceSwipeGestureConsumed = false;
+		}
+
 		if (!this.shouldHandleWorkspaceSwipe(event.target as HTMLElement | null)) {
 			this.workspaceSwipeAccumulatorX = 0;
 			return;
@@ -2653,13 +2662,15 @@ export class Sidebar {
 			return;
 		}
 
-		const now = Date.now();
-		if (now - this.workspaceSwipeLastInputAt > WORKSPACE_SWIPE_IDLE_MS) {
-			this.workspaceSwipeAccumulatorX = 0;
-		}
 		this.workspaceSwipeLastInputAt = now;
-		this.workspaceSwipeAccumulatorX += deltaX;
 
+		if (this.workspaceSwipeGestureConsumed) {
+			event.preventDefault();
+			event.stopPropagation();
+			return;
+		}
+
+		this.workspaceSwipeAccumulatorX += deltaX;
 		if (Math.abs(this.workspaceSwipeAccumulatorX) < WORKSPACE_SWIPE_THRESHOLD_PX) {
 			return;
 		}
@@ -2673,6 +2684,7 @@ export class Sidebar {
 		const direction: 1 | -1 = this.workspaceSwipeAccumulatorX > 0 ? 1 : -1;
 		this.workspaceSwipeAccumulatorX = 0;
 		this.workspaceSwipeLastSwitchAt = now;
+		this.workspaceSwipeGestureConsumed = true;
 		this.switchWorkspaceByOffset(direction);
 	}
 
