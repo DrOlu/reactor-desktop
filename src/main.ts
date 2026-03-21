@@ -1260,14 +1260,15 @@ function defaultWorkspace(): WorkspaceState {
 	};
 }
 
-function createWorkspace(title?: string): WorkspaceState {
+function createWorkspace(title?: string, emoji?: string | null): WorkspaceState {
 	const seedSessionTab = createSessionTab(NEW_SESSION_TAB_TITLE, null);
 	const id = uid("workspace");
+	const normalizedEmoji = typeof emoji === "string" && emoji.trim().length > 0 ? emoji.trim() : pickWorkspaceDefaultEmoji(id);
 	return {
 		id,
 		title: title || `Workspace ${nextWorkspaceIndex()}`,
 		color: null,
-		emoji: pickWorkspaceDefaultEmoji(id),
+		emoji: normalizedEmoji,
 		pinned: false,
 		leftMode: "projects",
 		pane: "chat",
@@ -1284,11 +1285,14 @@ function createWorkspace(title?: string): WorkspaceState {
 }
 
 function normalizeWorkspaceOrder(): boolean {
-	const before = workspaces.map((workspace) => workspace.id).join("|");
-	const pinned = workspaces.filter((workspace) => workspace.pinned);
-	const unpinned = workspaces.filter((workspace) => !workspace.pinned);
-	workspaces = [...pinned, ...unpinned];
-	return before !== workspaces.map((workspace) => workspace.id).join("|");
+	let changed = false;
+	for (const workspace of workspaces) {
+		if (workspace.pinned) {
+			workspace.pinned = false;
+			changed = true;
+		}
+	}
+	return changed;
 }
 
 function applyWorkspaceTabOrder(orderedIds: string[]): boolean {
@@ -1302,18 +1306,8 @@ function applyWorkspaceTabOrder(orderedIds: string[]): boolean {
 	return before !== workspaces.map((workspace) => workspace.id).join("|");
 }
 
-function setWorkspacePinned(workspaceId: string, pinned: boolean): boolean {
-	const index = workspaces.findIndex((workspace) => workspace.id === workspaceId);
-	if (index === -1) return false;
-	const workspace = workspaces[index];
-	if (workspace.pinned === pinned) return false;
-	workspace.pinned = pinned;
-	if (pinned) {
-		workspaces.splice(index, 1);
-		workspaces.unshift(workspace);
-	}
-	normalizeWorkspaceOrder();
-	return true;
+function setWorkspacePinned(_workspaceId: string, _pinned: boolean): boolean {
+	return false;
 }
 
 function persistWorkspaces(): void {
@@ -1412,7 +1406,7 @@ function loadWorkspaces(): void {
 						title: typeof w.title === "string" && w.title.trim().length > 0 ? w.title : `Workspace ${idx + 1}`,
 						color: typeof w.color === "string" && w.color.trim().length > 0 ? w.color : null,
 						emoji: typeof w.emoji === "string" && w.emoji.trim().length > 0 ? w.emoji.trim() : null,
-						pinned: Boolean(w.pinned),
+						pinned: false,
 						leftMode: w.leftMode === "files" ? "files" : "projects",
 						pane: w.pane === "file" || w.pane === "packages" || w.pane === "terminal" ? w.pane : "chat",
 						activeProjectId: normalizeStoredId(w.activeProjectId),
@@ -1476,7 +1470,7 @@ function syncWorkspaceTabsBar(): void {
 		title: workspace.title,
 		color: workspace.color,
 		emoji: workspace.emoji,
-		pinned: workspace.pinned,
+		pinned: false,
 		closable: true,
 	}));
 	workspaceTabsBar?.setTabs(workspaceItems, activeWorkspaceId);
@@ -2549,6 +2543,7 @@ function setupKeyboardShortcuts(): void {
 		const isShift = e.shiftKey;
 		const target = e.target as HTMLElement;
 		const isInput = target.tagName === "INPUT" || target.tagName === "TEXTAREA";
+		if (e.defaultPrevented) return;
 
 		if (isCtrlOrMeta && e.key.toLowerCase() === "n") {
 			e.preventDefault();
@@ -2653,7 +2648,26 @@ function setupKeyboardShortcuts(): void {
 		}
 
 		if (e.key === "Escape") {
-			chatView?.abortCurrentRun();
+			if (commandPalette?.isVisible()) {
+				e.preventDefault();
+				commandPalette.close();
+				return;
+			}
+			if (sessionBrowser?.isVisible()) {
+				e.preventDefault();
+				sessionBrowser.close();
+				return;
+			}
+			if (shortcutsPanel?.isVisible()) {
+				e.preventDefault();
+				shortcutsPanel.close();
+				return;
+			}
+			if (settingsPanel?.isVisible()) {
+				e.preventDefault();
+				settingsPanel.close();
+				return;
+			}
 			return;
 		}
 
@@ -3014,8 +3028,10 @@ function renderApp(): void {
 		);
 	});
 
-	sidebar.setOnWorkspaceCreate(() => {
-		const workspace = createWorkspace();
+	sidebar.setOnWorkspaceCreate((draft) => {
+		const title = draft?.title?.trim();
+		const emoji = draft?.emoji ?? null;
+		const workspace = createWorkspace(title && title.length > 0 ? title : undefined, emoji);
 		workspaces.push(workspace);
 		activeWorkspaceId = workspace.id;
 		persistWorkspaces();
@@ -3041,11 +3057,6 @@ function renderApp(): void {
 		syncWorkspaceTabsBar();
 	});
 
-	sidebar.setOnWorkspacePin((workspaceId, pinned) => {
-		if (!setWorkspacePinned(workspaceId, pinned)) return;
-		persistWorkspaces();
-		syncWorkspaceTabsBar();
-	});
 
 	sidebar.setOnWorkspaceRename((workspaceId, nextTitle) => {
 		const workspace = workspaces.find((entry) => entry.id === workspaceId);
