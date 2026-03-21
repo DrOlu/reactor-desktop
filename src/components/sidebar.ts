@@ -202,6 +202,7 @@ export class Sidebar {
 	private workspaceSwipeAccumulatorX = 0;
 	private workspaceSwipeLastInputAt = 0;
 	private workspaceSwipeLastSwitchAt = 0;
+	private workspaceHydrationToken = 0;
 	private projectEmojiPickerProjectId: string | null = null;
 	private projectEmojiPickerX = 0;
 	private projectEmojiPickerY = 0;
@@ -265,7 +266,8 @@ export class Sidebar {
 		this.loadSidebarState();
 		this.loadPersistedProjects();
 		this.render();
-		void this.hydrateProjects();
+		this.workspaceHydrationToken += 1;
+		void this.hydrateProjects(this.workspaceHydrationToken);
 	}
 
 	private loadSidebarState(): void {
@@ -288,6 +290,9 @@ export class Sidebar {
 		const nextKey = workspaceStorageKey(workspaceId);
 		if (this.storageKey === nextKey) return;
 
+		this.workspaceHydrationToken += 1;
+		const hydrationToken = this.workspaceHydrationToken;
+
 		this.storageKey = nextKey;
 		this.query = "";
 		this.projects = [];
@@ -299,6 +304,8 @@ export class Sidebar {
 		this.fileTrees.clear();
 		this.fileTreeErrors.clear();
 		this.loadingFileTreeForProject.clear();
+		this.sessionLoadsInFlight.clear();
+		this.sessionReloadQueued.clear();
 		this.openProjectMenuId = null;
 		this.modeFilterMenuOpen = false;
 		this.workspaceMenuOpen = false;
@@ -319,7 +326,7 @@ export class Sidebar {
 
 		this.loadPersistedProjects();
 		this.render();
-		await this.hydrateProjects();
+		void this.hydrateProjects(hydrationToken);
 	}
 
 	toggleCollapsed(): void {
@@ -1293,12 +1300,18 @@ export class Sidebar {
 		`;
 	}
 
-	private async hydrateProjects(): Promise<void> {
-		await Promise.all(this.projects.map((project) => this.refreshProjectPathStatus(project.id)));
+	private isWorkspaceHydrationCurrent(hydrationToken?: number): boolean {
+		return typeof hydrationToken !== "number" || hydrationToken === this.workspaceHydrationToken;
+	}
+
+	private async hydrateProjects(hydrationToken = this.workspaceHydrationToken): Promise<void> {
+		if (!this.isWorkspaceHydrationCurrent(hydrationToken)) return;
+		await Promise.all(this.projects.map((project) => this.refreshProjectPathStatus(project.id, hydrationToken)));
+		if (!this.isWorkspaceHydrationCurrent(hydrationToken)) return;
 		if (this.activeProjectId) {
-			void this.loadSessionsForProject(this.activeProjectId);
+			void this.loadSessionsForProject(this.activeProjectId, { hydrationToken });
 		}
-		if (this.mode === "files") {
+		if (this.mode === "files" && this.isWorkspaceHydrationCurrent(hydrationToken)) {
 			void this.ensureFileTreeForActiveProject();
 		}
 	}
@@ -1342,7 +1355,8 @@ export class Sidebar {
 		this.render();
 	}
 
-	private async refreshProjectPathStatus(projectId: string): Promise<void> {
+	private async refreshProjectPathStatus(projectId: string, hydrationToken?: number): Promise<void> {
+		if (!this.isWorkspaceHydrationCurrent(hydrationToken)) return;
 		const project = this.projects.find((p) => p.id === projectId);
 		if (!project) return;
 		project.checkingPath = true;
@@ -1350,11 +1364,21 @@ export class Sidebar {
 
 		try {
 			const { exists } = await import("@tauri-apps/plugin-fs");
-			project.pathExists = await exists(project.path);
+			const pathExists = await exists(project.path);
+			if (!this.isWorkspaceHydrationCurrent(hydrationToken) || !this.projects.includes(project)) {
+				return;
+			}
+			project.pathExists = pathExists;
 		} catch (err) {
+			if (!this.isWorkspaceHydrationCurrent(hydrationToken) || !this.projects.includes(project)) {
+				return;
+			}
 			console.warn("Failed to verify project path:", err);
 			project.pathExists = null;
 		} finally {
+			if (!this.isWorkspaceHydrationCurrent(hydrationToken) || !this.projects.includes(project)) {
+				return;
+			}
 			project.checkingPath = false;
 			this.render();
 		}
@@ -1402,7 +1426,10 @@ export class Sidebar {
 		}
 	}
 
-	private async loadSessionsForProject(projectId: string, options?: { silent?: boolean }): Promise<void> {
+	private async loadSessionsForProject(projectId: string, options?: { silent?: boolean; hydrationToken?: number }): Promise<void> {
+		const hydrationToken = options?.hydrationToken;
+		if (!this.isWorkspaceHydrationCurrent(hydrationToken)) return;
+
 		const existingLoad = this.sessionLoadsInFlight.get(projectId);
 		if (existingLoad) {
 			this.sessionReloadQueued.add(projectId);
@@ -1410,8 +1437,10 @@ export class Sidebar {
 		}
 
 		const run = (async () => {
+			if (!this.isWorkspaceHydrationCurrent(hydrationToken)) return;
 			const project = this.projects.find((p) => p.id === projectId);
 			if (!project) return;
+			const isStale = () => !this.isWorkspaceHydrationCurrent(hydrationToken) || !this.projects.includes(project);
 			const silent = options?.silent === true;
 			const now = Date.now();
 			if (silent && project.sessionsLoaded && now - project.lastSessionsLoadedAt < 2200) {
@@ -1420,7 +1449,9 @@ export class Sidebar {
 			const loadingBefore = project.loadingSessions;
 			if (!silent) {
 				project.loadingSessions = true;
-				this.render();
+				if (!isStale()) {
+					this.render();
+				}
 			}
 
 			const hadLoadedSessions = project.sessionsLoaded;
@@ -1436,6 +1467,7 @@ export class Sidebar {
 					tokens: number;
 					cost: number;
 				}>>("list_sessions");
+				if (isStale()) return;
 
 				const projectPath = normalizePath(project.path);
 				const byProject = sessions.filter((s) => {
@@ -1473,10 +1505,12 @@ export class Sidebar {
 					scannedByPath.set(normalizePath(entry.path), entry);
 				}
 
+				if (isStale()) return;
 				project.sessions = [...scannedByPath.values()];
 				project.sessionsLoaded = true;
 				project.lastSessionsLoadedAt = Date.now();
 			} catch (err) {
+				if (isStale()) return;
 				console.error("Failed to load sessions:", err);
 				if (!silent) {
 					project.sessions = [];
@@ -1486,6 +1520,7 @@ export class Sidebar {
 					project.lastSessionsLoadedAt = 0;
 				}
 			} finally {
+				if (isStale()) return;
 				project.loadingSessions = silent ? loadingBefore : false;
 				this.render();
 			}
@@ -1496,11 +1531,14 @@ export class Sidebar {
 			await run;
 		} finally {
 			this.sessionLoadsInFlight.delete(projectId);
-			if (this.sessionReloadQueued.has(projectId)) {
+			if (this.sessionReloadQueued.has(projectId) && this.isWorkspaceHydrationCurrent(hydrationToken)) {
 				this.sessionReloadQueued.delete(projectId);
 				queueMicrotask(() => {
-					void this.loadSessionsForProject(projectId, { silent: true });
+					if (!this.isWorkspaceHydrationCurrent(hydrationToken)) return;
+					void this.loadSessionsForProject(projectId, { silent: true, hydrationToken });
 				});
+			} else {
+				this.sessionReloadQueued.delete(projectId);
 			}
 		}
 	}
