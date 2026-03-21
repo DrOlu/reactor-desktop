@@ -2624,7 +2624,18 @@ export class Sidebar {
 		}
 		if (target.closest("button, input, textarea, select, a, [contenteditable='true']")) return false;
 		if (target.closest(".sidebar-context-menu, .workspace-emoji-picker, .sidebar-space-dialog, .sidebar-mode-filter-menu")) return false;
-		return Boolean(target.closest(".sidebar-single"));
+		if (target.closest(".sidebar-window-row, .sidebar-topbar, .sidebar-mode-row, .sidebar-footer, .sidebar-workspace-dock")) return false;
+
+		const panelBody = target.closest(".sidebar-panel-body");
+		if (!panelBody) return false;
+		if (
+			target.closest(
+				".sidebar-project-list, .sidebar-chrono-list, .sidebar-files-tree, .sidebar-project-row, .sidebar-project-head, .sidebar-project-sessions, .sidebar-project-files, .sidebar-session-row, .sidebar-file-row, .sidebar-warning",
+			)
+		) {
+			return false;
+		}
+		return true;
 	}
 
 	private switchWorkspaceByOffset(offset: 1 | -1): void {
