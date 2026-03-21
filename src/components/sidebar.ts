@@ -76,6 +76,9 @@ const LEGACY_STORAGE_KEY = "pi-desktop.projects.v1";
 const WORKSPACE_STORAGE_KEY_PREFIX = "pi-desktop.workspace-projects.v1";
 const SIDEBAR_COLLAPSED_KEY = "pi-desktop.sidebar.collapsed.v1";
 const WORKSPACE_DRAG_THRESHOLD_PX = 5;
+const WORKSPACE_SWIPE_THRESHOLD_PX = 68;
+const WORKSPACE_SWIPE_IDLE_MS = 240;
+const WORKSPACE_SWIPE_COOLDOWN_MS = 220;
 
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
@@ -196,6 +199,9 @@ export class Sidebar {
 	private workspaceDragStartX = 0;
 	private workspaceDragStartY = 0;
 	private workspaceDragSuppressClickUntil = 0;
+	private workspaceSwipeAccumulatorX = 0;
+	private workspaceSwipeLastInputAt = 0;
+	private workspaceSwipeLastSwitchAt = 0;
 	private projectEmojiPickerProjectId: string | null = null;
 	private projectEmojiPickerX = 0;
 	private projectEmojiPickerY = 0;
@@ -411,6 +417,8 @@ export class Sidebar {
 		if (this.workspaceRenameDraft && !next.some((workspace) => workspace.id === this.workspaceRenameDraft?.workspaceId)) {
 			this.workspaceRenameDraft = null;
 		}
+		this.workspaceSwipeAccumulatorX = 0;
+		this.workspaceSwipeLastInputAt = 0;
 		this.render();
 		if (this.workspaceRenameDraft && this.workspaceRenameDraft.workspaceId === this.activeWorkspaceId) {
 			this.focusWorkspaceRenameInput(this.workspaceRenameDraft.workspaceId);
@@ -2572,6 +2580,65 @@ export class Sidebar {
 		return false;
 	}
 
+	private shouldHandleWorkspaceSwipe(target: HTMLElement | null): boolean {
+		if (!target) return false;
+		if (this.workspaceCreateDialogOpen || this.contextMenu || this.emojiPickerWorkspaceId || this.projectEmojiPickerProjectId) {
+			return false;
+		}
+		if (target.closest(".sidebar-panel-body")) return false;
+		if (target.closest("button, input, textarea, select, a, [contenteditable='true']")) return false;
+		if (target.closest(".sidebar-context-menu, .workspace-emoji-picker, .sidebar-space-dialog, .sidebar-mode-filter-menu")) return false;
+		return Boolean(target.closest(".sidebar-single"));
+	}
+
+	private switchWorkspaceByOffset(offset: 1 | -1): void {
+		if (this.workspaces.length <= 1) return;
+		const activeIndex = this.workspaces.findIndex((workspace) => workspace.id === this.activeWorkspaceId);
+		if (activeIndex === -1) return;
+		const nextIndex = (activeIndex + offset + this.workspaces.length) % this.workspaces.length;
+		const nextWorkspace = this.workspaces[nextIndex] ?? null;
+		if (!nextWorkspace || nextWorkspace.id === this.activeWorkspaceId) return;
+		this.onWorkspaceSelect?.(nextWorkspace.id);
+	}
+
+	private handleSidebarWheel(event: WheelEvent): void {
+		if (event.defaultPrevented) return;
+		if (this.workspaces.length <= 1) return;
+		if (this.pendingWorkspaceDragId || this.draggingWorkspaceId) return;
+		if (!this.shouldHandleWorkspaceSwipe(event.target as HTMLElement | null)) {
+			this.workspaceSwipeAccumulatorX = 0;
+			return;
+		}
+
+		const deltaX = event.deltaX;
+		const deltaY = event.deltaY;
+		if (Math.abs(deltaX) < Math.max(10, Math.abs(deltaY) * 1.1)) {
+			return;
+		}
+
+		const now = Date.now();
+		if (now - this.workspaceSwipeLastInputAt > WORKSPACE_SWIPE_IDLE_MS) {
+			this.workspaceSwipeAccumulatorX = 0;
+		}
+		this.workspaceSwipeLastInputAt = now;
+		this.workspaceSwipeAccumulatorX += deltaX;
+
+		if (Math.abs(this.workspaceSwipeAccumulatorX) < WORKSPACE_SWIPE_THRESHOLD_PX) {
+			return;
+		}
+		if (now - this.workspaceSwipeLastSwitchAt < WORKSPACE_SWIPE_COOLDOWN_MS) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopPropagation();
+
+		const direction: 1 | -1 = this.workspaceSwipeAccumulatorX > 0 ? 1 : -1;
+		this.workspaceSwipeAccumulatorX = 0;
+		this.workspaceSwipeLastSwitchAt = now;
+		this.switchWorkspaceByOffset(direction);
+	}
+
 	private async invokeWindowControl(action: "close" | "minimize" | "maximize"): Promise<void> {
 		try {
 			const { getCurrentWindow } = await import("@tauri-apps/api/window");
@@ -3475,6 +3542,7 @@ export class Sidebar {
 		const template = html`
 			<div
 				class="sidebar-single"
+				@wheel=${(e: WheelEvent) => this.handleSidebarWheel(e)}
 				@click=${(e: Event) => {
 					const target = e.target as HTMLElement;
 					let changed = false;
