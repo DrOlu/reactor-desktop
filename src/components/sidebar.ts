@@ -2634,7 +2634,8 @@ export class Sidebar {
 		if (this.workspaces.length <= 1) return;
 		const activeIndex = this.workspaces.findIndex((workspace) => workspace.id === this.activeWorkspaceId);
 		if (activeIndex === -1) return;
-		const nextIndex = (activeIndex + offset + this.workspaces.length) % this.workspaces.length;
+		const nextIndex = activeIndex + offset;
+		if (nextIndex < 0 || nextIndex >= this.workspaces.length) return;
 		const nextWorkspace = this.workspaces[nextIndex] ?? null;
 		if (!nextWorkspace || nextWorkspace.id === this.activeWorkspaceId) return;
 		this.onWorkspaceSelect?.(nextWorkspace.id);
@@ -2681,7 +2682,7 @@ export class Sidebar {
 		event.preventDefault();
 		event.stopPropagation();
 
-		const direction: 1 | -1 = this.workspaceSwipeAccumulatorX > 0 ? 1 : -1;
+		const direction: 1 | -1 = this.workspaceSwipeAccumulatorX > 0 ? -1 : 1;
 		this.workspaceSwipeAccumulatorX = 0;
 		this.workspaceSwipeLastSwitchAt = now;
 		this.workspaceSwipeGestureConsumed = true;
