@@ -1,0 +1,93 @@
+# Issue implementation log (2026-03-22)
+
+This note summarizes issue work completed in this development cycle, including shipped behavior, commit references, and remaining follow-ups.
+
+## #20 — Performance: session switching preload/cache
+
+Status: **Implemented in `dev` (kept open for continued tuning if needed)**
+
+Implemented:
+- Session-switch preload/cache strategy for better hot-switch latency.
+- Reduced loading flashes/noise during fast navigation.
+- Stale-load/race guards to avoid wrong-content rendering during rapid switching.
+- Re-aligned model/session behavior with CLI semantics after regressions found during optimization.
+
+Relevant commits in this cycle:
+- `914e7fe`, `a8326ef` and surrounding sidebar/session switch hardening commits
+
+## #42 — Provider/runtime callback errors missing in desktop UI
+
+Status: **Closed**
+
+Implemented:
+- Inline timeline rendering for runtime/provider errors (not only notices/toasts).
+- Assistant `stopReason: "error"` + `errorMessage` mapping into chat timeline.
+- RPC stderr/stdout non-JSON text fallback normalization into structured UI errors.
+- Retry/compaction lifecycle visibility improvements.
+
+Relevant commits:
+- `b7a82b7`, `dbe35c9`, `85dbd84`, `a9d4cf4`, `d2d9b3b`
+- merged via `0fb46d9`
+
+## #44 — Windows missing CLI onboarding/path parity
+
+Status: **Open (implementation merged, awaiting real Windows smoke validation)**
+
+Implemented:
+- Expanded Windows CLI discovery in Tauri backend.
+- Expanded missing-CLI error normalization in frontend runtime/onboarding handling.
+
+Relevant commits:
+- `1c618a7`
+- merged via `bae0de1`
+
+Remaining:
+- Validate full first-run + retry onboarding flow on an actual Windows machine.
+
+## #40 — Pi rename package settings/capability integration
+
+Status: **Implemented (ready to close)**
+
+Implemented:
+- Removed package-specific config from global Settings.
+- Added package settings entrypoint in Installed Packages (gear icon).
+- Package settings now open in modal overlay (reduced Packages-page clutter).
+- Config actions are command/capability-driven and package-agnostic.
+- User-facing actions now use Save/Apply UX labels (not slash-command labels).
+- Added model-picker form flow for model-config commands while preserving runtime as write path.
+
+Relevant commits:
+- `d56cbf5`
+- merged via `896e9e1`
+
+## #43 — Mark unread from session context menu
+
+Status: **Implemented (ready to close)**
+
+Implemented:
+- Added context menu action to mark a session unread again.
+- Final copy updated to exact label: **"Mark unread"**.
+- Action updates tab attention state and sync/persist behavior.
+
+Relevant commits:
+- `e46ae41`, `9dd9935`
+- merged via `896e9e1`
+
+## #41 — Capability implementation template/playbook
+
+Status: **Implemented (ready to close)**
+
+Implemented:
+- Added `docs/PACKAGE_CAPABILITY_TEMPLATE.md` as implementation playbook.
+- Linked the template from architecture/capability/packages docs.
+- Added checklist section to PR template to enforce consistency.
+
+Relevant commits:
+- `d56cbf5`
+- merged via `896e9e1`
+
+## Next queued issues
+
+After this cycle, planned follow-up targets:
+- #23 — desktop app icon finalization
+- #19 — titlebar native glyph polishing
