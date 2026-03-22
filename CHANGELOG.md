@@ -21,7 +21,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Changed
 - Package-specific config was removed from global Settings and moved into the Packages capability surface.
 - Package configuration UX is now command/capability-driven and package-agnostic, with no package-name hardcoding in desktop core.
-- Regenerated all platform icon assets in `src-tauri/icons/**` from `assets/branding/pi-desktop-icon.svg`.
+- Switched icon source to official Pi geometry from `https://pi.dev/logo.svg` with a subtle pixel-`D` desktop badge and regenerated all platform icon assets in `src-tauri/icons/**`.
 - Native traffic-light controls now reveal `× / − / +` glyphs only on hover/focus to keep default titlebar noise low while preserving affordance.
 
 ## [0.1.6] - 2026-03-20

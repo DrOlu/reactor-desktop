@@ -6,6 +6,10 @@ This document defines how Pi Desktop app icons are maintained and regenerated.
 
 - Primary source artwork: `assets/branding/pi-desktop-icon.svg`
 
+Current source uses:
+- official Pi geometry from `https://pi.dev/logo.svg`
+- a subtle pixel `D` badge for desktop branding
+
 Keep this file square and minimal. Prefer high-contrast, low-detail shapes that remain readable at small sizes.
 
 ## Regenerate platform icon set

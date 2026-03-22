@@ -104,7 +104,8 @@ Relevant commits:
 Status: **In progress**
 
 Implemented so far:
-- Added new source artwork at `assets/branding/pi-desktop-icon.svg`.
+- Added source artwork at `assets/branding/pi-desktop-icon.svg` using official Pi geometry from `https://pi.dev/logo.svg`.
+- Added a subtle pixel-`D` badge variant for desktop identity in the source icon.
 - Regenerated Tauri platform icon outputs under `src-tauri/icons/**`.
 - Added icon workflow/playbook doc at `docs/ICONS.md`.
 - Added release-checklist reference to icon workflow in `RELEASE_CRITERIA.md`.
