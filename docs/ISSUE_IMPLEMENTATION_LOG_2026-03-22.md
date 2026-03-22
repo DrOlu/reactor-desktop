@@ -4,7 +4,7 @@ This note summarizes issue work completed in this development cycle, including s
 
 ## #20 — Performance: session switching preload/cache
 
-Status: **Implemented in `dev` (kept open for continued tuning if needed)**
+Status: **Closed**
 
 Implemented:
 - Session-switch preload/cache strategy for better hot-switch latency.
@@ -46,7 +46,7 @@ Remaining:
 
 ## #40 — Pi rename package settings/capability integration
 
-Status: **Implemented (ready to close)**
+Status: **Closed**
 
 Implemented:
 - Removed package-specific config from global Settings.
@@ -62,7 +62,7 @@ Relevant commits:
 
 ## #43 — Mark unread from session context menu
 
-Status: **Implemented (ready to close)**
+Status: **Closed**
 
 Implemented:
 - Added context menu action to mark a session unread again.
@@ -75,7 +75,7 @@ Relevant commits:
 
 ## #41 — Capability implementation template/playbook
 
-Status: **Implemented (ready to close)**
+Status: **Closed**
 
 Implemented:
 - Added `docs/PACKAGE_CAPABILITY_TEMPLATE.md` as implementation playbook.
@@ -86,8 +86,20 @@ Relevant commits:
 - `d56cbf5`
 - merged via `896e9e1`
 
+## #19 — Titlebar traffic-light native glyph affordance
+
+Status: **Closed**
+
+Implemented:
+- Added `× / − / +` glyph affordances for traffic-light controls.
+- Glyphs are hidden by default and shown only on hover/focus.
+- Applied to both workspace top chrome controls and sidebar window controls.
+- Existing click behavior remains unchanged.
+
+Relevant commits:
+- `d5e9db3`
+
 ## Next queued issues
 
 After this cycle, planned follow-up targets:
 - #23 — desktop app icon finalization
-- #19 — titlebar native glyph polishing
