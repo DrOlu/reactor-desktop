@@ -4,6 +4,7 @@
 
 import { html, render, type TemplateResult } from "lit";
 import { fetchDesktopUpdateStatus, openDesktopUpdate, type DesktopUpdateStatus } from "../desktop-updates.js";
+import { normalizeRecommendedSource } from "../recommended-packages.js";
 import {
 	type CliUpdateStatus,
 	type PiAuthStatus,
@@ -24,6 +25,61 @@ interface ModelOption {
 	provider: string;
 	id: string;
 	label: string;
+}
+
+interface InstalledPackageItem {
+	source: string;
+	location: string;
+	scope: "user" | "project";
+}
+
+const AUTO_RENAME_PACKAGE_SOURCE = normalizeRecommendedSource("npm:pi-session-auto-rename");
+const DESKTOP_NOTIFY_PACKAGE_SOURCE = normalizeRecommendedSource("npm:pi-desktop-notify");
+
+function parsePiListOutput(output: string): { user: InstalledPackageItem[]; project: InstalledPackageItem[] } {
+	const user: InstalledPackageItem[] = [];
+	const project: InstalledPackageItem[] = [];
+	let section: "user" | "project" | null = null;
+	let pending: InstalledPackageItem | null = null;
+
+	for (const rawLine of output.split(/\r?\n/)) {
+		const line = rawLine.replace(/\t/g, "    ");
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+
+		if (/^User packages:/i.test(trimmed)) {
+			section = "user";
+			pending = null;
+			continue;
+		}
+		if (/^Project packages:/i.test(trimmed)) {
+			section = "project";
+			pending = null;
+			continue;
+		}
+		if (!section) continue;
+		if (/^\(none\)$/i.test(trimmed)) {
+			pending = null;
+			continue;
+		}
+
+		if (/^\s{4}\S/.test(line) && pending) {
+			pending.location = trimmed;
+			continue;
+		}
+
+		if (/^\s{2}\S/.test(line)) {
+			pending = {
+				source: trimmed,
+				location: "",
+				scope: section,
+			};
+			if (section === "user") user.push(pending);
+			else project.push(pending);
+		}
+	}
+
+	return { user, project };
 }
 
 export class SettingsPanel {
@@ -58,6 +114,11 @@ export class SettingsPanel {
 	private autoRenameModelValue = "";
 	private autoRenamePath: string | null = null;
 	private autoRenameStatusMessage = "";
+	private projectPath: string | null = null;
+	private extensionCapabilitiesLoading = false;
+	private extensionCapabilitiesMessage = "";
+	private hasAutoRenamePackage = false;
+	private hasDesktopNotifyPackage = false;
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -74,6 +135,12 @@ export class SettingsPanel {
 
 	setOnCliStatusChange(callback: (status: CliUpdateStatus | null) => void): void {
 		this.onCliStatusChange = callback;
+	}
+
+	setProjectPath(path: string | null): void {
+		this.projectPath = path;
+		if (!this.isOpen) return;
+		void this.refreshExtensionCapabilities().then(() => this.refreshAutoRenameSettings());
 	}
 
 	isVisible(): boolean {
@@ -139,8 +206,9 @@ export class SettingsPanel {
 			this.refreshDesktopStatus(),
 			this.refreshCliStatus(),
 			this.refreshCompatibilityStatus(),
-			this.refreshAutoRenameSettings(),
 		]);
+		await this.refreshExtensionCapabilities();
+		await this.refreshAutoRenameSettings();
 	}
 
 	private async refreshAuthStatus(): Promise<void> {
@@ -276,7 +344,66 @@ export class SettingsPanel {
 		return this.autoRenamePath;
 	}
 
+	private hasAutoRenameCapabilities(): boolean {
+		return this.hasAutoRenamePackage && this.hasDesktopNotifyPackage;
+	}
+
+	private async refreshExtensionCapabilities(): Promise<void> {
+		this.extensionCapabilitiesLoading = true;
+		this.extensionCapabilitiesMessage = "";
+		this.render();
+		try {
+			const [userListResult, projectListResult] = await Promise.all([
+				rpcBridge.runPiCliCommand(["list"], { cwd: "/" }).catch(() => null),
+				this.projectPath
+					? rpcBridge.runPiCliCommand(["list"], { cwd: this.projectPath }).catch(() => null)
+					: Promise.resolve(null),
+			]);
+
+			const sources = new Set<string>();
+			for (const result of [userListResult, projectListResult]) {
+				if (!result?.stdout) continue;
+				const parsed = parsePiListOutput(result.stdout);
+				for (const item of [...parsed.user, ...parsed.project]) {
+					sources.add(normalizeRecommendedSource(item.source));
+				}
+			}
+
+			this.hasAutoRenamePackage = sources.has(AUTO_RENAME_PACKAGE_SOURCE);
+			this.hasDesktopNotifyPackage = sources.has(DESKTOP_NOTIFY_PACKAGE_SOURCE);
+
+			if (!this.hasAutoRenamePackage) {
+				this.extensionCapabilitiesMessage = "Install npm:pi-session-auto-rename to enable auto-rename settings.";
+			} else if (!this.hasDesktopNotifyPackage) {
+				this.extensionCapabilitiesMessage = "Install npm:pi-desktop-notify to unlock auto-rename settings + callback feedback.";
+			}
+		} catch (err) {
+			this.hasAutoRenamePackage = false;
+			this.hasDesktopNotifyPackage = false;
+			this.extensionCapabilitiesMessage = err instanceof Error
+				? `Failed to check extension capabilities: ${err.message}`
+				: "Failed to check extension capabilities.";
+		} finally {
+			this.extensionCapabilitiesLoading = false;
+			this.render();
+		}
+	}
+
 	private async refreshAutoRenameSettings(): Promise<void> {
+		if (!this.hasAutoRenameCapabilities()) {
+			this.autoRenameLoading = false;
+			this.autoRenameModels = [];
+			if (!this.hasAutoRenamePackage) {
+				this.autoRenameStatusMessage = "Install npm:pi-session-auto-rename to enable auto-rename settings.";
+			} else if (!this.hasDesktopNotifyPackage) {
+				this.autoRenameStatusMessage = "Install npm:pi-desktop-notify to enable callback feedback and auto-rename controls.";
+			} else {
+				this.autoRenameStatusMessage = this.extensionCapabilitiesMessage;
+			}
+			this.render();
+			return;
+		}
+
 		this.autoRenameLoading = true;
 		this.autoRenameStatusMessage = "";
 		this.render();
@@ -312,6 +439,14 @@ export class SettingsPanel {
 					this.autoRenameModelValue = this.modelOptionValue(fallback.provider, fallback.id);
 				}
 			}
+
+			if (
+				this.autoRenameModelValue &&
+				!this.autoRenameModels.some((m) => this.modelOptionValue(m.provider, m.id) === this.autoRenameModelValue)
+			) {
+				const display = this.autoRenameModelValue.replace("::", "/");
+				this.autoRenameStatusMessage = `Configured model ${display} is unavailable. Select an available model to overwrite config.`;
+			}
 		} catch (err) {
 			this.autoRenameStatusMessage = err instanceof Error ? err.message : "Failed to load auto-rename settings.";
 		} finally {
@@ -322,6 +457,11 @@ export class SettingsPanel {
 
 	private async setAutoRenameModel(value: string): Promise<void> {
 		if (this.autoRenameSaving) return;
+		if (!this.hasAutoRenameCapabilities()) {
+			this.autoRenameStatusMessage = this.extensionCapabilitiesMessage || "Required extension capabilities are not installed.";
+			this.render();
+			return;
+		}
 		const parsed = this.splitModelOptionValue(value);
 		if (!parsed) return;
 		this.autoRenameSaving = true;
@@ -556,31 +696,45 @@ export class SettingsPanel {
 
 					<div class="settings-section">
 						<div class="settings-section-title">Auto-rename extension</div>
-						<div class="settings-row">
-							<div>
-								<div class="settings-label">Provider/model for auto title generation</div>
-								<div class="settings-desc">Pick from your currently available authenticated models.</div>
-							</div>
-							<select
-								class="settings-select"
-								.value=${this.autoRenameModelValue}
-								?disabled=${this.autoRenameLoading || this.autoRenameSaving || this.autoRenameModels.length === 0}
-								@change=${(e: Event) => void this.setAutoRenameModel((e.target as HTMLSelectElement).value)}
-							>
-								${this.autoRenameLoading ? html`<option value="">Loading models…</option>` : null}
-								${!this.autoRenameLoading && this.autoRenameModels.length === 0 ? html`<option value="">No models available</option>` : null}
-								${!this.autoRenameLoading && this.autoRenameModelValue && !this.autoRenameModels.some((m) => this.modelOptionValue(m.provider, m.id) === this.autoRenameModelValue)
-									? html`<option value=${this.autoRenameModelValue}>${this.autoRenameModelValue.replace("::", "/")}</option>`
-									: null}
-								${this.autoRenameModels.map((m) => html`<option value=${this.modelOptionValue(m.provider, m.id)}>${m.label}</option>`)}
-							</select>
-						</div>
+						${this.extensionCapabilitiesLoading
+							? html`<div class="settings-desc">Checking extension capabilities…</div>`
+							: !this.hasAutoRenamePackage
+								? html`<div class="settings-desc">Install <code>npm:pi-session-auto-rename</code> to enable auto-rename settings.</div>`
+								: !this.hasDesktopNotifyPackage
+									? html`<div class="settings-desc">Install <code>npm:pi-desktop-notify</code> to unlock auto-rename controls and callback feedback.</div>`
+									: html`
+										<div class="settings-row">
+											<div>
+												<div class="settings-label">Provider/model for auto title generation</div>
+												<div class="settings-desc">Pick from your currently available authenticated models.</div>
+											</div>
+											<select
+												class="settings-select"
+												.value=${this.autoRenameModelValue}
+												?disabled=${this.autoRenameLoading || this.autoRenameSaving || this.autoRenameModels.length === 0}
+												@change=${(e: Event) => void this.setAutoRenameModel((e.target as HTMLSelectElement).value)}
+											>
+												${this.autoRenameLoading ? html`<option value="">Loading models…</option>` : null}
+												${!this.autoRenameLoading && this.autoRenameModels.length === 0 ? html`<option value="">No models available</option>` : null}
+												${!this.autoRenameLoading && this.autoRenameModelValue && !this.autoRenameModels.some((m) => this.modelOptionValue(m.provider, m.id) === this.autoRenameModelValue)
+													? html`<option value=${this.autoRenameModelValue}>${this.autoRenameModelValue.replace("::", "/")}</option>`
+													: null}
+												${this.autoRenameModels.map((m) => html`<option value=${this.modelOptionValue(m.provider, m.id)}>${m.label}</option>`)}
+											</select>
+										</div>
+										<div class="settings-actions">
+											<button class="ghost-btn" ?disabled=${this.autoRenameLoading || this.autoRenameSaving} @click=${() => void this.refreshAutoRenameSettings()}>
+												${this.autoRenameLoading ? "Refreshing…" : "Refresh models/config"}
+											</button>
+										</div>
+										${this.autoRenamePath ? html`<div class="settings-desc">Config: <code>${this.autoRenamePath}</code></div>` : null}
+									`}
 						<div class="settings-actions">
-							<button class="ghost-btn" ?disabled=${this.autoRenameLoading || this.autoRenameSaving} @click=${() => this.refreshAutoRenameSettings()}>
-								${this.autoRenameLoading ? "Refreshing…" : "Refresh models/config"}
+							<button class="ghost-btn" ?disabled=${this.extensionCapabilitiesLoading} @click=${() => void this.refreshExtensionCapabilities()}>
+								${this.extensionCapabilitiesLoading ? "Checking…" : "Refresh extension capabilities"}
 							</button>
 						</div>
-						${this.autoRenamePath ? html`<div class="settings-desc">Config: <code>${this.autoRenamePath}</code></div>` : null}
+						${this.extensionCapabilitiesMessage ? html`<div class="settings-desc">${this.extensionCapabilitiesMessage}</div>` : null}
 						${this.autoRenameStatusMessage ? html`<div class="settings-desc">${this.autoRenameStatusMessage}</div>` : null}
 					</div>
 
