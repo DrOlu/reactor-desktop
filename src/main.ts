@@ -1729,7 +1729,6 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 	syncContentTabsBar(workspace);
 
 	if (!workspace) {
-		settingsPanel?.setProjectPath(null);
 		syncRunningSessionIndicators();
 		setPaneVisibility("chat");
 		return;
@@ -1737,7 +1736,6 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 
 	ensureWorkspaceContentState(workspace);
 	const workspaceProjectPath = getWorkspaceActiveProjectPath(workspace);
-	settingsPanel?.setProjectPath(workspaceProjectPath);
 	chatView?.setProjectPath(workspaceProjectPath);
 	packagesView?.setProjectPath(workspaceProjectPath);
 	terminalPanel?.setProjectPath(workspaceProjectPath);
@@ -2527,8 +2525,6 @@ function wireCommandPaletteBuiltins(): void {
 
 function requestOpenSettingsPanel(): void {
 	const panel = mountSettingsPanel();
-	const workspace = getActiveWorkspace();
-	panel.setProjectPath(workspace ? getWorkspaceActiveProjectPath(workspace) : null);
 	void panel.open();
 }
 
