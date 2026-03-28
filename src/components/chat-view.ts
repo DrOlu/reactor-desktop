@@ -110,6 +110,20 @@ interface WelcomeDashboardSummary {
 	updatedAt: number;
 }
 
+interface ComposerSkillDraft {
+	name: string;
+	commandText: string;
+	scope: string | null;
+}
+
+interface SlashPaletteItem {
+	id: string;
+	section: "Actions" | "Skills";
+	label: string;
+	hint: string;
+	skillName?: string;
+}
+
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
 }
@@ -216,7 +230,81 @@ function normalizeText(value: unknown): string {
 	return "";
 }
 
-function uiIcon(name: "edit" | "retry" | "copy" | "attach" | "send" | "stop" | "spark" | "terminal" | "git"): TemplateResult {
+function formatProviderDisplayName(provider: string): string {
+	const normalized = normalizeText(provider).toLowerCase();
+	switch (normalized) {
+		case "openai":
+			return "OpenAI";
+		case "anthropic":
+			return "Anthropic";
+		case "google":
+		case "googleai":
+		case "gemini":
+			return "Google";
+		case "xai":
+			return "xAI";
+		case "openrouter":
+			return "OpenRouter";
+		case "ollama":
+			return "Ollama";
+		case "lmstudio":
+			return "LM Studio";
+		default:
+			return normalized
+				.split(/[-_\s]+/)
+				.filter(Boolean)
+				.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+				.join(" ");
+	}
+}
+
+function formatModelDisplayName(modelId: string): string {
+	const raw = normalizeText(modelId);
+	if (!raw) return "Model";
+	let value = raw.replace(/^models\//i, "").trim();
+	value = value.replace(/^(openai|anthropic|google|xai|openrouter|ollama|lmstudio)[:/]/i, "");
+	if (!value) return "Model";
+	if (/^gpt/i.test(value)) return value.replace(/^gpt/i, "GPT");
+	if (/^claude/i.test(value)) {
+		const tail = value.slice("claude".length).replace(/^[-_\s]+/, "");
+		if (!tail) return "Claude";
+		const humanTail = tail
+			.replace(/[-_]+/g, " ")
+			.split(/\s+/)
+			.filter(Boolean)
+			.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+			.join(" ");
+		return `Claude ${humanTail}`;
+	}
+	if (/^gemini/i.test(value)) return value.replace(/^gemini/i, "Gemini");
+	return value
+		.replace(/[-_]+/g, " ")
+		.split(/\s+/)
+		.filter(Boolean)
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join(" ");
+}
+
+function formatThinkingDisplayName(level: ThinkingLevel): string {
+	switch (level) {
+		case "off":
+			return "off";
+		case "minimal":
+			return "minimal";
+		case "low":
+			return "low";
+		case "medium":
+			return "medium";
+		case "high":
+			return "high";
+		case "xhigh":
+			return "xhigh";
+		default:
+			return "off";
+	}
+}
+
+function uiIcon(name: "edit" | "retry" | "copy" | "attach" | "send" | "stop" | "spinner" | "spark" | "terminal" | "git"): TemplateResult {
 	switch (name) {
 		case "edit":
 			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 11.8l.5-2.5L10.2 2.8a1.2 1.2 0 0 1 1.7 0l1.3 1.3a1.2 1.2 0 0 1 0 1.7l-6.5 6.5z"></path><path d="M3.2 11.8l2.5-.5"></path></svg>`;
@@ -225,11 +313,13 @@ function uiIcon(name: "edit" | "retry" | "copy" | "attach" | "send" | "stop" | "
 		case "copy":
 			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.4"></rect><rect x="3" y="3" width="8" height="8" rx="1.4"></rect></svg>`;
 		case "attach":
-			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.7 7.1L7.8 11a2.5 2.5 0 1 1-3.5-3.5L8.8 3a1.9 1.9 0 1 1 2.7 2.7L6.6 10.6"></path></svg>`;
+			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.1v9.8"></path><path d="M3.1 8h9.8"></path></svg>`;
 		case "send":
-			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.8v10.4"></path><path d="M4.9 5.9L8 2.8l3.1 3.1"></path></svg>`;
+			return html`<svg class="send-arrow-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12.7V3.6"></path><path d="M4.6 7L8 3.6 11.4 7"></path></svg>`;
 		case "stop":
-			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="6" rx="1.1"></rect></svg>`;
+			return html`<svg class="stop-square-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="4.9" y="4.9" width="6.2" height="6.2" rx="1.2"></rect></svg>`;
+		case "spinner":
+			return html`<svg class="spinner-icon" viewBox="0 0 16 16" aria-hidden="true"><circle class="spinner-track" cx="8" cy="8" r="5.4"></circle><path class="spinner-arc" d="M8 2.6a5.4 5.4 0 0 1 5.4 5.4"></path></svg>`;
 		case "spark":
 			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5l1.3 3.1 3.2 1.3-3.2 1.3L8 11.3l-1.3-3.1-3.2-1.3 3.2-1.3z"></path></svg>`;
 		case "terminal":
@@ -237,6 +327,10 @@ function uiIcon(name: "edit" | "retry" | "copy" | "attach" | "send" | "stop" | "
 		case "git":
 			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="3.6" r="1.2"></circle><circle cx="4" cy="12.4" r="1.2"></circle><circle cx="12" cy="8" r="1.2"></circle><path d="M4 4.8v6.4"></path><path d="M5 4.2l5.8 2.9"></path><path d="M5 11.8l5.8-2.9"></path></svg>`;
 	}
+}
+
+function skillGlyphIcon(): TemplateResult {
+	return html`<svg class="filled" viewBox="0 0 20 20" aria-hidden="true"><path d="M9.2 2.3a1.5 1.5 0 0 1 3 0v3.8h.8V3.8a1.5 1.5 0 0 1 3 0v6.4a4.8 4.8 0 0 1-4.8 4.8H9.8A4.8 4.8 0 0 1 5 10.2V7.8a1.5 1.5 0 1 1 3 0v1.4h.8V2.3a1.5 1.5 0 0 1 .4-1z"></path></svg>`;
 }
 
 function piGlyphIcon(): TemplateResult {
@@ -274,6 +368,10 @@ export class ChatView {
 	private lastBackendSessionFile: string | null = null;
 	private settingModel = false;
 	private settingThinking = false;
+	private modelPickerOpen = false;
+	private modelPickerActiveProvider = "";
+	private modelPickerGlobalListenersBound = false;
+	private sendingPrompt = false;
 	private pendingImages: PendingImage[] = [];
 	private notices: Notice[] = [];
 	private allThinkingExpanded = false;
@@ -295,8 +393,15 @@ export class ChatView {
 	private forkExpandedToolRows = new Set<string>();
 	private historyQuery = "";
 	private historyRoleFilter: UiRole | "all" = "all";
-	private quickActionsOpen = false;
 	private autoFollowChat = true;
+	private selectedSkillDraft: ComposerSkillDraft | null = null;
+	private slashPaletteOpen = false;
+	private slashPaletteQuery = "";
+	private slashPaletteIndex = 0;
+	private slashPaletteNavigationMode: "pointer" | "keyboard" = "pointer";
+	private slashSkills: string[] = [];
+	private slashSkillsLoading = false;
+	private slashSkillsUpdatedAt = 0;
 	private runHasAssistantText = false;
 	private readonly workingStatusPhrases = [
 		"starting",
@@ -403,8 +508,13 @@ export class ChatView {
 			__PI_DESKTOP_PUSH_TRACE__?: (message: string) => void;
 		}).__PI_DESKTOP_PUSH_TRACE__;
 		push?.(`chat:setProjectPath ${previous ?? "-"} -> ${path ?? "-"}`);
-		this.quickActionsOpen = false;
 		this.gitMenuOpen = false;
+		this.modelPickerOpen = false;
+		this.selectedSkillDraft = null;
+		this.slashPaletteOpen = false;
+		this.slashPaletteQuery = "";
+		this.slashPaletteIndex = 0;
+		this.slashSkillsUpdatedAt = 0;
 		if (!path) {
 			this.bindingStatusText = null;
 			this.modelLoadRequestSeq += 1;
@@ -427,6 +537,11 @@ export class ChatView {
 		this.lastBackendSessionFile = null;
 		this.lastBackendRefreshError = null;
 		this.pendingDeliveryMode = "prompt";
+		this.modelPickerOpen = false;
+		this.selectedSkillDraft = null;
+		this.slashPaletteOpen = false;
+		this.slashPaletteQuery = "";
+		this.slashPaletteIndex = 0;
 		this.runHasAssistantText = false;
 		this.clearWorkingStatusTimer(true);
 		this.bindingStatusText = projectPath ? (statusText ?? "Loading session…") : null;
@@ -439,6 +554,7 @@ export class ChatView {
 
 	setInputText(text: string): void {
 		this.inputText = text;
+		this.updateSlashPaletteStateFromInput();
 		this.render();
 		requestAnimationFrame(() => {
 			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
@@ -448,6 +564,245 @@ export class ChatView {
 			textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
 			textarea.focus();
 		});
+	}
+
+	stageComposerCommand(commandText: string): void {
+		const draft = this.parseComposerSkillDraftFromCommand(commandText);
+		if (draft) {
+			this.selectedSkillDraft = draft;
+			this.inputText = "";
+			this.updateSlashPaletteStateFromInput();
+			this.render();
+			requestAnimationFrame(() => {
+				const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+				textarea?.focus();
+			});
+			return;
+		}
+		this.selectedSkillDraft = null;
+		this.inputText = commandText;
+		this.closeSlashPalette();
+		this.render();
+		requestAnimationFrame(() => {
+			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+			if (!textarea) return;
+			textarea.value = commandText;
+			textarea.style.height = "auto";
+			textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+			textarea.focus();
+		});
+	}
+
+	private parseComposerSkillDraftFromCommand(commandText: string): ComposerSkillDraft | null {
+		const trimmed = commandText.trim();
+		const match = trimmed.match(/^\/skill:([a-zA-Z0-9._-]+)\b([\s\S]*)$/);
+		if (!match) return null;
+		const name = match[1] || "";
+		const suffix = (match[2] || "").trim();
+		if (!suffix) {
+			return { name, commandText: `/skill:${name}`, scope: null };
+		}
+		if (!suffix.startsWith("{")) {
+			return { name, commandText: `/skill:${name} ${suffix}`, scope: null };
+		}
+		try {
+			const payload = JSON.parse(suffix) as { scope?: unknown };
+			return {
+				name,
+				commandText: `/skill:${name} ${suffix}`,
+				scope: typeof payload.scope === "string" && payload.scope.trim().length > 0 ? payload.scope.trim() : null,
+			};
+		} catch {
+			return { name, commandText: `/skill:${name} ${suffix}`, scope: null };
+		}
+	}
+
+	private removeComposerSkillDraft(): void {
+		this.selectedSkillDraft = null;
+		this.render();
+		requestAnimationFrame(() => {
+			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+			textarea?.focus();
+		});
+	}
+
+	private slashQueryFromInput(): string | null {
+		const raw = this.inputText;
+		if (!raw.startsWith("/")) return null;
+		if (raw.includes("\n")) return null;
+		return raw.slice(1).trimStart();
+	}
+
+	private updateSlashPaletteStateFromInput(): void {
+		const query = this.slashQueryFromInput();
+		if (query === null) {
+			this.slashPaletteOpen = false;
+			this.slashPaletteQuery = "";
+			this.slashPaletteIndex = 0;
+			this.slashPaletteNavigationMode = "pointer";
+			return;
+		}
+		const normalized = query.toLowerCase();
+		if (!this.slashPaletteOpen || normalized !== this.slashPaletteQuery) {
+			this.slashPaletteIndex = 0;
+			this.slashPaletteNavigationMode = "pointer";
+		}
+		this.slashPaletteOpen = true;
+		this.slashPaletteQuery = normalized;
+		void this.ensureSlashSkillsLoaded();
+	}
+
+	private closeSlashPalette(clearInput = false): void {
+		this.slashPaletteOpen = false;
+		this.slashPaletteQuery = "";
+		this.slashPaletteIndex = 0;
+		this.slashPaletteNavigationMode = "pointer";
+		if (clearInput) this.inputText = "";
+	}
+
+	private normalizeSkillNameFromCommand(rawName: string): string | null {
+		const trimmed = rawName.trim();
+		if (!trimmed) return null;
+		const fromPrefixed = trimmed.match(/^\/?skill:([a-zA-Z0-9._-]+)\b/i);
+		if (fromPrefixed) return fromPrefixed[1] ?? null;
+		if (/^[a-zA-Z0-9._-]+$/.test(trimmed)) return trimmed;
+		return null;
+	}
+
+	private collectRuntimeSkillNames(commands: Array<Record<string, unknown>>): string[] {
+		const names = new Set<string>();
+		for (const raw of commands) {
+			const source = normalizeText((raw as Record<string, unknown>).source).toLowerCase();
+			if (source !== "skill") continue;
+			const name = this.normalizeSkillNameFromCommand(normalizeText((raw as Record<string, unknown>).name));
+			if (name) names.add(name);
+		}
+		return [...names].sort((a, b) => a.localeCompare(b));
+	}
+
+	private async ensureSlashSkillsLoaded(force = false): Promise<void> {
+		if (this.slashSkillsLoading) return;
+		if (!force && this.slashSkills.length > 0 && Date.now() - this.slashSkillsUpdatedAt < 120_000) return;
+		this.slashSkillsLoading = true;
+		if (this.slashPaletteOpen) this.render();
+		try {
+			const runtimeCommands = await rpcBridge.getCommands().catch(() => []);
+			const runtimeSkills = this.collectRuntimeSkillNames(runtimeCommands as Array<Record<string, unknown>>);
+
+			const { homeDir } = await import("@tauri-apps/api/path");
+			const home = await homeDir();
+			const roots = [joinFsPath(joinFsPath(joinFsPath(home, ".pi"), "agent"), "skills")];
+			const sets = await Promise.all(roots.map((root) => this.collectSkillNames(root)));
+			const merged = new Set<string>(runtimeSkills);
+			for (const list of sets) {
+				for (const name of list) merged.add(name);
+			}
+			this.slashSkills = [...merged].sort((a, b) => a.localeCompare(b));
+			this.slashSkillsUpdatedAt = Date.now();
+		} catch {
+			this.slashSkills = this.slashSkills.slice();
+			this.slashSkillsUpdatedAt = Date.now();
+		} finally {
+			this.slashSkillsLoading = false;
+			if (this.slashPaletteOpen) this.render();
+		}
+	}
+
+	private matchesSlashQuery(query: string, ...values: string[]): boolean {
+		if (!query) return true;
+		const haystack = values.join(" ").toLowerCase();
+		return haystack.includes(query);
+	}
+
+	private getSlashPaletteItems(): SlashPaletteItem[] {
+		if (!this.slashPaletteOpen) return [];
+		const query = this.slashPaletteQuery;
+		const actions: SlashPaletteItem[] = [
+			{ id: "action:new-session", section: "Actions" as const, label: "New session", hint: "Create a fresh session tab" },
+			{ id: "action:rename-session", section: "Actions" as const, label: "Rename session", hint: "Rename current session" },
+			{ id: "action:open-terminal", section: "Actions" as const, label: "Open terminal", hint: "Switch to terminal pane" },
+			{ id: "action:compact", section: "Actions" as const, label: "Compact context", hint: "Run session compaction now" },
+			{ id: "action:fork", section: "Actions" as const, label: "Fork from message", hint: "Create fork from session history" },
+			{ id: "action:history", section: "Actions" as const, label: "Open history", hint: "Browse current session history" },
+			{ id: "action:copy-last", section: "Actions" as const, label: "Copy last answer", hint: "Copy latest assistant response" },
+			{ id: "action:export-html", section: "Actions" as const, label: "Export HTML", hint: "Export conversation to HTML" },
+		].filter((item) => this.matchesSlashQuery(query, item.label, item.hint, item.id));
+
+		const skills = this.slashSkills
+			.filter((name) => this.matchesSlashQuery(query, name, "skill"))
+			.slice(0, 24)
+			.map((name) => ({
+				id: `skill:${name}`,
+				section: "Skills" as const,
+				label: name,
+				hint: "Use skill in composer",
+				skillName: name,
+			}));
+
+		if (query && query.startsWith("skill:") && skills.length === 0) {
+			const raw = query.slice("skill:".length).trim();
+			if (raw) {
+				skills.push({
+					id: `skill:${raw}`,
+					section: "Skills" as const,
+					label: raw,
+					hint: "Use typed skill name",
+					skillName: raw,
+				});
+			}
+		}
+
+		return [...actions, ...skills];
+	}
+
+	private selectSlashPaletteItem(item: SlashPaletteItem): void {
+		if (item.section === "Skills" && item.skillName) {
+			this.selectedSkillDraft = {
+				name: item.skillName,
+				commandText: `/skill:${item.skillName}`,
+				scope: null,
+			};
+			this.inputText = "";
+			this.closeSlashPalette();
+			this.render();
+			requestAnimationFrame(() => {
+				const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+				textarea?.focus();
+			});
+			return;
+		}
+
+		this.inputText = "";
+		this.closeSlashPalette();
+		this.render();
+		switch (item.id) {
+			case "action:new-session":
+				void this.newSession();
+				return;
+			case "action:rename-session":
+				void this.renameSession();
+				return;
+			case "action:open-terminal":
+				this.onOpenTerminal?.();
+				return;
+			case "action:compact":
+				void this.compactNow();
+				return;
+			case "action:fork":
+				this.openHistoryViewerForFork({ loading: false, sessionName: this.state?.sessionName ?? null });
+				return;
+			case "action:history":
+				this.openHistoryViewer();
+				return;
+			case "action:copy-last":
+				void this.copyLastMessage();
+				return;
+			case "action:export-html":
+				void this.exportToHtml();
+				return;
+			default:
+				return;
+		}
 	}
 
 	private async bindNativeFileDropListener(): Promise<void> {
@@ -501,9 +856,41 @@ export class ChatView {
 		this.streamingReconcileTimer = null;
 	}
 
+	private onGlobalPointerDownForModelPicker = (event: Event): void => {
+		if (!this.modelPickerOpen) return;
+		const target = event.target;
+		if (target instanceof Element && target.closest(".model-picker-root")) return;
+		this.modelPickerOpen = false;
+		this.render();
+	};
+
+	private onGlobalEscapeForModelPicker = (event: KeyboardEvent): void => {
+		if (!this.modelPickerOpen || event.key !== "Escape") return;
+		event.preventDefault();
+		this.modelPickerOpen = false;
+		this.render();
+	};
+
+	private bindModelPickerGlobalListeners(): void {
+		if (this.modelPickerGlobalListenersBound || typeof document === "undefined") return;
+		document.addEventListener("pointerdown", this.onGlobalPointerDownForModelPicker, true);
+		document.addEventListener("mousedown", this.onGlobalPointerDownForModelPicker, true);
+		document.addEventListener("keydown", this.onGlobalEscapeForModelPicker, true);
+		this.modelPickerGlobalListenersBound = true;
+	}
+
+	private unbindModelPickerGlobalListeners(): void {
+		if (!this.modelPickerGlobalListenersBound || typeof document === "undefined") return;
+		document.removeEventListener("pointerdown", this.onGlobalPointerDownForModelPicker, true);
+		document.removeEventListener("mousedown", this.onGlobalPointerDownForModelPicker, true);
+		document.removeEventListener("keydown", this.onGlobalEscapeForModelPicker, true);
+		this.modelPickerGlobalListenersBound = false;
+	}
+
 	connect(): void {
 		this.unsubscribeEvents?.();
 		this.unsubscribeEvents = rpcBridge.onEvent((event) => this.handleEvent(event));
+		this.bindModelPickerGlobalListeners();
 		void this.bindNativeFileDropListener();
 		this.isConnected = rpcBridge.isConnected;
 		if (!this.isConnected) return;
@@ -521,6 +908,7 @@ export class ChatView {
 			unlisten();
 		}
 		this.nativeFileDropUnlisteners = [];
+		this.unbindModelPickerGlobalListeners();
 	}
 
 	async refreshFromBackend(options: { throwOnError?: boolean } = {}): Promise<void> {
@@ -933,6 +1321,13 @@ export class ChatView {
 				});
 			}
 			if (mapped.length > 0) {
+				mapped.sort((a, b) => {
+					const providerCompare = formatProviderDisplayName(a.provider).localeCompare(formatProviderDisplayName(b.provider), undefined, {
+						sensitivity: "base",
+					});
+					if (providerCompare !== 0) return providerCompare;
+					return formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" });
+				});
 				this.availableModels = mapped;
 			}
 			this.lastModelLoadError = null;
@@ -953,6 +1348,7 @@ export class ChatView {
 
 	private async setModel(provider: string, modelId: string): Promise<void> {
 		if (this.settingModel) return;
+		this.modelPickerOpen = false;
 		this.settingModel = true;
 		this.render();
 		try {
@@ -2420,6 +2816,8 @@ export class ChatView {
 	private clearComposer(): void {
 		this.inputText = "";
 		this.pendingImages = [];
+		this.selectedSkillDraft = null;
+		this.closeSlashPalette();
 		this.render();
 		const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
 		if (textarea) {
@@ -2433,7 +2831,11 @@ export class ChatView {
 			this.pushNotice(this.bindingStatusText || "Session is still loading. Try again in a moment.", "info");
 			return;
 		}
-		const text = this.inputText.trim();
+		const promptText = this.inputText.trim();
+		const selectedSkillCommand = this.selectedSkillDraft?.commandText?.trim() ?? "";
+		const text = selectedSkillCommand
+			? (promptText ? `${selectedSkillCommand}\n\n${promptText}` : selectedSkillCommand)
+			: promptText;
 		const images = [...this.pendingImages];
 		if (!text && images.length === 0) return;
 
@@ -2461,6 +2863,8 @@ export class ChatView {
 
 		this.pushUserEcho(text, actualMode, images);
 		this.clearComposer();
+		this.sendingPrompt = true;
+		this.render();
 
 		try {
 			const rpcImages = this.toRpcImages(images);
@@ -2475,6 +2879,9 @@ export class ChatView {
 		} catch (err) {
 			console.error("Failed to send message:", err);
 			this.pushNotice(err instanceof Error ? err.message : "Failed to send message", "error");
+		} finally {
+			this.sendingPrompt = false;
+			this.render();
 		}
 	}
 
@@ -3373,9 +3780,60 @@ export class ChatView {
 		const currentProvider = normalizeText(this.state?.model?.provider);
 		const currentModelId = normalizeText(this.state?.model?.id);
 		const currentModelValue = currentProvider && currentModelId ? `${currentProvider}::${currentModelId}` : "";
-		const thinking = this.state?.thinkingLevel ?? "off";
-		const thinkingValue = thinking;
-		const thinkingLabel = thinkingValue;
+		const currentModelDisplay = currentModelId ? formatModelDisplayName(currentModelId) : "Select model";
+		const currentProviderDisplay = currentProvider ? formatProviderDisplayName(currentProvider) : "";
+		const currentModelTitle = currentProvider && currentModelId ? `${currentProviderDisplay} / ${currentModelId}` : "Select model";
+		const thinkingValue = (this.state?.thinkingLevel ?? "off") as ThinkingLevel;
+		const thinkingLabel = formatThinkingDisplayName(thinkingValue);
+
+		const groupedByProvider = new Map<string, { providerKey: string; providerLabel: string; models: ModelOption[] }>();
+		for (const model of this.availableModels) {
+			const providerKey = model.provider;
+			const existing = groupedByProvider.get(providerKey);
+			if (existing) {
+				existing.models.push(model);
+			} else {
+				groupedByProvider.set(providerKey, {
+					providerKey,
+					providerLabel: formatProviderDisplayName(providerKey),
+					models: [model],
+				});
+			}
+		}
+
+		if (currentProvider && currentModelId && !this.availableModels.some((m) => m.provider === currentProvider && m.id === currentModelId)) {
+			const existing = groupedByProvider.get(currentProvider);
+			const fallbackModel: ModelOption = {
+				provider: currentProvider,
+				id: currentModelId,
+				label: `${currentProvider}/${currentModelId}`,
+				reasoning: false,
+			};
+			if (existing) existing.models.unshift(fallbackModel);
+			else {
+				groupedByProvider.set(currentProvider, {
+					providerKey: currentProvider,
+					providerLabel: formatProviderDisplayName(currentProvider),
+					models: [fallbackModel],
+				});
+			}
+		}
+
+		const providerGroups = Array.from(groupedByProvider.values())
+			.map((group) => ({
+				...group,
+				models: [...group.models].sort((a, b) =>
+					formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" }),
+				),
+			}))
+			.sort((a, b) => a.providerLabel.localeCompare(b.providerLabel, undefined, { sensitivity: "base" }));
+
+		const resolvedActiveProvider = providerGroups.some((g) => g.providerKey === this.modelPickerActiveProvider)
+			? this.modelPickerActiveProvider
+			: providerGroups.some((g) => g.providerKey === currentProvider)
+				? currentProvider
+				: (providerGroups[0]?.providerKey ?? "");
+		const activeProviderGroup = providerGroups.find((group) => group.providerKey === resolvedActiveProvider) ?? null;
 
 		return html`
 			<div class="composer-controls">
@@ -3393,121 +3851,135 @@ export class ChatView {
 						${uiIcon("attach")}
 					</button>
 
-					<div class="model-select-wrap">
-						<select
-							class="composer-select model-select"
-							.value=${currentModelValue}
+					<div
+						class="model-picker-root"
+						@keydown=${(event: KeyboardEvent) => {
+							if (event.key !== "Escape") return;
+							event.preventDefault();
+							this.modelPickerOpen = false;
+							this.render();
+							requestAnimationFrame(() => {
+								const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+								textarea?.focus();
+							});
+						}}
+						@focusout=${(event: FocusEvent) => {
+							const next = event.relatedTarget as Node | null;
+							const root = event.currentTarget as HTMLElement;
+							if (next && root.contains(next)) return;
+							if (!this.modelPickerOpen) return;
+							this.modelPickerOpen = false;
+							this.render();
+						}}
+					>
+						<button
+							type="button"
+							class="model-picker-trigger"
+							title=${currentModelTitle}
 							?disabled=${interactionLocked || this.loadingModels || this.settingModel}
-							@pointerdown=${() => {
+							@click=${() => {
+								if (interactionLocked || this.settingModel) return;
 								if (!this.loadingModels && this.availableModels.length === 0) {
 									void this.loadAvailableModels();
 								}
-							}}
-							@focus=${() => {
-								if (!this.loadingModels && this.availableModels.length === 0) {
-									void this.loadAvailableModels();
+								if (this.modelPickerOpen) {
+									this.modelPickerOpen = false;
+									this.render();
+									return;
 								}
-							}}
-							@change=${(e: Event) => {
-								const value = (e.target as HTMLSelectElement).value;
-								const [provider, ...rest] = value.split("::");
-								const modelId = rest.join("::");
-								if (!provider || !modelId || value === currentModelValue) return;
-								void this.setModel(provider, modelId);
+								if (resolvedActiveProvider) this.modelPickerActiveProvider = resolvedActiveProvider;
+								this.modelPickerOpen = true;
+								this.render();
 							}}
 						>
-							${this.loadingModels ? html`<option value="">Loading models…</option>` : nothing}
-							${!this.loadingModels && this.availableModels.length === 0
-								? html`<option value="">No models loaded</option>`
-								: nothing}
-							${!this.loadingModels && currentModelValue && !this.availableModels.some((m) => `${m.provider}::${m.id}` === currentModelValue)
-								? html`<option value=${currentModelValue}>${currentProvider}/${currentModelId}</option>`
-								: nothing}
-							${this.availableModels.map((m) => html`<option value=${`${m.provider}::${m.id}`}>${m.provider}/${m.id}</option>`)}
-						</select>
-						<span class="composer-select-caret">▾</span>
+							<span class="model-picker-trigger-label">${currentProviderDisplay ? `${currentModelDisplay} · ${currentProviderDisplay}` : currentModelDisplay}</span>
+							<span class="composer-select-caret">▾</span>
+						</button>
+
+						${this.modelPickerOpen
+							? html`
+								<div class="model-picker-popover" role="listbox" aria-label="Available models">
+									${this.loadingModels
+										? html`<div class="model-picker-empty">Loading models…</div>`
+										: providerGroups.length === 0
+											? html`<div class="model-picker-empty">No models available</div>`
+											: html`
+												<div class="model-picker-providers">
+													${providerGroups.map(
+														(group) => html`
+															<button
+																type="button"
+																class="model-picker-provider ${group.providerKey === resolvedActiveProvider ? "active" : ""}"
+																@mouseenter=${() => {
+																	if (this.modelPickerActiveProvider === group.providerKey) return;
+																	this.modelPickerActiveProvider = group.providerKey;
+																	this.render();
+																}}
+																@focus=${() => {
+																	if (this.modelPickerActiveProvider === group.providerKey) return;
+																	this.modelPickerActiveProvider = group.providerKey;
+																	this.render();
+																}}
+																@click=${() => {
+																	if (this.modelPickerActiveProvider === group.providerKey) return;
+																	this.modelPickerActiveProvider = group.providerKey;
+																	this.render();
+																}}
+															>
+																<span class="model-picker-provider-label">${group.providerLabel}</span>
+																<span class="model-picker-provider-caret" aria-hidden="true">›</span>
+															</button>
+														`,
+													)}
+												</div>
+												<div class="model-picker-models">
+													${activeProviderGroup
+														? activeProviderGroup.models.map(
+															(model) => html`
+																<button
+																	type="button"
+																	class="model-picker-model ${model.provider === currentProvider && model.id === currentModelId ? "active" : ""}"
+																	title=${`${formatProviderDisplayName(model.provider)} / ${model.id}`}
+																	@click=${() => {
+																		const nextValue = `${model.provider}::${model.id}`;
+																		this.modelPickerOpen = false;
+																		this.render();
+																		if (nextValue === currentModelValue) return;
+																		void this.setModel(model.provider, model.id);
+																	}}
+																>
+																	<span>${formatModelDisplayName(model.id)}</span>
+																</button>
+															`,
+														)
+														: html`<div class="model-picker-empty">No models</div>`}
+												</div>
+											`}
+								</div>
+							`
+							: nothing}
 					</div>
 
-					<div class="thinking-select-wrap">
-						<span class="thinking-select-label">thinking · ${thinkingLabel}</span>
+					<div class="thinking-select-wrap" title="Reasoning effort">
+						<span class="thinking-select-label">${thinkingLabel}</span>
 						<select
 							class="thinking-select-native"
 							.value=${thinkingValue}
 							?disabled=${interactionLocked || this.settingThinking}
 							@change=${(e: Event) => void this.setThinkingLevel((e.target as HTMLSelectElement).value as ThinkingLevel)}
 						>
-							<option value="off">Off</option>
-							<option value="minimal">Minimal</option>
-							<option value="low">Low</option>
-							<option value="medium">Medium</option>
-							<option value="high">High</option>
-							<option value="xhigh">Xhigh</option>
+							<option value="off">off</option>
+							<option value="minimal">minimal</option>
+							<option value="low">low</option>
+							<option value="medium">medium</option>
+							<option value="high">high</option>
+							<option value="xhigh">xhigh</option>
 						</select>
 						<span class="thinking-select-caret">▾</span>
 					</div>
 				</div>
 
 				<div class="control-group right">
-					<div class="chat-actions-menu-wrap">
-						<button
-							class="composer-icon-btn"
-							title="Session actions"
-							?disabled=${interactionLocked}
-							@click=${() => {
-								if (interactionLocked) return;
-								this.quickActionsOpen = !this.quickActionsOpen;
-								this.render();
-							}}
-						>
-							${uiIcon("spark")}
-						</button>
-						${this.quickActionsOpen
-							? html`
-								<div class="chat-actions-menu">
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										void this.newSession();
-									}}>New session</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										void this.renameSession();
-									}}>Rename session</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										this.onOpenTerminal?.();
-									}}>Open terminal</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										void this.compactNow();
-									}}>Compact context</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										this.openHistoryViewerForFork({ loading: false, sessionName: this.state?.sessionName ?? null });
-									}}>Fork from message</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										this.openHistoryViewer();
-									}}>Open history</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										void this.copyLastMessage();
-									}}>Copy last answer</button>
-									<button @click=${() => {
-										this.quickActionsOpen = false;
-										this.render();
-										void this.exportToHtml();
-									}}>Export HTML</button>
-								</div>
-							`
-							: nothing}
-					</div>
 					${isStreaming
 						? html`
 							<button
@@ -3522,19 +3994,25 @@ export class ChatView {
 								${uiIcon("stop")}
 							</button>
 						`
-						: html`
-							<button
-								class="send-btn primary-send"
-								?disabled=${interactionLocked || !canSend}
-								title="Send"
-								@click=${() => {
-									if (interactionLocked) return;
-									void this.sendMessage("prompt");
-								}}
-							>
-								${uiIcon("send")}
-							</button>
-						`}
+						: this.sendingPrompt
+							? html`
+								<button class="send-btn pending-send" title="Sending" disabled>
+									${uiIcon("spinner")}
+								</button>
+							`
+							: html`
+								<button
+									class="send-btn primary-send"
+									?disabled=${interactionLocked || !canSend}
+									title="Send"
+									@click=${() => {
+										if (interactionLocked) return;
+										void this.sendMessage("prompt");
+									}}
+								>
+									${uiIcon("send")}
+								</button>
+							`}
 				</div>
 			</div>
 		`;
@@ -3560,10 +4038,97 @@ export class ChatView {
 		`;
 	}
 
+	private renderComposerSkillDraftPill(): TemplateResult | typeof nothing {
+		const draft = this.selectedSkillDraft;
+		if (!draft) return nothing;
+		return html`
+			<div class="composer-skill-draft-pill inline">
+				<span class="composer-skill-draft-icon" aria-hidden="true">${skillGlyphIcon()}</span>
+				<span class="composer-skill-draft-name">${draft.name}</span>
+				<button class="composer-skill-draft-remove" title="Remove skill" @click=${() => this.removeComposerSkillDraft()}>✕</button>
+			</div>
+		`;
+	}
+
+	private ensureActiveSlashItemVisible(): void {
+		if (!this.slashPaletteOpen || this.slashPaletteNavigationMode !== "keyboard") return;
+		requestAnimationFrame(() => {
+			const menu = this.container.querySelector<HTMLElement>(".composer-slash-menu");
+			const activeItem = this.container.querySelector<HTMLElement>(".composer-slash-item.active");
+			if (!menu || !activeItem) return;
+			const menuTop = menu.scrollTop;
+			const menuBottom = menuTop + menu.clientHeight;
+			const itemTop = activeItem.offsetTop;
+			const itemBottom = itemTop + activeItem.offsetHeight;
+			if (itemTop < menuTop) {
+				menu.scrollTop = Math.max(0, itemTop - 4);
+				return;
+			}
+			if (itemBottom > menuBottom) {
+				menu.scrollTop = itemBottom - menu.clientHeight + 4;
+			}
+		});
+	}
+
+	private renderSlashPalette(items: SlashPaletteItem[]): TemplateResult | typeof nothing {
+		if (!this.slashPaletteOpen) return nothing;
+		if (this.slashSkillsLoading && items.length === 0) {
+			return html`<div class="composer-slash-menu"><div class="composer-slash-empty">Loading commands…</div></div>`;
+		}
+		if (items.length === 0) {
+			return html`<div class="composer-slash-menu"><div class="composer-slash-empty">No commands match “/${this.slashPaletteQuery}”.</div></div>`;
+		}
+		const activeIndex = Math.max(0, Math.min(this.slashPaletteIndex, items.length - 1));
+		let currentSection: "Actions" | "Skills" | null = null;
+		return html`
+			<div
+				class="composer-slash-menu ${this.slashPaletteNavigationMode === "keyboard" ? "keyboard-nav" : ""}"
+				@mousemove=${(event: MouseEvent) => {
+					if (this.slashPaletteNavigationMode === "keyboard") {
+						const moved = Math.abs(event.movementX) + Math.abs(event.movementY) > 0;
+						if (!moved) return;
+						this.slashPaletteNavigationMode = "pointer";
+					}
+					const target = event.target instanceof Element ? event.target.closest(".composer-slash-item") as HTMLElement | null : null;
+					if (!target) return;
+					const indexRaw = target.dataset.index;
+					if (!indexRaw) return;
+					const index = Number(indexRaw);
+					if (!Number.isFinite(index)) return;
+					if (this.slashPaletteIndex !== index) {
+						this.slashPaletteIndex = index;
+						this.render();
+					}
+				}}
+			>
+				${items.map((item, index) => {
+					const sectionChanged = item.section !== currentSection;
+					currentSection = item.section;
+					return html`
+						${sectionChanged ? html`<div class="composer-slash-section">${item.section}</div>` : nothing}
+						<button
+							class="composer-slash-item ${index === activeIndex ? "active" : ""}"
+							data-index=${String(index)}
+							@click=${() => this.selectSlashPaletteItem(item)}
+						>
+							<span class="composer-slash-item-label">${item.label}</span>
+							<span class="composer-slash-item-hint">${item.hint}</span>
+						</button>
+					`;
+				})}
+			</div>
+		`;
+	}
+
 	private renderComposer(): TemplateResult {
 		const isStreaming = this.currentIsStreaming();
 		const interactionLocked = this.isComposerInteractionLocked();
-		const canSend = !interactionLocked && (this.inputText.trim().length > 0 || this.pendingImages.length > 0);
+		const slashItems = this.getSlashPaletteItems();
+		const canSendBase = !interactionLocked && (this.inputText.trim().length > 0 || this.pendingImages.length > 0 || Boolean(this.selectedSkillDraft));
+		const canSend = canSendBase && !(this.slashPaletteOpen && slashItems.length > 0);
+		if (slashItems.length > 0 && this.slashPaletteIndex >= slashItems.length) {
+			this.slashPaletteIndex = slashItems.length - 1;
+		}
 		const connectivityStatus = this.bindingStatusText || (!this.isConnected && this.projectPath ? "RPC disconnected" : "");
 		const statusText = [connectivityStatus, this.compactionStatus, this.retryStatus].filter(Boolean).join(" · ");
 		const ratio = Math.min(1, Math.max(0, this.sessionStats.usageRatio ?? 0));
@@ -3579,6 +4144,7 @@ export class ChatView {
 					<div class="composer-panel">
 						${this.renderPendingImages()}
 						<div class="composer-row">
+							${this.renderComposerSkillDraftPill()}
 							<textarea
 								id="chat-input"
 								class="chat-input"
@@ -3589,9 +4155,14 @@ export class ChatView {
 								@input=${(e: Event) => {
 									if (interactionLocked) return;
 									const ta = e.target as HTMLTextAreaElement;
+									const hadSlashPalette = this.slashPaletteOpen;
 									this.inputText = ta.value;
+									this.updateSlashPaletteStateFromInput();
 									ta.style.height = "auto";
 									ta.style.height = `${Math.min(ta.scrollHeight, 220)}px`;
+									if (this.slashPaletteOpen || hadSlashPalette) {
+										this.render();
+									}
 								}}
 								@paste=${(e: ClipboardEvent) => {
 									if (interactionLocked) {
@@ -3619,6 +4190,48 @@ export class ChatView {
 								}}
 								@keydown=${(e: KeyboardEvent) => {
 									if (interactionLocked) return;
+									if (e.key === "Escape" && this.modelPickerOpen) {
+										e.preventDefault();
+										this.modelPickerOpen = false;
+										this.render();
+										return;
+									}
+									if ((e.key === "Backspace" || e.key === "Delete") && this.inputText.length === 0 && this.selectedSkillDraft) {
+										e.preventDefault();
+										this.removeComposerSkillDraft();
+										return;
+									}
+									const liveSlashItems = this.getSlashPaletteItems();
+									if (this.slashPaletteOpen && liveSlashItems.length > 0) {
+										if (e.key === "ArrowDown") {
+											e.preventDefault();
+											this.slashPaletteNavigationMode = "keyboard";
+											this.slashPaletteIndex = (this.slashPaletteIndex + 1) % liveSlashItems.length;
+											this.render();
+											this.ensureActiveSlashItemVisible();
+											return;
+										}
+										if (e.key === "ArrowUp") {
+											e.preventDefault();
+											this.slashPaletteNavigationMode = "keyboard";
+											this.slashPaletteIndex = (this.slashPaletteIndex - 1 + liveSlashItems.length) % liveSlashItems.length;
+											this.render();
+											this.ensureActiveSlashItemVisible();
+											return;
+										}
+										if (e.key === "Enter" && !e.shiftKey) {
+											e.preventDefault();
+											const picked = liveSlashItems[Math.max(0, Math.min(this.slashPaletteIndex, liveSlashItems.length - 1))];
+											if (picked) this.selectSlashPaletteItem(picked);
+											return;
+										}
+									}
+									if (this.slashPaletteOpen && e.key === "Escape") {
+										e.preventDefault();
+										this.closeSlashPalette();
+										this.render();
+										return;
+									}
 									if (e.key === "Enter" && !e.shiftKey) {
 										e.preventDefault();
 										if (e.altKey) {
@@ -3631,11 +4244,13 @@ export class ChatView {
 								}}
 							></textarea>
 						</div>
+						${this.renderSlashPalette(slashItems)}
 						${this.renderComposerControls(canSend, isStreaming, interactionLocked)}
 						${statusText ? html`<div class="composer-status-inline">${statusText}</div>` : nothing}
 					</div>
 
 					<div class="composer-under-row">
+						${this.renderGitRepoControl()}
 						<div class="composer-stats-slot">
 							<div
 								class="session-stats-wrap"
@@ -3678,7 +4293,6 @@ export class ChatView {
 									: nothing}
 							</div>
 						</div>
-						${this.renderGitRepoControl()}
 					</div>
 
 					<input
@@ -3988,8 +4602,8 @@ export class ChatView {
 					const target = e.target as HTMLElement;
 					let changed = false;
 
-					if (this.quickActionsOpen && !target.closest(".chat-actions-menu-wrap")) {
-						this.quickActionsOpen = false;
+					if (this.slashPaletteOpen && !target.closest(".composer-slash-menu") && !target.closest("#chat-input")) {
+						this.closeSlashPalette();
 						changed = true;
 					}
 
@@ -4041,6 +4655,7 @@ export class ChatView {
 		this.doRender();
 		this.scrollToBottom();
 		this.syncWorkingStatusAnimation();
+		this.ensureActiveSlashItemVisible();
 	}
 
 	notify(text: string, kind: "info" | "success" | "error" = "info"): void {
