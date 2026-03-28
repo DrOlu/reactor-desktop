@@ -17,7 +17,8 @@ Pi Desktop is intentionally **minimal** and **extension-first**:
 - the `pi` CLI is the runtime,
 - packages/extensions provide optional behavior.
 
-<img width="1128" height="772" alt="Screenshot 2026-03-23 at 19 31 56" src="https://github.com/user-attachments/assets/b0c6c8c8-da28-4e36-90c2-02012752af40" />
+<img width="1227" height="869" alt="Screenshot 2026-03-28 at 23 28 39" src="https://github.com/user-attachments/assets/0c15a79f-870c-44a0-9489-4b0d2d577e76" />
+
 
 
 
