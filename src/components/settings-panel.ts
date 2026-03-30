@@ -97,6 +97,12 @@ export class SettingsPanel {
 		this.loadTheme();
 	}
 
+	setContainer(container: HTMLElement): void {
+		if (this.container === container) return;
+		this.container = container;
+		this.render();
+	}
+
 	setOnClose(callback: () => void): void {
 		this.onClose = callback;
 	}

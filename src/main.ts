@@ -2403,10 +2403,13 @@ async function initialize(): Promise<void> {
 }
 
 function mountSettingsPanel(): SettingsPanel {
-	if (settingsPanel) return settingsPanel;
 	const settingsContainer = document.getElementById("settings-pane");
 	if (!settingsContainer) {
 		throw new Error("Settings pane container not found");
+	}
+	if (settingsPanel) {
+		settingsPanel.setContainer(settingsContainer);
+		return settingsPanel;
 	}
 	const panel = new SettingsPanel(settingsContainer);
 	panel.setOnDesktopStatusChange((status) => {
