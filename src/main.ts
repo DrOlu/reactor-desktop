@@ -1827,11 +1827,18 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 
 	if (workspace.pane === "settings") {
 		setPaneVisibility("settings");
-		const panel = mountSettingsPanel();
-		if (!panel.isVisible()) {
+		try {
+			const panel = mountSettingsPanel();
+			if (!panel.isVisible() || !panel.hasRenderedContent()) {
+				await panel.open();
+			} else {
+				panel.render();
+			}
+		} catch (err) {
+			console.error("Failed to render settings pane:", err);
+			settingsPanel = null;
+			const panel = mountSettingsPanel();
 			await panel.open();
-		} else {
-			panel.render();
 		}
 		syncDebugOverlay();
 		return;
@@ -2625,7 +2632,17 @@ function requestOpenSettingsPanel(): void {
 	workspace.pane = "settings";
 	persistWorkspaces();
 	syncWorkspaceTabsBar();
-	void applyWorkspacePane(workspace);
+	void applyWorkspacePane(workspace).catch((err) => {
+		console.error("Failed to open settings pane:", err);
+		try {
+			settingsPanel = null;
+			setPaneVisibility("settings");
+			const panel = mountSettingsPanel();
+			void panel.open();
+		} catch (innerErr) {
+			console.error("Settings pane recovery failed:", innerErr);
+		}
+	});
 }
 
 function openSettings(): void {

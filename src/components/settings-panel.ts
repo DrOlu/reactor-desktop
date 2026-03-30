@@ -103,6 +103,10 @@ export class SettingsPanel {
 		this.render();
 	}
 
+	hasRenderedContent(): boolean {
+		return this.container.childElementCount > 0;
+	}
+
 	setOnClose(callback: () => void): void {
 		this.onClose = callback;
 	}
