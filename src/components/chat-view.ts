@@ -3671,8 +3671,26 @@ export class ChatView {
 		`;
 	}
 
+	private hasExpandedWorkflowInTimeline(): boolean {
+		for (let index = 0; index < this.messages.length; index += 1) {
+			const msg = this.messages[index];
+			if (msg.role !== "assistant") continue;
+			const workflowCandidate = this.collectAssistantWorkflow(index);
+			if (!workflowCandidate) continue;
+			const { expanded } = this.resolveWorkflowExpansionState(
+				workflowCandidate.workflow.id,
+				workflowCandidate.workflow.toolCalls,
+				workflowCandidate.workflow.isTerminal,
+			);
+			if (expanded) return true;
+			index = workflowCandidate.nextIndex - 1;
+		}
+		return false;
+	}
+
 	private shouldShowWorkingIndicator(): boolean {
 		if (!this.currentIsStreaming()) return false;
+		if (this.hasExpandedWorkflowInTimeline()) return false;
 		return !this.runHasAssistantText;
 	}
 
@@ -4001,6 +4019,29 @@ export class ChatView {
 		};
 	}
 
+	private resolveWorkflowExpansionState(
+		workflowId: string,
+		toolCalls: ToolCallBlock[],
+		isTerminal: boolean,
+	): {
+		total: number;
+		running: number;
+		autoExpanded: boolean;
+		expanded: boolean;
+	} {
+		const total = toolCalls.length;
+		const running = toolCalls.filter((tc) => tc.isRunning).length;
+		const manualExpanded = this.isToolWorkflowExpanded(workflowId);
+		const autoExpanded = isTerminal && this.keepWorkflowExpandedUntilAssistantText && (running > 0 || this.runSawToolActivity || total === 0);
+		const expanded = (autoExpanded && !this.collapsedAutoWorkflowIds.has(workflowId)) || manualExpanded;
+		return {
+			total,
+			running,
+			autoExpanded,
+			expanded,
+		};
+	}
+
 	private renderAssistantWorkflow(workflow: {
 		id: string;
 		messages: UiMessage[];
@@ -4014,8 +4055,11 @@ export class ChatView {
 		endedAt: number;
 		isTerminal: boolean;
 	}): TemplateResult {
-		const total = workflow.toolCalls.length;
-		const running = workflow.toolCalls.filter((tc) => tc.isRunning).length;
+		const { total, running, autoExpanded, expanded } = this.resolveWorkflowExpansionState(
+			workflow.id,
+			workflow.toolCalls,
+			workflow.isTerminal,
+		);
 		const failed = workflow.toolCalls.filter((tc) => tc.isError).length;
 		const durationMs =
 			workflow.startedAt > 0
@@ -4025,14 +4069,9 @@ export class ChatView {
 		const summaryPrimary = durationLabel;
 		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : total > 0 ? `${total} complete` : "";
 		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
-		const manualExpanded = this.isToolWorkflowExpanded(workflow.id);
-		const autoExpanded = workflow.isTerminal && this.keepWorkflowExpandedUntilAssistantText && (running > 0 || this.runSawToolActivity || total === 0);
-		if (!autoExpanded) {
-			this.collapsedAutoWorkflowIds.delete(workflow.id);
-		}
-		const expanded = (autoExpanded && !this.collapsedAutoWorkflowIds.has(workflow.id)) || manualExpanded;
 		const thinkingExpanded = this.isWorkflowThinkingExpanded(workflow.id);
 		const thinkingAnimating = running === 0 && workflow.messages.some((entry) => entry.isThinkingStreaming);
+		const activeGroupId = workflow.toolGroups.find((group) => group.calls.some((tc) => tc.isRunning))?.id ?? null;
 		if (!expanded) {
 			this.expandedToolGroupByWorkflowId.delete(workflow.id);
 			this.expandedWorkflowThinkingIds.delete(workflow.id);
@@ -4062,6 +4101,7 @@ export class ChatView {
 									? html`
 										<div class="tool-workflow-thinking">
 											<button class="tool-workflow-thinking-toggle ${thinkingAnimating ? "animating" : "done"}" @click=${() => this.toggleWorkflowThinkingExpanded(workflow.id)}>
+												${thinkingAnimating && !activeGroupId ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
 												<span class="tool-workflow-thinking-text">Thinking…</span>
 											</button>
 											${thinkingExpanded ? html`<div class="tool-workflow-thinking-content">${workflow.thinkingText}</div>` : nothing}
@@ -4086,6 +4126,7 @@ export class ChatView {
 													class="tool-workflow-line ${groupRunning ? "running" : ""}"
 													@click=${() => this.toggleToolGroupExpanded(workflow.id, group.id)}
 												>
+													${groupRunning && activeGroupId === group.id ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
 													<span class="tool-workflow-line-text ${groupRunning ? "running" : ""}">${this.renderToolPreview(group.preview)}</span>
 													${count > 1 ? html`<span class="tool-workflow-count">×${count}</span>` : nothing}
 												</button>

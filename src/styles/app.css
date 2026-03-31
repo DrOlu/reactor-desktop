@@ -4530,29 +4530,29 @@ body.sidebar-resizing {
 .chat-working-indicator {
 	display: inline-flex;
 	align-items: center;
-	gap: 7px;
+	gap: 6px;
 	padding: 0;
 	border: none;
 	background: transparent;
-	color: color-mix(in srgb, var(--text) 88%, var(--muted));
+	color: color-mix(in srgb, var(--text) 74%, var(--muted));
 	width: fit-content;
 	min-height: 20px;
 }
 
 .chat-working-pi {
-	width: 12px;
-	height: 12px;
+	width: 11px;
+	height: 11px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	color: color-mix(in srgb, var(--text) 86%, var(--muted) 14%);
-	opacity: 1;
+	color: color-mix(in srgb, var(--text) 72%, var(--muted));
+	opacity: 0.9;
 	animation: pi-running-breath 5.4s ease-in-out infinite;
 }
 
 .chat-working-pi svg {
-	width: 11px;
-	height: 11px;
+	width: 10px;
+	height: 10px;
 	display: block;
 }
 
@@ -4571,8 +4571,8 @@ body.sidebar-resizing {
 .chat-working-dots {
 	font-family: inherit;
 	font-size: 11px;
-	font-weight: 500;
-	color: color-mix(in srgb, var(--text) 88%, var(--muted));
+	font-weight: 460;
+	color: color-mix(in srgb, var(--text) 74%, var(--muted));
 	line-height: 1;
 	text-transform: none;
 }
@@ -5079,6 +5079,28 @@ body.sidebar-resizing {
 	animation: thinkingCharSweep 1.8s ease-in-out infinite;
 }
 
+.tool-workflow-inline-pi {
+	width: 11px;
+	height: 11px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	color: color-mix(in srgb, var(--text) 72%, var(--muted));
+	opacity: 0.9;
+	animation: pi-running-breath 5.4s ease-in-out infinite;
+	flex-shrink: 0;
+}
+
+.tool-workflow-inline-pi svg {
+	width: 10px;
+	height: 10px;
+	display: block;
+}
+
+.tool-workflow-inline-pi path {
+	fill: currentColor;
+}
+
 .tool-workflow-count {
 	font-size: 11px;
 	color: color-mix(in srgb, var(--muted) 88%, var(--text));
@@ -5100,7 +5122,7 @@ body.sidebar-resizing {
 	padding: 5px 8px;
 	display: flex;
 	align-items: center;
-	gap: 0;
+	gap: 6px;
 	cursor: pointer;
 	text-align: left;
 	--thinking-idle: color-mix(in srgb, var(--muted) 88%, var(--text));
