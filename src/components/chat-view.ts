@@ -4589,7 +4589,7 @@ export class ChatView {
 		const hasProject = Boolean(this.projectPath);
 		if (!hasProject && !this.welcomeHeadlineTimer) {
 			this.welcomeHeadlineTimer = setInterval(() => {
-				if (this.projectPath) return;
+				if (this.projectPath || this.welcomeProjectMenuOpen) return;
 				this.welcomeHeadlineIndex = (this.welcomeHeadlineIndex + 1) % this.welcomeHeadlines.length;
 				this.render();
 			}, 10000);
