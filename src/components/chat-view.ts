@@ -2,6 +2,7 @@
  * ChatView - rich RPC chat surface for Pi Desktop
  */
 
+import "@mariozechner/mini-lit/dist/CodeBlock.js";
 import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
 import { html, nothing, render, type TemplateResult } from "lit";
 import {
@@ -33,6 +34,8 @@ interface ToolCallBlock {
 	isError?: boolean;
 	isRunning: boolean;
 	isExpanded: boolean;
+	startedAt?: number;
+	endedAt?: number;
 }
 
 interface UiMessage {
@@ -45,6 +48,7 @@ interface UiMessage {
 	thinking?: string;
 	thinkingExpanded?: boolean;
 	thinkingScrollTop?: number;
+	isThinkingStreaming?: boolean;
 	isStreaming?: boolean;
 	errorText?: string;
 	deliveryMode?: DeliveryMode;
@@ -130,6 +134,24 @@ interface SlashPaletteItem {
 	skillName?: string;
 }
 
+interface ToolCallGroup {
+	id: string;
+	toolName: string;
+	preview: string;
+	calls: ToolCallBlock[];
+}
+
+interface CompactionCycleState {
+	id: string;
+	status: "running" | "done" | "aborted" | "error";
+	startedAt: number;
+	endedAt: number | null;
+	summary: string;
+	errorMessage: string | null;
+	details: string[];
+	expanded: boolean;
+}
+
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
 }
@@ -164,6 +186,16 @@ function formatAge(ts: number): string {
 	if (diff < hour) return `${Math.floor(diff / minute)}m ago`;
 	if (diff < day) return `${Math.floor(diff / hour)}h ago`;
 	return `${Math.floor(diff / day)}d ago`;
+}
+
+function formatDuration(ms: number): string {
+	const totalSeconds = Math.max(1, Math.round(ms / 1000));
+	const hours = Math.floor(totalSeconds / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
+	if (hours > 0) return `${hours}h ${minutes}m`;
+	if (minutes > 0) return `${minutes}m ${seconds}s`;
+	return `${seconds}s`;
 }
 
 function readNumberPath(source: Record<string, unknown>, path: string): number | null {
@@ -387,7 +419,7 @@ export class ChatView {
 	private notices: Notice[] = [];
 	private allThinkingExpanded = false;
 	private retryStatus = "";
-	private compactionStatus = "";
+	private compactionCycle: CompactionCycleState | null = null;
 	private lastRuntimeNoticeSignature = "";
 	private lastRuntimeNoticeAt = 0;
 	private pendingDeliveryMode: DeliveryMode = "prompt";
@@ -405,6 +437,10 @@ export class ChatView {
 	private historyQuery = "";
 	private historyRoleFilter: UiRole | "all" = "all";
 	private autoFollowChat = true;
+	private expandedToolWorkflowIds = new Set<string>();
+	private expandedToolGroupByWorkflowId = new Map<string, string>();
+	private expandedWorkflowThinkingIds = new Set<string>();
+	private collapsedAutoWorkflowIds = new Set<string>();
 	private selectedSkillDraft: ComposerSkillDraft | null = null;
 	private slashPaletteOpen = false;
 	private slashPaletteQuery = "";
@@ -414,6 +450,8 @@ export class ChatView {
 	private slashSkillsLoading = false;
 	private slashSkillsUpdatedAt = 0;
 	private runHasAssistantText = false;
+	private runSawToolActivity = false;
+	private keepWorkflowExpandedUntilAssistantText = false;
 	private readonly workingStatusPhrases = [
 		"starting",
 		"warming up",
@@ -437,6 +475,9 @@ export class ChatView {
 	private workingStatusTimer: ReturnType<typeof setTimeout> | null = null;
 	private disconnectNoticeTimer: ReturnType<typeof setTimeout> | null = null;
 	private streamingReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+	private composerResizeObserver: ResizeObserver | null = null;
+	private observedComposerElement: HTMLElement | null = null;
+	private composerOffsetPx = 196;
 	private sessionStats: SessionStatsSummary = {
 		tokens: null,
 		lifetimeTokens: null,
@@ -545,12 +586,19 @@ export class ChatView {
 		this.slashPaletteQuery = "";
 		this.slashPaletteIndex = 0;
 		this.slashSkillsUpdatedAt = 0;
+		this.expandedToolWorkflowIds.clear();
+		this.expandedToolGroupByWorkflowId.clear();
+		this.expandedWorkflowThinkingIds.clear();
+		this.collapsedAutoWorkflowIds.clear();
+		this.compactionCycle = null;
+		this.keepWorkflowExpandedUntilAssistantText = false;
 		if (!path) {
 			this.bindingStatusText = null;
 			this.welcomeHeadlineIndex = (this.welcomeHeadlineIndex + 1) % this.welcomeHeadlines.length;
 			this.modelLoadRequestSeq += 1;
 			this.loadingModels = false;
 			this.runHasAssistantText = false;
+			this.runSawToolActivity = false;
 			this.clearWorkingStatusTimer(true);
 			void this.refreshWelcomeDashboard(true);
 		}
@@ -573,7 +621,14 @@ export class ChatView {
 		this.slashPaletteOpen = false;
 		this.slashPaletteQuery = "";
 		this.slashPaletteIndex = 0;
+		this.expandedToolWorkflowIds.clear();
+		this.expandedToolGroupByWorkflowId.clear();
+		this.expandedWorkflowThinkingIds.clear();
+		this.collapsedAutoWorkflowIds.clear();
+		this.compactionCycle = null;
 		this.runHasAssistantText = false;
+		this.runSawToolActivity = false;
+		this.keepWorkflowExpandedUntilAssistantText = false;
 		this.clearWorkingStatusTimer(true);
 		this.bindingStatusText = projectPath ? (statusText ?? "Loading session…") : null;
 		this.render();
@@ -753,7 +808,6 @@ export class ChatView {
 			{ id: "action:rename-session", section: "Actions" as const, label: "Rename session", hint: "Rename current session" },
 			{ id: "action:open-terminal", section: "Actions" as const, label: "Open terminal", hint: "Switch to terminal pane" },
 			{ id: "action:compact", section: "Actions" as const, label: "Compact context", hint: "Run session compaction now" },
-			{ id: "action:fork", section: "Actions" as const, label: "Fork from message", hint: "Create fork from session history" },
 			{ id: "action:history", section: "Actions" as const, label: "Open history", hint: "Browse current session history" },
 			{ id: "action:copy-last", section: "Actions" as const, label: "Copy last answer", hint: "Copy latest assistant response" },
 			{ id: "action:export-html", section: "Actions" as const, label: "Export HTML", hint: "Export conversation to HTML" },
@@ -818,9 +872,6 @@ export class ChatView {
 				return;
 			case "action:compact":
 				void this.compactNow();
-				return;
-			case "action:fork":
-				this.openHistoryViewerForFork({ loading: false, sessionName: this.state?.sessionName ?? null });
 				return;
 			case "action:history":
 				this.openHistoryViewer();
@@ -934,6 +985,8 @@ export class ChatView {
 		this.unsubscribeEvents = null;
 		this.cancelStreamingUiReconcile();
 		this.runHasAssistantText = false;
+		this.runSawToolActivity = false;
+		this.keepWorkflowExpandedUntilAssistantText = false;
 		this.clearWorkingStatusTimer(true);
 		if (this.welcomeHeadlineTimer) {
 			clearInterval(this.welcomeHeadlineTimer);
@@ -944,6 +997,9 @@ export class ChatView {
 		}
 		this.nativeFileDropUnlisteners = [];
 		this.unbindModelPickerGlobalListeners();
+		this.composerResizeObserver?.disconnect();
+		this.composerResizeObserver = null;
+		this.observedComposerElement = null;
 	}
 
 	async refreshFromBackend(options: { throwOnError?: boolean } = {}): Promise<void> {
@@ -978,6 +1034,10 @@ export class ChatView {
 			this.lastBackendRefreshError = null;
 			this.onStateChange?.(state);
 			this.messages = this.mapBackendMessages(backendMessages);
+			this.expandedToolWorkflowIds.clear();
+			this.expandedToolGroupByWorkflowId.clear();
+			this.expandedWorkflowThinkingIds.clear();
+			this.collapsedAutoWorkflowIds.clear();
 			this.forkEntryIdByMessageId.clear();
 			this.lastAssistantContextTokens = this.deriveLatestAssistantContextTokens(backendMessages);
 			if (state.isStreaming) {
@@ -993,8 +1053,29 @@ export class ChatView {
 					if ((entry.role as string) !== "assistant") return false;
 					return this.extractText((entry as Record<string, unknown>).content).trim().length > 0;
 				});
+				const sawToolInStreamWindow = streamWindow.some((entry) => {
+					const role = (entry.role as string) ?? "";
+					if (role === "toolResult") return true;
+					if (role !== "assistant") return false;
+					const directToolCalls = (entry as { toolCalls?: unknown }).toolCalls;
+					if (Array.isArray(directToolCalls) && directToolCalls.length > 0) return true;
+					const content = (entry as Record<string, unknown>).content;
+					if (!Array.isArray(content)) return false;
+					return content.some((part) => {
+						if (!part || typeof part !== "object") return false;
+						const rec = part as Record<string, unknown>;
+						const type = typeof rec.type === "string" ? rec.type.toLowerCase() : "";
+						return type.includes("tool") || Boolean(rec.toolCall);
+					});
+				});
+				this.runSawToolActivity = this.runSawToolActivity || sawToolInStreamWindow;
+				if (this.runSawToolActivity) {
+					this.keepWorkflowExpandedUntilAssistantText = !this.runHasAssistantText;
+				}
 			} else {
 				this.runHasAssistantText = false;
+				this.runSawToolActivity = false;
+				this.keepWorkflowExpandedUntilAssistantText = false;
 			}
 			this.pendingDeliveryMode = state.isStreaming ? "steer" : "prompt";
 			this.bindingStatusText = null;
@@ -1080,19 +1161,26 @@ export class ChatView {
 								args: (p.arguments as Record<string, unknown>) ?? {},
 								isRunning: false,
 								isExpanded: false,
+								startedAt: pickNumber(p, ["startedAt", "startTime", "timestamp", "ts"]) ?? undefined,
+								endedAt: pickNumber(p, ["endedAt", "endTime"]) ?? undefined,
 							};
 							toolCalls.push(tc);
 							toolCallMap.set(tc.id, tc);
 						}
 					}
 
+					const normalizedThinking = thinking.trim();
+					if (text.trim().length === 0 && normalizedThinking.length === 0 && toolCalls.length === 0) {
+						break;
+					}
 					mapped.push({
 						id: uid("assistant"),
 						sessionEntryId,
 						role: "assistant",
 						text,
-						thinking: thinking || undefined,
+						thinking: normalizedThinking || undefined,
 						thinkingExpanded: this.allThinkingExpanded,
+						isThinkingStreaming: false,
 						toolCalls,
 					});
 					break;
@@ -1107,15 +1195,32 @@ export class ChatView {
 						tool.isError = isError;
 						tool.isRunning = false;
 						tool.isExpanded = false;
+						tool.endedAt = Date.now();
+						if (!tool.startedAt) tool.startedAt = tool.endedAt;
 					} else {
-						mapped.push({
-							id: uid("toolResult"),
-							sessionEntryId,
-							role: "system",
-							text: `Tool result${isError ? " (error)" : ""}:\n${content || "(no output)"}`,
-							label: "tool-result",
-							toolCalls: [],
-						});
+						const target = [...mapped].reverse().find((entry) => entry.role === "assistant");
+						if (target) {
+							target.toolCalls.push({
+								id: toolCallId || uid("tc"),
+								name: (typeof raw.toolName === "string" && raw.toolName.trim().length > 0 ? raw.toolName : "tool") as string,
+								args: {},
+								result: content || "(no output)",
+								isError,
+								isRunning: false,
+								isExpanded: false,
+								startedAt: Date.now(),
+								endedAt: Date.now(),
+							});
+						} else {
+							mapped.push({
+								id: uid("toolResult"),
+								sessionEntryId,
+								role: "system",
+								text: `Tool result${isError ? " (error)" : ""}:\n${content || "(no output)"}`,
+								label: "tool-result",
+								toolCalls: [],
+							});
+						}
 					}
 					break;
 				}
@@ -2182,6 +2287,9 @@ export class ChatView {
 			case "agent_start":
 				this.pendingDeliveryMode = "steer";
 				this.runHasAssistantText = false;
+				this.runSawToolActivity = false;
+				this.keepWorkflowExpandedUntilAssistantText = true;
+				this.collapsedAutoWorkflowIds.clear();
 				if (this.state) {
 					this.state = { ...this.state, isStreaming: true };
 					this.onStateChange?.(this.state);
@@ -2202,6 +2310,7 @@ export class ChatView {
 				const last = this.messages[this.messages.length - 1];
 				if (last && last.role === "assistant") {
 					last.isStreaming = false;
+					last.isThinkingStreaming = false;
 				}
 				this.retryStatus = "";
 				const runError = this.extractRuntimeErrorMessage(event);
@@ -2209,6 +2318,8 @@ export class ChatView {
 					this.pushRuntimeNotice(`Run failed: ${truncate(runError, 180)}`, "error", 2600);
 				}
 				this.runHasAssistantText = false;
+				this.runSawToolActivity = false;
+				this.keepWorkflowExpandedUntilAssistantText = false;
 				this.onRunStateChange?.(false);
 				rpcBridge
 					.getState()
@@ -2237,22 +2348,27 @@ export class ChatView {
 					}
 					const initialText = this.extractText(msg.content);
 					const assistantError = this.extractAssistantMessageError(msg);
-					this.messages.push({
-						id: uid("assistant"),
-						role: "assistant",
+					if (initialText.trim().length === 0 && !assistantError) {
+						break;
+					}
+					this.ensureStreamingAssistantMessage({
 						text: initialText,
 						errorText: assistantError || undefined,
-						toolCalls: [],
-						isStreaming: true,
-						thinkingExpanded: this.allThinkingExpanded,
 					});
-					if (initialText.trim().length > 0) this.runHasAssistantText = true;
+					if (initialText.trim().length > 0) {
+						this.runHasAssistantText = true;
+						if (this.runSawToolActivity) {
+							this.keepWorkflowExpandedUntilAssistantText = false;
+						}
+					}
 					this.render();
 					this.scrollToBottom();
 					break;
 				}
 
 				if (role === "toolResult") {
+					this.runSawToolActivity = true;
+					this.keepWorkflowExpandedUntilAssistantText = true;
 					const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : "";
 					const output = this.extractToolOutput(msg.content ?? msg.result ?? msg);
 					const isError = Boolean(msg.isError);
@@ -2267,14 +2383,10 @@ export class ChatView {
 						tool.isRunning = false;
 						tool.streamingOutput = undefined;
 						tool.isExpanded = false;
+						tool.endedAt = Date.now();
+						if (!tool.startedAt) tool.startedAt = tool.endedAt;
 					} else {
-						this.messages.push({
-							id: uid("toolResult"),
-							role: "system",
-							text: `Tool result${isError ? " (error)" : ""}:\n${output || "(no output)"}`,
-							label: "tool-result",
-							toolCalls: [],
-						});
+						this.attachOrphanToolResult(toolName, output, isError);
 					}
 					this.render();
 					this.scrollToBottom();
@@ -2286,53 +2398,66 @@ export class ChatView {
 				const assistantEvent = event.assistantMessageEvent as Record<string, unknown>;
 				if (!assistantEvent) break;
 				const subtype = typeof assistantEvent.type === "string" ? assistantEvent.type : "";
-				const last = this.messages[this.messages.length - 1];
 
 				if (subtype === "error") {
-					if (last?.role === "assistant") {
-						last.isStreaming = false;
-						const streamError = this.extractRuntimeErrorMessage(assistantEvent) || this.extractRuntimeErrorMessage(event);
-						if (streamError) {
-							last.errorText = streamError;
-						}
+					const streamError = this.extractRuntimeErrorMessage(assistantEvent) || this.extractRuntimeErrorMessage(event);
+					const assistant = this.ensureStreamingAssistantMessage(streamError ? { errorText: streamError } : undefined);
+					assistant.isStreaming = false;
+					assistant.isThinkingStreaming = false;
+					if (streamError) {
+						assistant.errorText = streamError;
 					}
 					this.render();
 					break;
 				}
 
-				if (!last || last.role !== "assistant") break;
-
 				if (subtype === "text_delta") {
+					const assistant = this.ensureStreamingAssistantMessage();
 					const partialText = this.extractAssistantPartialContent(assistantEvent, "text");
-					last.text = this.mergeStreamingText(last.text, partialText, assistantEvent.delta);
-					if (last.text.trim().length > 0) this.runHasAssistantText = true;
+					assistant.text = this.mergeStreamingText(assistant.text, partialText, assistantEvent.delta);
+					assistant.isThinkingStreaming = false;
+					if (assistant.text.trim().length > 0) {
+						this.runHasAssistantText = true;
+						if (this.runSawToolActivity) {
+							this.keepWorkflowExpandedUntilAssistantText = false;
+						}
+					}
 					this.scheduleStreamingUiReconcile(1800);
 					this.render();
 					this.scrollToBottom();
 				} else if (subtype === "thinking_delta" || subtype === "reasoning_delta" || subtype.includes("thinking") || subtype.includes("reason")) {
+					const assistant = this.ensureStreamingAssistantMessage();
 					const partialThinking = this.extractAssistantPartialContent(assistantEvent, "thinking");
-					const currentThinking = last.thinking || "";
-					last.thinking = this.mergeStreamingText(currentThinking, partialThinking, assistantEvent.delta);
+					const currentThinking = assistant.thinking || "";
+					assistant.thinking = this.mergeStreamingText(currentThinking, partialThinking, assistantEvent.delta);
+					assistant.isThinkingStreaming = true;
 					this.scheduleStreamingUiReconcile(1800);
-					if ((last.thinking?.length || 0) % 100 === 0) this.render();
+					if ((assistant.thinking?.length || 0) % 100 === 0) this.render();
 				} else if (subtype === "toolcall_end") {
+					this.runSawToolActivity = true;
+					this.keepWorkflowExpandedUntilAssistantText = true;
+					const assistant = this.ensureStreamingAssistantMessage();
+					assistant.isThinkingStreaming = false;
 					const tc = assistantEvent.toolCall as Record<string, unknown>;
 					if (tc) {
 						const rawId = typeof tc.id === "string" ? tc.id.trim() : "";
 						const id = rawId || uid("tc");
-						const existing = last.toolCalls.find((entry) => entry.id === id);
+						const existing = assistant.toolCalls.find((entry) => entry.id === id);
 						if (existing) {
 							existing.name = typeof tc.name === "string" && tc.name.trim().length > 0 ? tc.name : existing.name;
 							existing.args = ((tc.arguments ?? existing.args) as Record<string, unknown>) || existing.args;
 							existing.isRunning = true;
 							existing.isExpanded = false;
+							existing.startedAt = existing.startedAt ?? Date.now();
+							existing.endedAt = undefined;
 						} else {
-							last.toolCalls.push({
+							assistant.toolCalls.push({
 								id,
 								name: (tc.name as string) || "tool",
 								args: ((tc.arguments ?? {}) as Record<string, unknown>) || {},
 								isRunning: true,
 								isExpanded: false,
+								startedAt: Date.now(),
 							});
 						}
 						this.render();
@@ -2347,6 +2472,7 @@ export class ChatView {
 				if (turnRole === "assistant") {
 					const last = this.messages[this.messages.length - 1];
 					if (last?.role === "assistant") {
+						last.isThinkingStreaming = false;
 						const turnError = this.extractAssistantMessageError(turnMessage);
 						if (turnError) {
 							last.errorText = turnError;
@@ -2361,6 +2487,7 @@ export class ChatView {
 				const last = this.messages[this.messages.length - 1];
 				if (last?.role === "assistant") {
 					last.isStreaming = false;
+					last.isThinkingStreaming = false;
 					const completed = event.message as Record<string, unknown> | undefined;
 					const completedError = this.extractAssistantMessageError(completed);
 					if (completedError) {
@@ -2379,6 +2506,8 @@ export class ChatView {
 				if (tool) {
 					tool.isRunning = true;
 					tool.isExpanded = false;
+					tool.startedAt = tool.startedAt ?? Date.now();
+					tool.endedAt = undefined;
 					this.render();
 				}
 				break;
@@ -2420,29 +2549,75 @@ export class ChatView {
 					tool.result = tool.result || "(no output)";
 				}
 				tool.isExpanded = false;
+				tool.endedAt = Date.now();
+				if (!tool.startedAt) tool.startedAt = tool.endedAt;
 				this.render();
 				this.scrollToBottom();
 				break;
 			}
 
 			case "auto_compaction_start": {
-				this.compactionStatus = "Compacting context…";
-				this.appendRuntimeSystemLine("Compacting context…");
+				this.compactionCycle = {
+					id: uid("compaction"),
+					status: "running",
+					startedAt: Date.now(),
+					endedAt: null,
+					summary: "Compacting context…",
+					errorMessage: null,
+					details: ["Compaction started"],
+					expanded: true,
+				};
+				this.render();
+				break;
+			}
+
+			case "auto_compaction_update":
+			case "auto_compaction_progress": {
+				if (!this.compactionCycle) break;
+				const detail =
+					pickString(event, ["message", "status", "phase", "step", "detail"]) ||
+					this.extractToolOutput(event.detail ?? event.payload ?? event).trim();
+				if (detail) {
+					const cleaned = truncate(detail.replace(/\s+/g, " ").trim(), 220);
+					if (cleaned && this.compactionCycle.details[this.compactionCycle.details.length - 1] !== cleaned) {
+						this.compactionCycle.details.push(cleaned);
+					}
+				}
 				this.render();
 				break;
 			}
 
 			case "auto_compaction_end": {
-				this.compactionStatus = "";
 				const aborted = Boolean(event.aborted);
 				const errorMessage = this.extractRuntimeErrorMessage(event);
+				if (!this.compactionCycle) {
+					this.compactionCycle = {
+						id: uid("compaction"),
+						status: "running",
+						startedAt: Date.now(),
+						endedAt: null,
+						summary: "Compacting context…",
+						errorMessage: null,
+						details: [],
+						expanded: true,
+					};
+				}
+				this.compactionCycle.endedAt = Date.now();
 				if (aborted) {
-					this.appendRuntimeSystemLine("Auto-compaction aborted");
+					this.compactionCycle.status = "aborted";
+					this.compactionCycle.summary = "Compaction aborted";
+					this.compactionCycle.details.push("Compaction was aborted before completion.");
 					this.pushNotice("Auto-compaction aborted", "info");
 				} else if (errorMessage) {
+					this.compactionCycle.status = "error";
+					this.compactionCycle.summary = "Compaction failed";
+					this.compactionCycle.errorMessage = truncate(errorMessage, 220);
+					this.compactionCycle.details.push(`Failure: ${truncate(errorMessage, 220)}`);
 					this.pushRuntimeNotice(`Auto-compaction failed: ${truncate(errorMessage, 180)}`, "error", 2600);
 				} else {
-					this.appendRuntimeSystemLine("Auto-compaction complete");
+					this.compactionCycle.status = "done";
+					this.compactionCycle.summary = "Compaction complete";
+					this.compactionCycle.details.push("Compaction completed successfully.");
 					this.pushNotice("Auto-compaction complete", "success");
 				}
 				this.render();
@@ -2556,6 +2731,39 @@ export class ChatView {
 			}
 		}
 		return null;
+	}
+
+	private findMostRecentAssistantMessage(): UiMessage | null {
+		for (let i = this.messages.length - 1; i >= 0; i--) {
+			const message = this.messages[i];
+			if (message.role === "assistant") return message;
+		}
+		return null;
+	}
+
+	private attachOrphanToolResult(toolName: string, output: string, isError: boolean): void {
+		const assistantMessage = this.findMostRecentAssistantMessage();
+		if (!assistantMessage) {
+			this.messages.push({
+				id: uid("toolResult"),
+				role: "system",
+				text: `Tool result${isError ? " (error)" : ""}:\n${output || "(no output)"}`,
+				label: "tool-result",
+				toolCalls: [],
+			});
+			return;
+		}
+		assistantMessage.toolCalls.push({
+			id: uid("tc"),
+			name: toolName || "tool",
+			args: {},
+			result: output || "(no output)",
+			isError,
+			isRunning: false,
+			isExpanded: false,
+			startedAt: Date.now(),
+			endedAt: Date.now(),
+		});
 	}
 
 	private pushNotice(text: string, kind: Notice["kind"]): void {
@@ -2821,6 +3029,39 @@ export class ChatView {
 		return images.map((img) => ({ ...img, id: uid("img") }));
 	}
 
+	private hasRenderableAssistantContent(msg: UiMessage): boolean {
+		if (msg.role !== "assistant") return false;
+		if (msg.toolCalls.length > 0) return true;
+		if (msg.text.trim().length > 0) return true;
+		if ((msg.thinking ?? "").trim().length > 0) return true;
+		return (msg.errorText ?? "").trim().length > 0;
+	}
+
+	private ensureStreamingAssistantMessage(seed?: { text?: string; errorText?: string }): UiMessage {
+		const last = this.messages[this.messages.length - 1];
+		if (last?.role === "assistant" && last.isStreaming) {
+			if (seed?.text && seed.text.trim().length > 0 && last.text.trim().length === 0) {
+				last.text = seed.text;
+			}
+			if (seed?.errorText && !last.errorText) {
+				last.errorText = seed.errorText;
+			}
+			return last;
+		}
+		const next: UiMessage = {
+			id: uid("assistant"),
+			role: "assistant",
+			text: seed?.text ?? "",
+			errorText: seed?.errorText,
+			toolCalls: [],
+			isStreaming: true,
+			isThinkingStreaming: false,
+			thinkingExpanded: this.allThinkingExpanded,
+		};
+		this.messages.push(next);
+		return next;
+	}
+
 	private messagePreview(msg: UiMessage): string {
 		const text = msg.text?.trim();
 		if (text) return text;
@@ -2844,6 +3085,9 @@ export class ChatView {
 		});
 		this.autoFollowChat = true;
 		this.runHasAssistantText = false;
+		this.runSawToolActivity = false;
+		this.keepWorkflowExpandedUntilAssistantText = false;
+		this.collapsedAutoWorkflowIds.clear();
 		this.render();
 		this.scrollToBottom(true);
 	}
@@ -3031,14 +3275,24 @@ export class ChatView {
 		for (const message of this.messages) {
 			if (message.role !== "assistant") continue;
 			message.isStreaming = false;
+			message.isThinkingStreaming = false;
 			for (const toolCall of message.toolCalls) {
 				toolCall.isRunning = false;
 				toolCall.streamingOutput = undefined;
 			}
 		}
 		this.retryStatus = "";
+		if (this.compactionCycle?.status === "running") {
+			this.compactionCycle.status = "aborted";
+			this.compactionCycle.summary = "Compaction interrupted";
+			this.compactionCycle.endedAt = Date.now();
+			this.compactionCycle.details.push("Compaction was interrupted before completion.");
+		}
 		this.pendingDeliveryMode = "prompt";
 		this.runHasAssistantText = false;
+		this.runSawToolActivity = false;
+		this.keepWorkflowExpandedUntilAssistantText = false;
+		this.collapsedAutoWorkflowIds.clear();
 		this.onRunStateChange?.(false);
 	}
 
@@ -3320,6 +3574,38 @@ export class ChatView {
 		});
 	}
 
+	private updateComposerOffset(): void {
+		const chatRoot = this.container.querySelector<HTMLElement>(".chat-root");
+		if (!chatRoot) return;
+		const composer = this.container.querySelector<HTMLElement>(".composer-shell");
+		if (!this.projectPath || !composer) {
+			chatRoot.style.setProperty("--composer-offset", "196px");
+			this.composerOffsetPx = 196;
+			this.composerResizeObserver?.disconnect();
+			this.composerResizeObserver = null;
+			this.observedComposerElement = null;
+			return;
+		}
+
+		const apply = () => {
+			const measured = Math.max(140, Math.ceil(composer.getBoundingClientRect().height) + 18);
+			if (Math.abs(measured - this.composerOffsetPx) < 2) return;
+			this.composerOffsetPx = measured;
+			chatRoot.style.setProperty("--composer-offset", `${measured}px`);
+			if (this.autoFollowChat) this.scrollToBottom();
+		};
+
+		apply();
+		if (!this.composerResizeObserver) {
+			this.composerResizeObserver = new ResizeObserver(() => apply());
+		}
+		if (this.observedComposerElement !== composer) {
+			this.composerResizeObserver.disconnect();
+			this.composerResizeObserver.observe(composer);
+			this.observedComposerElement = composer;
+		}
+	}
+
 	private renderNotices(): TemplateResult | typeof nothing {
 		if (this.notices.length === 0) return nothing;
 		return html`
@@ -3418,8 +3704,26 @@ export class ChatView {
 		`;
 	}
 
+	private hasExpandedWorkflowInTimeline(): boolean {
+		for (let index = 0; index < this.messages.length; index += 1) {
+			const msg = this.messages[index];
+			if (msg.role !== "assistant") continue;
+			const workflowCandidate = this.collectAssistantWorkflow(index);
+			if (!workflowCandidate) continue;
+			const { expanded } = this.resolveWorkflowExpansionState(
+				workflowCandidate.workflow.id,
+				workflowCandidate.workflow.toolCalls,
+				workflowCandidate.workflow.isTerminal,
+			);
+			if (expanded) return true;
+			index = workflowCandidate.nextIndex - 1;
+		}
+		return false;
+	}
+
 	private shouldShowWorkingIndicator(): boolean {
 		if (!this.currentIsStreaming()) return false;
+		if (this.hasExpandedWorkflowInTimeline()) return false;
 		return !this.runHasAssistantText;
 	}
 
@@ -3465,12 +3769,43 @@ export class ChatView {
 		`;
 	}
 
+	private normalizeThinkingText(value: string): string {
+		let text = value.replace(/^\s*thinking\.\.\.\s*/i, "").trim();
+		if (!text) return "";
+		const paragraphs = text
+		.split(/\n{2,}/)
+			.map((part) => part.trim())
+			.filter(Boolean);
+		const deduped: string[] = [];
+		const seen = new Set<string>();
+		for (const part of paragraphs) {
+			if (seen.has(part)) continue;
+			seen.add(part);
+			deduped.push(part);
+		}
+		text = deduped.join("\n\n").trim();
+		const half = Math.floor(text.length / 2);
+		if (text.length > 40 && text.length % 2 === 0 && text.slice(0, half) === text.slice(half)) {
+			text = text.slice(0, half).trim();
+		}
+		return text;
+	}
+
+	private isStandaloneCodeBlockMarkdown(value: string): boolean {
+		const text = value.trim();
+		if (!text) return false;
+		if (/^```[^\n`]*\n[\s\S]*\n```$/.test(text)) return true;
+		if (/^~~~[^\n~]*\n[\s\S]*\n~~~$/.test(text)) return true;
+		return false;
+	}
+
 	private renderThinking(msg: UiMessage): TemplateResult | typeof nothing {
 		if (!msg.thinking) return nothing;
 		const expanded = msg.thinkingExpanded ?? false;
-		const label = "thinking…";
+		const label = "Thinking…";
 		const toggleClass = `thinking-toggle ${msg.isStreaming ? "animating" : "done"}`;
-		const thinkingText = msg.thinking.replace(/^\s+/, "");
+		const thinkingText = this.normalizeThinkingText(msg.thinking.replace(/^\s+/, ""));
+		if (!thinkingText) return nothing;
 		return html`
 			<div class="thinking-block ${expanded ? "expanded" : ""}">
 				<button
@@ -3509,49 +3844,483 @@ export class ChatView {
 		`;
 	}
 
-	private renderToolCall(tc: ToolCallBlock): TemplateResult {
-		const statusClass = tc.isRunning ? "status-running" : tc.isError ? "status-error" : "status-ok";
-		const titleHint = tc.name === "bash" && typeof tc.args.command === "string" ? (tc.args.command as string) : "";
-		const output = (tc.streamingOutput ?? tc.result ?? "").trimEnd();
-		const hasOutput = output.length > 0;
-		const placeholder = tc.isRunning ? "Waiting for tool output…" : "No output reported.";
+	private pickToolArg(args: Record<string, unknown>, keys: string[]): string {
+		for (const key of keys) {
+			const value = args[key];
+			if (typeof value === "string" && value.trim().length > 0) return value.trim();
+		}
+		return "";
+	}
+
+	private summarizeToolCall(tc: ToolCallBlock): string {
+		const name = tc.name.trim().toLowerCase();
+		const command = this.pickToolArg(tc.args, ["command", "cmd", "shell", "script"]);
+		const path = this.pickToolArg(tc.args, ["path", "filePath", "targetPath", "from", "to"]);
+		const query = this.pickToolArg(tc.args, ["query", "pattern", "glob", "name"]);
+		if (name === "bash" && command) return `Ran ${truncate(command, 84)}`;
+		if ((name === "read" || name === "readfile") && path) return `Read ${truncate(path, 74)}`;
+		if ((name === "write" || name === "writefile") && path) return `Wrote ${truncate(path, 74)}`;
+		if (name === "edit" && path) return `Edited ${truncate(path, 74)}`;
+		if (name.includes("search") && query) return `Explored ${truncate(query, 74)}`;
+		if ((name === "list" || name.includes("ls")) && path) return `Explored ${truncate(path, 74)}`;
+		if (path) return `${tc.name} ${truncate(path, 74)}`;
+		return `Ran ${tc.name}`;
+	}
+
+	private buildToolCallGroups(toolCalls: ToolCallBlock[]): ToolCallGroup[] {
+		const groups: ToolCallGroup[] = [];
+		for (const tc of toolCalls) {
+			const preview = this.summarizeToolCall(tc);
+			const previous = groups[groups.length - 1];
+			if (previous && previous.toolName === tc.name && previous.preview === preview) {
+				previous.calls.push(tc);
+				continue;
+			}
+			groups.push({
+				id: `${tc.id}-group`,
+				toolName: tc.name,
+				preview,
+				calls: [tc],
+			});
+		}
+		return groups;
+	}
+
+	private isToolWorkflowExpanded(workflowId: string): boolean {
+		return this.expandedToolWorkflowIds.has(workflowId);
+	}
+
+	private clearWorkflowThinkingExpansion(workflowId: string): void {
+		for (const thinkingId of Array.from(this.expandedWorkflowThinkingIds)) {
+			if (thinkingId.startsWith(`${workflowId}:thinking:`)) {
+				this.expandedWorkflowThinkingIds.delete(thinkingId);
+			}
+		}
+	}
+
+	private toggleToolWorkflowExpanded(workflowId: string, autoExpanded = false, currentlyExpanded = false): void {
+		if (currentlyExpanded) {
+			this.expandedToolWorkflowIds.delete(workflowId);
+			this.expandedToolGroupByWorkflowId.delete(workflowId);
+			this.clearWorkflowThinkingExpansion(workflowId);
+			if (autoExpanded) {
+				this.collapsedAutoWorkflowIds.add(workflowId);
+			}
+		} else {
+			this.expandedToolWorkflowIds.add(workflowId);
+			this.collapsedAutoWorkflowIds.delete(workflowId);
+		}
+		this.render();
+	}
+
+	private isWorkflowThinkingExpanded(thinkingId: string): boolean {
+		return this.expandedWorkflowThinkingIds.has(thinkingId);
+	}
+
+	private toggleWorkflowThinkingExpanded(thinkingId: string): void {
+		if (this.expandedWorkflowThinkingIds.has(thinkingId)) {
+			this.expandedWorkflowThinkingIds.delete(thinkingId);
+		} else {
+			this.expandedWorkflowThinkingIds.add(thinkingId);
+		}
+		this.render();
+	}
+
+	private isToolGroupExpanded(workflowId: string, groupId: string): boolean {
+		return this.expandedToolGroupByWorkflowId.get(workflowId) === groupId;
+	}
+
+	private toggleToolGroupExpanded(workflowId: string, groupId: string): void {
+		if (this.expandedToolGroupByWorkflowId.get(workflowId) === groupId) {
+			this.expandedToolGroupByWorkflowId.delete(workflowId);
+		} else {
+			this.expandedToolGroupByWorkflowId.set(workflowId, groupId);
+		}
+		this.render();
+	}
+
+	private renderToolPreview(preview: string): TemplateResult {
+		const match = preview.match(/^(Edited|Wrote)\s+(.+)$/);
+		if (!match) return html`${preview}`;
+		const [, verb, target] = match;
+		return html`${verb} <span class="tool-file-target">${target}</span>`;
+	}
+
+	private isThinkingOnlyAssistantMessage(message: UiMessage | undefined): boolean {
+		if (!message || message.role !== "assistant") return false;
+		if (message.toolCalls.length > 0) return false;
+		if (message.text.trim().length > 0) return false;
+		if ((message.errorText ?? "").trim().length > 0) return false;
+		return Boolean((message.thinking ?? "").trim());
+	}
+
+	private collectAssistantWorkflow(startIndex: number): {
+		workflow: {
+			id: string;
+			messages: UiMessage[];
+			toolCalls: ToolCallBlock[];
+			toolGroups: ToolCallGroup[];
+			thinkingText: string;
+			finalText: string;
+			errorText: string;
+			isStreaming: boolean;
+			startedAt: number;
+			endedAt: number;
+			isTerminal: boolean;
+		};
+		nextIndex: number;
+	} | null {
+		const start = this.messages[startIndex];
+		if (!start || start.role !== "assistant") return null;
+		const startIsThinkingOnly = this.isThinkingOnlyAssistantMessage(start);
+		const startHasTools = start.toolCalls.length > 0;
+		if (!startIsThinkingOnly && !startHasTools) return null;
+
+		const grouped: UiMessage[] = [];
+		let sawTools = false;
+		let consumedFinalMessage = false;
+		let cursor = startIndex;
+
+		while (cursor < this.messages.length) {
+			const candidate = this.messages[cursor];
+			if (candidate.role !== "assistant") break;
+			const hasTools = candidate.toolCalls.length > 0;
+			const hasText = candidate.text.trim().length > 0;
+			const hasThinking = Boolean((candidate.thinking ?? "").trim());
+			const hasError = Boolean((candidate.errorText ?? "").trim());
+
+			if (hasTools) {
+				grouped.push(candidate);
+				sawTools = true;
+				cursor += 1;
+				continue;
+			}
+
+			if (!sawTools) {
+				if (hasThinking && !hasText && !hasError) {
+					grouped.push(candidate);
+					cursor += 1;
+					continue;
+				}
+				break;
+			}
+
+			if (!consumedFinalMessage && (hasText || hasError)) {
+				grouped.push(candidate);
+				consumedFinalMessage = true;
+				cursor += 1;
+				break;
+			}
+
+			if (!consumedFinalMessage && hasThinking) {
+				grouped.push(candidate);
+				cursor += 1;
+				continue;
+			}
+
+			break;
+		}
+
+		if (grouped.length === 0) return null;
+		const toolCalls = grouped.flatMap((entry) => entry.toolCalls);
+		const isProvisionalWorkflow =
+			toolCalls.length === 0 && this.currentIsStreaming() && this.keepWorkflowExpandedUntilAssistantText && !this.runHasAssistantText;
+		if (toolCalls.length === 0 && !isProvisionalWorkflow) return null;
+
+		const startedAt = toolCalls.reduce((min, tc) => {
+			if (!tc.startedAt) return min;
+			return min === 0 ? tc.startedAt : Math.min(min, tc.startedAt);
+		}, 0);
+		const endedAt = toolCalls.reduce((max, tc) => {
+			if (!tc.endedAt) return max;
+			return Math.max(max, tc.endedAt);
+		}, 0);
+		const thinkingParts = grouped
+			.map((entry) => this.normalizeThinkingText((entry.thinking ?? "").replace(/^\s+/, "")))
+			.filter(Boolean);
+		const dedupedThinkingParts = thinkingParts.filter((part, index) => index === 0 || part !== thinkingParts[index - 1]);
+		const thinkingText = dedupedThinkingParts.join("\n\n").trim();
+		const finalText = grouped
+			.filter((entry) => entry.toolCalls.length === 0)
+			.map((entry) => entry.text.trim())
+			.filter(Boolean)
+			.join("\n\n");
+		const errorText = grouped
+			.map((entry) => (entry.errorText ?? "").trim())
+			.filter(Boolean)
+			.join("\n");
+		const workflowId = `workflow-${grouped[0]?.id ?? start.id}`;
+
+		const nextIndex = Math.max(startIndex + 1, cursor);
+		return {
+			workflow: {
+				id: workflowId,
+				messages: grouped,
+				toolCalls,
+				toolGroups: this.buildToolCallGroups(toolCalls),
+				thinkingText,
+				finalText,
+				errorText,
+				isStreaming: grouped.some((entry) => entry.isStreaming),
+				startedAt,
+				endedAt,
+				isTerminal: nextIndex >= this.messages.length,
+			},
+			nextIndex,
+		};
+	}
+
+	private resolveWorkflowExpansionState(
+		workflowId: string,
+		toolCalls: ToolCallBlock[],
+		isTerminal: boolean,
+	): {
+		total: number;
+		running: number;
+		autoExpanded: boolean;
+		expanded: boolean;
+	} {
+		const total = toolCalls.length;
+		const running = toolCalls.filter((tc) => tc.isRunning).length;
+		const manualExpanded = this.isToolWorkflowExpanded(workflowId);
+		const autoExpanded = isTerminal && this.keepWorkflowExpandedUntilAssistantText && (running > 0 || this.runSawToolActivity || total === 0);
+		const expanded = (autoExpanded && !this.collapsedAutoWorkflowIds.has(workflowId)) || manualExpanded;
+		return {
+			total,
+			running,
+			autoExpanded,
+			expanded,
+		};
+	}
+
+	private renderAssistantWorkflow(workflow: {
+		id: string;
+		messages: UiMessage[];
+		toolCalls: ToolCallBlock[];
+		toolGroups: ToolCallGroup[];
+		thinkingText: string;
+		finalText: string;
+		errorText: string;
+		isStreaming: boolean;
+		startedAt: number;
+		endedAt: number;
+		isTerminal: boolean;
+	}): TemplateResult {
+		const { total, running, autoExpanded, expanded } = this.resolveWorkflowExpansionState(
+			workflow.id,
+			workflow.toolCalls,
+			workflow.isTerminal,
+		);
+		const failed = workflow.toolCalls.filter((tc) => tc.isError).length;
+		const durationMs =
+			workflow.startedAt > 0
+				? (running > 0 ? Date.now() : Math.max(workflow.endedAt, workflow.startedAt)) - workflow.startedAt
+				: 0;
+		const durationLabel = durationMs > 0 ? formatDuration(durationMs) : "0s";
+		const summaryPrimary = durationLabel;
+		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : total > 0 ? `${total} complete` : "";
+		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
+		type WorkflowDetailEntry =
+			| {
+				kind: "thinking";
+				id: string;
+				text: string;
+				animating: boolean;
+			}
+			| {
+				kind: "group";
+				group: ToolCallGroup;
+			};
+		const detailEntries: WorkflowDetailEntry[] = [];
+		let lastThinkingFull = "";
+		for (const message of workflow.messages) {
+			const normalizedThinking = this.normalizeThinkingText((message.thinking ?? "").replace(/^\s+/, ""));
+			if (normalizedThinking) {
+				let displayThinking = normalizedThinking;
+				if (lastThinkingFull) {
+					if (normalizedThinking.startsWith(lastThinkingFull)) {
+						displayThinking = normalizedThinking.slice(lastThinkingFull.length).replace(/^\s+/, "").trim();
+					} else if (lastThinkingFull.startsWith(normalizedThinking)) {
+						displayThinking = "";
+					}
+				}
+				lastThinkingFull = normalizedThinking;
+
+				const previous = detailEntries[detailEntries.length - 1];
+				if (!displayThinking) {
+					if (previous && previous.kind === "thinking") {
+						previous.animating = previous.animating || Boolean(message.isThinkingStreaming);
+					}
+				} else if (previous && previous.kind === "thinking") {
+					previous.animating = previous.animating || Boolean(message.isThinkingStreaming);
+					if (displayThinking === previous.text || previous.text.startsWith(displayThinking)) {
+						// no-op: duplicate or shorter repeat
+					} else if (displayThinking.startsWith(previous.text)) {
+						previous.text = displayThinking;
+					} else {
+						detailEntries.push({
+							kind: "thinking",
+							id: `${workflow.id}:thinking:${message.id}`,
+							text: displayThinking,
+							animating: Boolean(message.isThinkingStreaming),
+						});
+					}
+				} else {
+					detailEntries.push({
+						kind: "thinking",
+						id: `${workflow.id}:thinking:${message.id}`,
+						text: displayThinking,
+						animating: Boolean(message.isThinkingStreaming),
+					});
+				}
+			}
+
+			for (const toolCall of message.toolCalls) {
+				const preview = this.summarizeToolCall(toolCall);
+				const previous = detailEntries[detailEntries.length - 1];
+				if (previous && previous.kind === "group" && previous.group.toolName === toolCall.name && previous.group.preview === preview) {
+					previous.group.calls.push(toolCall);
+					continue;
+				}
+				detailEntries.push({
+					kind: "group",
+					group: {
+						id: `${toolCall.id}-group`,
+						toolName: toolCall.name,
+						preview,
+						calls: [toolCall],
+					},
+				});
+			}
+		}
+		if (!expanded) {
+			this.expandedToolGroupByWorkflowId.delete(workflow.id);
+			this.clearWorkflowThinkingExpansion(workflow.id);
+		}
 
 		return html`
-			<div class="tool-card">
-				<button
-					class="tool-header"
-					@click=${() => {
-						tc.isExpanded = !tc.isExpanded;
-						this.render();
-					}}
-				>
-					<span class="status-dot ${statusClass}"></span>
-					<span class="tool-name">${tc.name}</span>
-					${titleHint ? html`<span class="tool-hint" title=${titleHint}>${truncate(titleHint, 56)}</span>` : nothing}
-					<span class="tool-chevron">${tc.isExpanded ? "▾" : "▸"}</span>
-				</button>
-				${tc.isExpanded
-					? html`
-						<pre class="tool-output ${hasOutput ? "" : "tool-output-empty"}">${hasOutput ? output : placeholder}${tc.isRunning
-							? html`<span class="streaming-inline"></span>`
-							: nothing}</pre>
-					`
-					: nothing}
+			<div class="chat-row assistant-row assistant-workflow-row" data-message-id=${workflow.id}>
+				<div class="message-shell assistant-message-shell">
+					<div class="assistant-block">
+						<button
+							class="tool-workflow-summary"
+							@click=${() => {
+								this.toggleToolWorkflowExpanded(workflow.id, autoExpanded, expanded);
+							}}
+						>
+							<span class="workflow-divider" aria-hidden="true"></span>
+							<span class="workflow-summary-center">
+								<span class="workflow-summary-label">${summaryPrimary}</span>
+								${summarySecondary ? html`<span class="workflow-summary-meta">${summarySecondary}</span>` : nothing}
+								<span class="workflow-summary-caret">${expanded ? "▾" : "▸"}</span>
+							</span>
+							<span class="workflow-divider" aria-hidden="true"></span>
+						</button>
+						${expanded
+							? html`
+								<div class="tool-workflow-list">
+									${detailEntries.map((entry) => {
+										if (entry.kind === "thinking") {
+											const thinkingExpanded = this.isWorkflowThinkingExpanded(entry.id);
+											const thinkingAnimating = running === 0 && entry.animating;
+											return html`
+												<div class="tool-workflow-thinking">
+													<button class="tool-workflow-thinking-toggle ${thinkingAnimating ? "animating" : "done"}" @click=${() => this.toggleWorkflowThinkingExpanded(entry.id)}>
+														${thinkingAnimating ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
+														<span class="tool-workflow-thinking-text">Thinking…</span>
+													</button>
+													${thinkingExpanded ? html`<div class="tool-workflow-thinking-content">${entry.text}</div>` : nothing}
+												</div>
+											`;
+										}
+										const group = entry.group;
+										const count = group.calls.length;
+										const groupRunning = group.calls.some((tc) => tc.isRunning);
+										const groupFailed = group.calls.some((tc) => tc.isError);
+										const groupExpanded = this.isToolGroupExpanded(workflow.id, group.id);
+										const output =
+											[...group.calls]
+												.reverse()
+												.map((call) => (call.streamingOutput ?? call.result ?? "").trim())
+												.find((value) => value.length > 0) ?? "";
+										const statusLabel = groupRunning ? "running" : groupFailed ? "failed" : "success";
+										return html`
+											<div class="tool-workflow-item">
+												<button
+													class="tool-workflow-line ${groupRunning ? "running" : ""}"
+													@click=${() => this.toggleToolGroupExpanded(workflow.id, group.id)}
+												>
+													${groupRunning ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
+													<span class="tool-workflow-line-text ${groupRunning ? "running" : ""}">${this.renderToolPreview(group.preview)}</span>
+													${count > 1 ? html`<span class="tool-workflow-count">×${count}</span>` : nothing}
+												</button>
+												${groupExpanded
+													? html`
+														<div class="tool-workflow-details">
+															<pre class="tool-workflow-output">${output || "No output reported."}${groupRunning ? html`<span class="streaming-inline"></span>` : nothing}</pre>
+															<div class="tool-workflow-detail-meta"><span class="tool-workflow-detail-status ${groupRunning ? "running" : groupFailed ? "error" : "done"}">${statusLabel}</span></div>
+														</div>
+													`
+													: nothing}
+											</div>
+										`;
+									})}
+								</div>
+								${hasFinalContent ? html`<div class="assistant-final-divider"><span>Agent</span></div>` : nothing}
+								${workflow.finalText
+									? html`<div class="assistant-content ${workflow.isStreaming ? "streaming-cursor" : ""}"><markdown-block .content=${workflow.finalText}></markdown-block></div>`
+									: nothing}
+								${workflow.errorText ? html`<div class="assistant-error-line">${workflow.errorText}</div>` : nothing}
+							`
+							: html`
+								${workflow.finalText
+									? html`<div class="assistant-content workflow-final-collapsed"><markdown-block .content=${workflow.finalText}></markdown-block></div>`
+									: nothing}
+								${workflow.errorText ? html`<div class="assistant-error-line">${workflow.errorText}</div>` : nothing}
+							`}
+					</div>
+				</div>
 			</div>
 		`;
 	}
 
+	private renderMessageTimeline(): TemplateResult[] {
+		const rows: TemplateResult[] = [];
+		for (let index = 0; index < this.messages.length; index += 1) {
+			const msg = this.messages[index];
+			if (msg.role === "assistant") {
+				const workflowCandidate = this.collectAssistantWorkflow(index);
+				if (workflowCandidate) {
+					rows.push(this.renderAssistantWorkflow(workflowCandidate.workflow));
+					index = workflowCandidate.nextIndex - 1;
+					continue;
+				}
+			}
+			if (msg.role === "user") {
+				rows.push(this.renderUserMessage(msg));
+				continue;
+			}
+			if (msg.role === "assistant") {
+				if (!this.hasRenderableAssistantContent(msg)) {
+					continue;
+				}
+				rows.push(this.renderAssistantMessage(msg));
+				continue;
+			}
+			rows.push(this.renderSystemMessage(msg));
+		}
+		return rows;
+	}
+
 	private renderAssistantMessage(msg: UiMessage): TemplateResult {
-		const canCopy = Boolean(
-			msg.text.trim().length > 0 ||
-				msg.toolCalls.length > 0 ||
-				(msg.thinking ?? "").trim().length > 0 ||
-				(msg.errorText ?? "").trim().length > 0,
-		);
+		const trimmedText = msg.text.trim();
 		const errorLine = (msg.errorText ?? "").trim();
+		const standaloneCodeBlock = this.isStandaloneCodeBlockMarkdown(trimmedText);
+		const canCopy = Boolean(errorLine.length > 0 || (trimmedText.length > 0 && !standaloneCodeBlock));
 		const formattedErrorLine = errorLine
 			? (/^error\b[:\s-]*/i.test(errorLine) ? errorLine : `Error: ${errorLine}`)
 			: "";
+
 		return html`
 			<div class="chat-row assistant-row" data-message-id=${msg.id}>
 				<div class="message-shell assistant-message-shell">
@@ -3565,7 +4334,6 @@ export class ChatView {
 							`
 							: nothing}
 						${formattedErrorLine ? html`<div class="assistant-error-line">${formattedErrorLine}</div>` : nothing}
-						${msg.toolCalls.map((tc) => this.renderToolCall(tc))}
 					</div>
 					<div class="message-actions">
 						${canCopy
@@ -3583,6 +4351,47 @@ export class ChatView {
 				<div class="system-message">
 					${msg.label ? html`<div class="system-label">${msg.label}</div>` : nothing}
 					<div class="system-text">${msg.text}</div>
+				</div>
+			</div>
+		`;
+	}
+
+	private renderCompactionCycle(): TemplateResult | typeof nothing {
+		if (!this.compactionCycle) return nothing;
+		const cycle = this.compactionCycle;
+		const completed = cycle.endedAt ?? Date.now();
+		const elapsed = formatDuration(completed - cycle.startedAt);
+		const statusText =
+			cycle.status === "running"
+				? "running"
+				: cycle.status === "error"
+					? "failed"
+					: cycle.status === "aborted"
+						? "aborted"
+						: "done";
+		return html`
+			<div class="chat-row system-row compaction-row" data-message-id=${cycle.id}>
+				<div class="compaction-card ${cycle.status}">
+					<button
+						class="compaction-header"
+						@click=${() => {
+							cycle.expanded = !cycle.expanded;
+							this.render();
+						}}
+					>
+						<span class="compaction-title">Context compaction</span>
+						<span class="compaction-meta">${elapsed} · ${statusText}</span>
+						<span class="compaction-caret">${cycle.expanded ? "▾" : "▸"}</span>
+					</button>
+					${cycle.expanded
+						? html`
+							<div class="compaction-details">
+								<div class="compaction-summary">${cycle.summary}</div>
+								${cycle.errorMessage ? html`<div class="compaction-error">${cycle.errorMessage}</div>` : nothing}
+								${cycle.details.map((line) => html`<div class="compaction-line">${line}</div>`)}
+							</div>
+						`
+						: nothing}
 				</div>
 			</div>
 		`;
@@ -4170,7 +4979,8 @@ export class ChatView {
 			this.slashPaletteIndex = slashItems.length - 1;
 		}
 		const connectivityStatus = this.bindingStatusText || (!this.isConnected && this.projectPath ? "RPC disconnected" : "");
-		const statusText = [connectivityStatus, this.compactionStatus, this.retryStatus].filter(Boolean).join(" · ");
+		const liveCompactionStatus = this.compactionCycle?.status === "running" ? "Compacting context…" : "";
+		const statusText = [connectivityStatus, liveCompactionStatus, this.retryStatus].filter(Boolean).join(" · ");
 		const ratio = Math.min(1, Math.max(0, this.sessionStats.usageRatio ?? 0));
 		const ratioPercent = `${Math.round(ratio * 100)}%`;
 		const ringRadius = 9;
@@ -4684,14 +5494,11 @@ export class ChatView {
 					${!hasProject
 						? this.renderWelcomeDashboard()
 						: hasMessages
-							? html`${this.messages.map((m) => {
-									if (m.role === "user") return this.renderUserMessage(m);
-									if (m.role === "assistant") return this.renderAssistantMessage(m);
-									return this.renderSystemMessage(m);
-								})}`
+							? html`${this.renderMessageTimeline()}`
 							: this.bindingStatusText
 								? this.renderBindingState()
 								: this.renderEmptyState()}
+					${hasProject ? this.renderCompactionCycle() : nothing}
 					${showWorkingIndicator ? this.renderWorkingIndicatorRow() : nothing}
 				</div>
 				${hasProject ? this.renderComposer() : nothing}
@@ -4704,6 +5511,7 @@ export class ChatView {
 
 		render(template, this.container);
 		this.scrollContainer = this.container.querySelector("#chat-scroll");
+		this.updateComposerOffset();
 	}
 
 	render(): void {

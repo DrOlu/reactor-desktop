@@ -10,6 +10,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Reworked the no-project / new-thread welcome view into a cleaner Codex-inspired centered layout with Pi Desktop branding, a project-focused dropdown, and reduced UI chrome.
 - Welcome project dropdown now lists all projects in the current workspace and supports direct project switching (plus quick actions for add project, packages, and settings).
 - Welcome heading copy now rotates between Pi-style idle phrases for a calmer ambient experience.
+- Reworked assistant tool-heavy runs into a compact workflow timeline with centered duration summary, grouped repeated tool calls, and progressive disclosure for details.
+- Workflow detail timeline now preserves natural interleaving of thinking and tool entries (including mid-run thinking blocks), instead of forcing thinking to the top.
+- Running-state affordances now use synchronized Pi/text animation cadence, including inline Pi indicators on active workflow rows and toned-down bottom-status typography.
+- Polished markdown code blocks toward a cleaner Codex-like appearance (single surface, tightened header/content spacing, smaller copy affordance, less chrome).
 
 ### Fixed
 - Bundled default Pi Desktop themes now emit full Pi CLI-compatible theme schema (all required color tokens) instead of a partial Desktop-only color set.
@@ -19,6 +23,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Settings now degrade to a safe basic shell when runtime-dependent sections fail to render, instead of showing a blank pane.
 - No-project Settings flow is now runtime-decoupled, so Appearance settings remain available even before RPC runtime is connected.
 - Removed centered welcome dropdown jitter by stabilizing open/close layout behavior and avoiding no-project auto-scroll on re-render.
+- Prevented active workflow dropdowns from auto-reopening after user-initiated manual collapse during ongoing tool runs.
+- Removed transient blank spacing before workflow materialization by avoiding empty assistant placeholder rows during stream startup.
+- Fixed repeated streamed thinking duplication by tightening partial-update merge/dedupe behavior in workflow rendering.
+- Assistant message-level copy action is now suppressed for messages that are only a single fenced code block (copy remains on the code block itself).
 
 ## [0.1.8] - 2026-03-23
 
