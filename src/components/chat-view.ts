@@ -3948,9 +3948,10 @@ export class ChatView {
 										return html`
 											<div class="tool-workflow-item">
 												<button
-													class="tool-workflow-line"
+													class="tool-workflow-line ${groupRunning ? "running" : ""}"
 													@click=${() => this.toggleToolGroupExpanded(workflow.id, group.id)}
 												>
+													${groupRunning ? html`<span class="tool-workflow-running-indicator" aria-hidden="true">•••</span>` : nothing}
 													<span class="tool-workflow-line-text ${groupRunning ? "running" : ""}">${this.renderToolPreview(group.preview)}</span>
 													${count > 1 ? html`<span class="tool-workflow-count">×${count}</span>` : nothing}
 												</button>

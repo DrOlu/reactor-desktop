@@ -4358,6 +4358,11 @@ body.sidebar-resizing {
 	align-items: flex-start;
 }
 
+.assistant-workflow-row .message-shell,
+.assistant-workflow-row .assistant-block {
+	width: 100%;
+}
+
 .message-actions {
 	display: flex;
 	gap: 6px;
@@ -4993,6 +4998,8 @@ body.sidebar-resizing {
 	color: color-mix(in srgb, var(--text) 82%, var(--muted));
 	white-space: nowrap;
 	font-variant-numeric: tabular-nums;
+	min-width: 7ch;
+	text-align: center;
 }
 
 .workflow-summary-meta {
@@ -5046,6 +5053,10 @@ body.sidebar-resizing {
 	background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
 }
 
+.tool-workflow-line.running {
+	background: color-mix(in srgb, var(--bg-soft) 62%, transparent);
+}
+
 .tool-workflow-line-text {
 	font-size: 12px;
 	color: color-mix(in srgb, var(--text) 74%, var(--muted));
@@ -5058,7 +5069,24 @@ body.sidebar-resizing {
 	--tool-run-idle: color-mix(in srgb, var(--text) 70%, var(--muted));
 	--tool-run-active: color-mix(in srgb, var(--text) 92%, var(--accent));
 	color: var(--tool-run-idle);
-	animation: toolRunSweep 1.7s ease-in-out infinite;
+	animation: toolRunSweep 1.6s ease-in-out infinite;
+}
+
+.tool-workflow-running-indicator {
+	font-size: 10px;
+	letter-spacing: 0.02em;
+	color: color-mix(in srgb, var(--accent) 76%, var(--text));
+	animation: toolRunDots 1.2s ease-in-out infinite;
+}
+
+@keyframes toolRunDots {
+	0%,
+	100% {
+		opacity: 0.32;
+	}
+	50% {
+		opacity: 1;
+	}
 }
 
 @keyframes toolRunSweep {
