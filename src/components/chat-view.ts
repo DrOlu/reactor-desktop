@@ -3797,6 +3797,7 @@ export class ChatView {
 			isStreaming: boolean;
 			startedAt: number;
 			endedAt: number;
+			isTerminal: boolean;
 		};
 		nextIndex: number;
 	} | null {
@@ -3863,6 +3864,7 @@ export class ChatView {
 		const firstId = grouped[0]?.id ?? uid("workflow");
 		const workflowId = `workflow-${firstId}`;
 
+		const nextIndex = Math.max(startIndex + 1, cursor);
 		return {
 			workflow: {
 				id: workflowId,
@@ -3874,8 +3876,9 @@ export class ChatView {
 				isStreaming: grouped.some((entry) => entry.isStreaming),
 				startedAt,
 				endedAt,
+				isTerminal: nextIndex >= this.messages.length,
 			},
-			nextIndex: Math.max(startIndex + 1, cursor),
+			nextIndex,
 		};
 	}
 
@@ -3889,6 +3892,7 @@ export class ChatView {
 		isStreaming: boolean;
 		startedAt: number;
 		endedAt: number;
+		isTerminal: boolean;
 	}): TemplateResult {
 		const total = workflow.toolCalls.length;
 		const running = workflow.toolCalls.filter((tc) => tc.isRunning).length;
@@ -3901,8 +3905,10 @@ export class ChatView {
 		const summaryPrimary = running > 0 ? `Working for ${durationLabel}` : `Worked for ${durationLabel}`;
 		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : `${total} complete`;
 		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
-		const expanded = running > 0 || this.isToolWorkflowExpanded(workflow.id);
-		if (running === 0 && !this.isToolWorkflowExpanded(workflow.id)) {
+		const manualExpanded = this.isToolWorkflowExpanded(workflow.id);
+		const autoExpanded = running > 0 || (workflow.isTerminal && this.currentIsStreaming() && !hasFinalContent);
+		const expanded = autoExpanded || manualExpanded;
+		if (!expanded) {
 			this.expandedToolGroupByWorkflowId.delete(workflow.id);
 		}
 
@@ -3913,7 +3919,7 @@ export class ChatView {
 						<button
 							class="tool-workflow-summary"
 							@click=${() => {
-								if (running > 0) return;
+								if (autoExpanded) return;
 								this.toggleToolWorkflowExpanded(workflow.id);
 							}}
 						>
