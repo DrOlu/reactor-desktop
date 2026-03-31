@@ -4565,6 +4565,7 @@ body.sidebar-resizing {
 	align-items: baseline;
 	white-space: nowrap;
 	min-height: 14px;
+	animation: pi-running-breath 5.4s ease-in-out infinite;
 }
 
 .chat-working-label,
@@ -5073,10 +5074,8 @@ body.sidebar-resizing {
 }
 
 .tool-workflow-line-text.running {
-	--thinking-idle: color-mix(in srgb, var(--muted) 88%, var(--text));
-	--thinking-active: color-mix(in srgb, var(--text) 80%, var(--muted));
-	color: var(--thinking-idle);
-	animation: thinkingCharSweep 1.8s ease-in-out infinite;
+	color: color-mix(in srgb, var(--text) 72%, var(--muted));
+	animation: pi-running-breath 5.4s ease-in-out infinite;
 }
 
 .tool-workflow-inline-pi {
@@ -5137,7 +5136,7 @@ body.sidebar-resizing {
 }
 
 .tool-workflow-thinking-toggle.animating .tool-workflow-thinking-text {
-	animation: thinkingCharSweep 1.8s ease-in-out infinite;
+	animation: pi-running-breath 5.4s ease-in-out infinite;
 }
 
 .tool-workflow-thinking-toggle.done .tool-workflow-thinking-text,
@@ -7586,7 +7585,37 @@ markdown-block pre {
 .assistant-content markdown-block code-block > div,
 markdown-block code-block > div {
 	background: color-mix(in srgb, var(--bg-soft) 34%, transparent);
+	border: 1px solid color-mix(in srgb, var(--border) 58%, transparent) !important;
+	border-radius: 10px;
+	overflow: hidden;
+}
+
+.assistant-content markdown-block code-block > div > div:first-child,
+markdown-block code-block > div > div:first-child {
+	background: transparent;
+	padding: 6px 10px;
+	min-height: 30px;
+}
+
+.assistant-content markdown-block code-block > div > div:first-child > span,
+markdown-block code-block > div > div:first-child > span {
+	font-size: 11px;
+	color: color-mix(in srgb, var(--text) 66%, var(--muted));
+}
+
+.assistant-content markdown-block code-block > div > div:last-child,
+markdown-block code-block > div > div:last-child {
+	background: transparent;
+	border-top: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
+}
+
+.assistant-content markdown-block code-block > div > div:last-child > pre,
+markdown-block code-block > div > div:last-child > pre {
+	margin: 0 !important;
+	padding: 10px 12px 12px !important;
+	background: transparent !important;
 	border: none !important;
+	border-radius: 0 !important;
 }
 
 .assistant-content markdown-block code-block copy-button,
@@ -7594,6 +7623,37 @@ markdown-block code-block copy-button {
 	opacity: 0;
 	pointer-events: none;
 	transition: opacity 0.14s ease;
+}
+
+.assistant-content markdown-block code-block copy-button button,
+markdown-block code-block copy-button button {
+	width: 24px;
+	height: 24px;
+	min-width: 24px;
+	min-height: 24px;
+	padding: 0 !important;
+	border-radius: 7px;
+	background: transparent !important;
+	color: color-mix(in srgb, var(--text) 70%, var(--muted));
+}
+
+.assistant-content markdown-block code-block copy-button button:hover,
+.assistant-content markdown-block code-block copy-button button:focus-visible,
+markdown-block code-block copy-button button:hover,
+markdown-block code-block copy-button button:focus-visible {
+	background: color-mix(in srgb, var(--bg-soft) 66%, transparent) !important;
+	color: color-mix(in srgb, var(--text) 92%, var(--muted));
+}
+
+.assistant-content markdown-block code-block copy-button button svg,
+markdown-block code-block copy-button button svg {
+	width: 14px;
+	height: 14px;
+}
+
+.assistant-content markdown-block code-block copy-button button > span,
+markdown-block code-block copy-button button > span {
+	display: none;
 }
 
 .assistant-content markdown-block code-block:hover copy-button,
@@ -7609,7 +7669,7 @@ markdown-block code-block copy-button:focus-within {
 :root.light .assistant-content markdown-block code-block > div,
 :root.light markdown-block code-block > div {
 	background: color-mix(in srgb, var(--bg-soft) 80%, #fff 20%);
-	border: none !important;
+	border: 1px solid color-mix(in srgb, var(--border) 56%, transparent) !important;
 }
 
 .assistant-content markdown-block code-block .hljs,

@@ -3756,6 +3756,14 @@ export class ChatView {
 		return text;
 	}
 
+	private isStandaloneCodeBlockMarkdown(value: string): boolean {
+		const text = value.trim();
+		if (!text) return false;
+		if (/^```[^\n`]*\n[\s\S]*\n```$/.test(text)) return true;
+		if (/^~~~[^\n~]*\n[\s\S]*\n~~~$/.test(text)) return true;
+		return false;
+	}
+
 	private renderThinking(msg: UiMessage): TemplateResult | typeof nothing {
 		if (!msg.thinking) return nothing;
 		const expanded = msg.thinkingExpanded ?? false;
@@ -3847,11 +3855,19 @@ export class ChatView {
 		return this.expandedToolWorkflowIds.has(workflowId);
 	}
 
+	private clearWorkflowThinkingExpansion(workflowId: string): void {
+		for (const thinkingId of Array.from(this.expandedWorkflowThinkingIds)) {
+			if (thinkingId.startsWith(`${workflowId}:thinking:`)) {
+				this.expandedWorkflowThinkingIds.delete(thinkingId);
+			}
+		}
+	}
+
 	private toggleToolWorkflowExpanded(workflowId: string, autoExpanded = false, currentlyExpanded = false): void {
 		if (currentlyExpanded) {
 			this.expandedToolWorkflowIds.delete(workflowId);
 			this.expandedToolGroupByWorkflowId.delete(workflowId);
-			this.expandedWorkflowThinkingIds.delete(workflowId);
+			this.clearWorkflowThinkingExpansion(workflowId);
 			if (autoExpanded) {
 				this.collapsedAutoWorkflowIds.add(workflowId);
 			}
@@ -3862,15 +3878,15 @@ export class ChatView {
 		this.render();
 	}
 
-	private isWorkflowThinkingExpanded(workflowId: string): boolean {
-		return this.expandedWorkflowThinkingIds.has(workflowId);
+	private isWorkflowThinkingExpanded(thinkingId: string): boolean {
+		return this.expandedWorkflowThinkingIds.has(thinkingId);
 	}
 
-	private toggleWorkflowThinkingExpanded(workflowId: string): void {
-		if (this.expandedWorkflowThinkingIds.has(workflowId)) {
-			this.expandedWorkflowThinkingIds.delete(workflowId);
+	private toggleWorkflowThinkingExpanded(thinkingId: string): void {
+		if (this.expandedWorkflowThinkingIds.has(thinkingId)) {
+			this.expandedWorkflowThinkingIds.delete(thinkingId);
 		} else {
-			this.expandedWorkflowThinkingIds.add(workflowId);
+			this.expandedWorkflowThinkingIds.add(thinkingId);
 		}
 		this.render();
 	}
@@ -4069,12 +4085,55 @@ export class ChatView {
 		const summaryPrimary = durationLabel;
 		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : total > 0 ? `${total} complete` : "";
 		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
-		const thinkingExpanded = this.isWorkflowThinkingExpanded(workflow.id);
-		const thinkingAnimating = running === 0 && workflow.messages.some((entry) => entry.isThinkingStreaming);
-		const activeGroupId = workflow.toolGroups.find((group) => group.calls.some((tc) => tc.isRunning))?.id ?? null;
+		type WorkflowDetailEntry =
+			| {
+				kind: "thinking";
+				id: string;
+				text: string;
+				animating: boolean;
+			}
+			| {
+				kind: "group";
+				group: ToolCallGroup;
+			};
+		const detailEntries: WorkflowDetailEntry[] = [];
+		for (const message of workflow.messages) {
+			const normalizedThinking = this.normalizeThinkingText((message.thinking ?? "").replace(/^\s+/, ""));
+			if (normalizedThinking) {
+				const entryId = `${workflow.id}:thinking:${message.id}`;
+				const previous = detailEntries[detailEntries.length - 1];
+				if (previous && previous.kind === "thinking" && previous.text === normalizedThinking) {
+					previous.animating = previous.animating || Boolean(message.isThinkingStreaming);
+				} else {
+					detailEntries.push({
+						kind: "thinking",
+						id: entryId,
+						text: normalizedThinking,
+						animating: Boolean(message.isThinkingStreaming),
+					});
+				}
+			}
+			for (const toolCall of message.toolCalls) {
+				const preview = this.summarizeToolCall(toolCall);
+				const previous = detailEntries[detailEntries.length - 1];
+				if (previous && previous.kind === "group" && previous.group.toolName === toolCall.name && previous.group.preview === preview) {
+					previous.group.calls.push(toolCall);
+					continue;
+				}
+				detailEntries.push({
+					kind: "group",
+					group: {
+						id: `${toolCall.id}-group`,
+						toolName: toolCall.name,
+						preview,
+						calls: [toolCall],
+					},
+				});
+			}
+		}
 		if (!expanded) {
 			this.expandedToolGroupByWorkflowId.delete(workflow.id);
-			this.expandedWorkflowThinkingIds.delete(workflow.id);
+			this.clearWorkflowThinkingExpansion(workflow.id);
 		}
 
 		return html`
@@ -4097,19 +4156,22 @@ export class ChatView {
 						</button>
 						${expanded
 							? html`
-								${workflow.thinkingText
-									? html`
-										<div class="tool-workflow-thinking">
-											<button class="tool-workflow-thinking-toggle ${thinkingAnimating ? "animating" : "done"}" @click=${() => this.toggleWorkflowThinkingExpanded(workflow.id)}>
-												${thinkingAnimating && !activeGroupId ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
-												<span class="tool-workflow-thinking-text">Thinking…</span>
-											</button>
-											${thinkingExpanded ? html`<div class="tool-workflow-thinking-content">${workflow.thinkingText}</div>` : nothing}
-										</div>
-									`
-									: nothing}
 								<div class="tool-workflow-list">
-									${workflow.toolGroups.map((group) => {
+									${detailEntries.map((entry) => {
+										if (entry.kind === "thinking") {
+											const thinkingExpanded = this.isWorkflowThinkingExpanded(entry.id);
+											const thinkingAnimating = running === 0 && entry.animating;
+											return html`
+												<div class="tool-workflow-thinking">
+													<button class="tool-workflow-thinking-toggle ${thinkingAnimating ? "animating" : "done"}" @click=${() => this.toggleWorkflowThinkingExpanded(entry.id)}>
+														${thinkingAnimating ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
+														<span class="tool-workflow-thinking-text">Thinking…</span>
+													</button>
+													${thinkingExpanded ? html`<div class="tool-workflow-thinking-content">${entry.text}</div>` : nothing}
+												</div>
+											`;
+										}
+										const group = entry.group;
 										const count = group.calls.length;
 										const groupRunning = group.calls.some((tc) => tc.isRunning);
 										const groupFailed = group.calls.some((tc) => tc.isError);
@@ -4126,7 +4188,7 @@ export class ChatView {
 													class="tool-workflow-line ${groupRunning ? "running" : ""}"
 													@click=${() => this.toggleToolGroupExpanded(workflow.id, group.id)}
 												>
-													${groupRunning && activeGroupId === group.id ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
+													${groupRunning ? html`<span class="tool-workflow-inline-pi" aria-hidden="true">${piGlyphIcon()}</span>` : nothing}
 													<span class="tool-workflow-line-text ${groupRunning ? "running" : ""}">${this.renderToolPreview(group.preview)}</span>
 													${count > 1 ? html`<span class="tool-workflow-count">×${count}</span>` : nothing}
 												</button>
@@ -4186,8 +4248,10 @@ export class ChatView {
 	}
 
 	private renderAssistantMessage(msg: UiMessage): TemplateResult {
-		const canCopy = Boolean(msg.text.trim().length > 0 || (msg.errorText ?? "").trim().length > 0);
+		const trimmedText = msg.text.trim();
 		const errorLine = (msg.errorText ?? "").trim();
+		const standaloneCodeBlock = this.isStandaloneCodeBlockMarkdown(trimmedText);
+		const canCopy = Boolean(errorLine.length > 0 || (trimmedText.length > 0 && !standaloneCodeBlock));
 		const formattedErrorLine = errorLine
 			? (/^error\b[:\s-]*/i.test(errorLine) ? errorLine : `Error: ${errorLine}`)
 			: "";
