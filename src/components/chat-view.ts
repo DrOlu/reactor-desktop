@@ -3861,8 +3861,7 @@ export class ChatView {
 			.filter(Boolean)
 			.join("\n");
 		const firstId = grouped[0]?.id ?? uid("workflow");
-		const lastId = grouped[grouped.length - 1]?.id ?? firstId;
-		const workflowId = `workflow-${firstId}-${lastId}`;
+		const workflowId = `workflow-${firstId}`;
 
 		return {
 			workflow: {
@@ -3894,7 +3893,6 @@ export class ChatView {
 		const total = workflow.toolCalls.length;
 		const running = workflow.toolCalls.filter((tc) => tc.isRunning).length;
 		const failed = workflow.toolCalls.filter((tc) => tc.isError).length;
-		const expanded = this.isToolWorkflowExpanded(workflow.id);
 		const durationMs =
 			workflow.startedAt > 0
 				? (running > 0 ? Date.now() : Math.max(workflow.endedAt, workflow.startedAt)) - workflow.startedAt
@@ -3903,17 +3901,27 @@ export class ChatView {
 		const summaryPrimary = running > 0 ? `Working for ${durationLabel}` : `Worked for ${durationLabel}`;
 		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : `${total} complete`;
 		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
-		const showMissingWrapUp = !hasFinalContent && running === 0 && !workflow.isStreaming;
+		const expanded = running > 0 || this.isToolWorkflowExpanded(workflow.id);
+		if (running === 0 && !this.isToolWorkflowExpanded(workflow.id)) {
+			this.expandedToolGroupByWorkflowId.delete(workflow.id);
+		}
 
 		return html`
 			<div class="chat-row assistant-row assistant-workflow-row" data-message-id=${workflow.id}>
 				<div class="message-shell assistant-message-shell">
 					<div class="assistant-block">
-						<button class="tool-workflow-summary" @click=${() => this.toggleToolWorkflowExpanded(workflow.id)}>
+						<button
+							class="tool-workflow-summary"
+							@click=${() => {
+								if (running > 0) return;
+								this.toggleToolWorkflowExpanded(workflow.id);
+							}}
+						>
 							<span class="workflow-divider" aria-hidden="true"></span>
 							<span class="workflow-summary-center">
 								<span class="workflow-summary-label">${summaryPrimary}</span>
 								<span class="workflow-summary-meta">${summarySecondary}</span>
+								<span class="workflow-summary-caret">${expanded ? "▾" : "▸"}</span>
 							</span>
 							<span class="workflow-divider" aria-hidden="true"></span>
 						</button>
@@ -3957,14 +3965,12 @@ export class ChatView {
 									? html`<div class="assistant-content ${workflow.isStreaming ? "streaming-cursor" : ""}"><markdown-block .content=${workflow.finalText}></markdown-block></div>`
 									: nothing}
 								${workflow.errorText ? html`<div class="assistant-error-line">${workflow.errorText}</div>` : nothing}
-								${showMissingWrapUp ? html`<div class="assistant-wrapup-missing">No final message returned for this tool run.</div>` : nothing}
 							`
 							: html`
 								${workflow.finalText
 									? html`<div class="assistant-content workflow-final-collapsed"><markdown-block .content=${workflow.finalText}></markdown-block></div>`
 									: nothing}
 								${workflow.errorText ? html`<div class="assistant-error-line">${workflow.errorText}</div>` : nothing}
-								${showMissingWrapUp ? html`<div class="assistant-wrapup-missing">No final message returned for this tool run.</div>` : nothing}
 							`}
 					</div>
 				</div>

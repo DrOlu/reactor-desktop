@@ -4965,10 +4965,9 @@ body.sidebar-resizing {
 	border: none;
 	background: transparent;
 	padding: 0;
-	display: grid;
-	grid-template-columns: 1fr auto 1fr;
+	display: flex;
 	align-items: center;
-	gap: 10px;
+	gap: 12px;
 	cursor: pointer;
 	color: color-mix(in srgb, var(--text) 76%, var(--muted));
 }
@@ -4979,11 +4978,13 @@ body.sidebar-resizing {
 	justify-content: center;
 	gap: 12px;
 	min-width: max-content;
+	margin: 0 auto;
 }
 
 .workflow-divider {
 	height: 1px;
 	background: color-mix(in srgb, var(--border) 66%, transparent);
+	flex: 1;
 }
 
 .workflow-summary-label {
@@ -4991,16 +4992,24 @@ body.sidebar-resizing {
 	font-weight: 560;
 	color: color-mix(in srgb, var(--text) 82%, var(--muted));
 	white-space: nowrap;
+	font-variant-numeric: tabular-nums;
 }
 
 .workflow-summary-meta {
 	font-size: 11px;
 	color: color-mix(in srgb, var(--muted) 90%, var(--text));
 	white-space: nowrap;
+	font-variant-numeric: tabular-nums;
+}
+
+.workflow-summary-caret {
+	font-size: 12px;
+	color: color-mix(in srgb, var(--muted) 86%, var(--text));
 }
 
 .tool-workflow-summary:hover .workflow-summary-label,
-.tool-workflow-summary:hover .workflow-summary-meta {
+.tool-workflow-summary:hover .workflow-summary-meta,
+.tool-workflow-summary:hover .workflow-summary-caret {
 	color: color-mix(in srgb, var(--text) 90%, var(--muted));
 }
 
@@ -5134,19 +5143,8 @@ body.sidebar-resizing {
 	font-size: 12px;
 }
 
-.assistant-wrapup-missing {
-	margin: 6px 0 10px;
-	font-size: 12px;
-	color: color-mix(in srgb, var(--muted) 92%, var(--text));
-	font-style: italic;
-}
-
 .workflow-final-collapsed {
 	margin-top: 6px;
-}
-
-.assistant-tool-only-row {
-	margin-bottom: 10px;
 }
 
 .assistant-final-divider::before,
