@@ -1762,6 +1762,15 @@ function setPaneVisibility(pane: WorkspaceState["pane"]): void {
 	settingsPane.classList.toggle("hidden-pane", pane !== "settings");
 }
 
+function resolveSettingsRuntimeProjectPath(workspace: WorkspaceState | null): string | null {
+	if (!workspace) return null;
+	const workspacePath = getWorkspaceActiveProjectPath(workspace);
+	if (!workspacePath) return null;
+	const sidebarMatch = sidebar?.getProjectByPath(workspacePath) ?? null;
+	if (!sidebarMatch) return null;
+	return sidebarMatch.path;
+}
+
 async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWorkspace()): Promise<void> {
 	const applyVersion = ++workspacePaneApplyVersion;
 	const isStale = (): boolean => applyVersion !== workspacePaneApplyVersion;
@@ -1845,14 +1854,14 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 		setPaneVisibility("settings");
 		try {
 			const panel = mountSettingsPanel();
-			panel.setRuntimeProjectPath(getWorkspaceActiveProjectPath(workspace));
+			panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
 			await panel.open();
 			if (isStale()) return;
 		} catch (err) {
 			console.error("Failed to render settings pane:", err);
 			settingsPanel = null;
 			const panel = mountSettingsPanel();
-			panel.setRuntimeProjectPath(getWorkspaceActiveProjectPath(workspace));
+			panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
 			await panel.open();
 			if (isStale()) return;
 		}
@@ -2663,7 +2672,7 @@ async function recoverSettingsPaneIfBlank(reason: string): Promise<void> {
 	try {
 		settingsPanel = null;
 		const panel = mountSettingsPanel();
-		panel.setRuntimeProjectPath(getWorkspaceActiveProjectPath(workspace));
+		panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
 		await panel.open();
 	} catch (err) {
 		console.error("Settings pane blank recovery failed:", err);
@@ -2684,7 +2693,7 @@ function requestOpenSettingsPanel(): void {
 				settingsPanel = null;
 				setPaneVisibility("settings");
 				const panel = mountSettingsPanel();
-				panel.setRuntimeProjectPath(getWorkspaceActiveProjectPath(workspace));
+				panel.setRuntimeProjectPath(resolveSettingsRuntimeProjectPath(workspace));
 				void panel.open();
 			} catch (innerErr) {
 				console.error("Settings pane recovery failed:", innerErr);

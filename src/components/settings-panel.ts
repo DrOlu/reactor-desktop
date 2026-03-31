@@ -767,6 +767,16 @@ export class SettingsPanel {
 		} else {
 			this.authStatus = null;
 			this.compatibilityReport = null;
+			this.authLoading = false;
+			this.compatibilityLoading = false;
+			this.desktopStatus = null;
+			this.cliStatus = null;
+			this.desktopLoading = false;
+			this.cliLoading = false;
+			this.themeCatalogLoading = false;
+			this.themeCatalogError = "";
+			this.themeCatalogMessage = "";
+			this.availableThemes = [];
 		}
 
 		try {
@@ -786,11 +796,18 @@ export class SettingsPanel {
 			// ignore missing persisted settings
 		}
 
-		const tasks: Promise<void>[] = [this.refreshDesktopStatus(), this.refreshCliStatus(), this.refreshThemeCatalog()];
-		if (hasRuntimeProject) {
-			tasks.push(this.refreshAuthStatus(), this.refreshCompatibilityStatus());
+		if (!hasRuntimeProject) {
+			this.applyAppearanceProfileForCurrentResolvedTheme(false);
+			return;
 		}
-		await Promise.all(tasks);
+
+		await Promise.all([
+			this.refreshDesktopStatus(),
+			this.refreshCliStatus(),
+			this.refreshThemeCatalog(),
+			this.refreshAuthStatus(),
+			this.refreshCompatibilityStatus(),
+		]);
 		this.applyAppearanceProfileForCurrentResolvedTheme(false);
 	}
 
@@ -1160,6 +1177,53 @@ export class SettingsPanel {
 		const authProviders = Array.isArray(this.authStatus?.configured_providers) ? this.authStatus.configured_providers : [];
 		const compatibilityChecks = Array.isArray(this.compatibilityReport?.checks) ? this.compatibilityReport.checks : [];
 		const runtimeControlsEnabled = Boolean(this.runtimeProjectPath);
+
+		if (!runtimeControlsEnabled) {
+			try {
+				render(
+					html`
+						<div class="settings-view-root">
+							<div class="settings-view-header">
+								<div class="settings-view-title-wrap">
+									<div class="settings-view-title">Settings</div>
+									<div class="settings-view-meta">Desktop preferences that work without an active project.</div>
+								</div>
+								<div class="settings-view-header-actions">
+									<button class="settings-back-btn" @click=${() => this.close()}>← Back</button>
+								</div>
+							</div>
+							<div class="settings-view-body">
+								<div class="settings-view-grid">
+									<section class="settings-group settings-group-full">
+										<div class="settings-section">
+											<div class="settings-section-title">Appearance</div>
+											<div class="settings-label">Theme</div>
+											<div class="settings-desc">Choose light, dark, or system mode.</div>
+											<div class="theme-grid" style="margin-top:10px;">
+												<button class="theme-btn ${this.state.theme === "light" ? "active" : ""}" @click=${() => this.setTheme("light")}>Light</button>
+												<button class="theme-btn ${this.state.theme === "dark" ? "active" : ""}" @click=${() => this.setTheme("dark")}>Dark</button>
+												<button class="theme-btn ${this.state.theme === "system" ? "active" : ""}" @click=${() => this.setTheme("system")}>System</button>
+											</div>
+										</div>
+									</section>
+									<section class="settings-group settings-group-full">
+										<div class="settings-section">
+											<div class="settings-section-title">Runtime</div>
+											<div class="settings-desc">Open a project to enable assistant, account, update diagnostics, and compatibility settings.</div>
+										</div>
+									</section>
+								</div>
+							</div>
+						</div>
+					`,
+					this.container,
+				);
+			} catch (err) {
+				console.error("Settings no-project render failed:", err);
+				this.container.innerHTML = "<div class=\"settings-view-root\"><div class=\"settings-view-body\"><div class=\"settings-desc\">Unable to render settings right now.</div></div></div>";
+			}
+			return;
+		}
 
 		try {
 			const template = html`
