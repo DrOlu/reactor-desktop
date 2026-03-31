@@ -776,7 +776,27 @@ export class SettingsPanel {
 		this.authLoading = true;
 		this.render();
 		try {
-			this.authStatus = await rpcBridge.getPiAuthStatus();
+			const raw = await rpcBridge.getPiAuthStatus();
+			const providers = Array.isArray(raw?.configured_providers)
+				? raw.configured_providers
+					.filter((entry) => entry && typeof entry === "object")
+					.map((entry) => {
+						const provider = typeof entry.provider === "string" && entry.provider.trim().length > 0 ? entry.provider.trim() : "unknown";
+						const source = entry.source === "environment" || entry.source === "auth_file_api_key" || entry.source === "auth_file_oauth"
+							? entry.source
+							: "environment";
+						const kind = entry.kind === "api_key" || entry.kind === "oauth" || entry.kind === "unknown"
+							? entry.kind
+							: "unknown";
+						return { provider, source, kind };
+					})
+				: [];
+			this.authStatus = {
+				agent_dir: typeof raw?.agent_dir === "string" ? raw.agent_dir : null,
+				auth_file: typeof raw?.auth_file === "string" ? raw.auth_file : null,
+				auth_file_exists: Boolean(raw?.auth_file_exists),
+				configured_providers: providers,
+			};
 		} catch {
 			this.authStatus = null;
 		} finally {
@@ -836,7 +856,13 @@ export class SettingsPanel {
 		this.compatibilityLoading = true;
 		this.render();
 		try {
-			this.compatibilityReport = await rpcBridge.checkRpcCompatibility();
+			const raw = await rpcBridge.checkRpcCompatibility();
+			this.compatibilityReport = {
+				ok: Boolean(raw?.ok),
+				checks: Array.isArray(raw?.checks) ? raw.checks.filter((entry) => typeof entry === "string") : [],
+				error: typeof raw?.error === "string" && raw.error.trim().length > 0 ? raw.error : undefined,
+				checkedAt: typeof raw?.checkedAt === "number" && Number.isFinite(raw.checkedAt) ? raw.checkedAt : Date.now(),
+			};
 		} catch (err) {
 			this.compatibilityReport = {
 				ok: false,
@@ -1109,7 +1135,11 @@ export class SettingsPanel {
 			return;
 		}
 
-		const template = html`
+		const authProviders = Array.isArray(this.authStatus?.configured_providers) ? this.authStatus.configured_providers : [];
+		const compatibilityChecks = Array.isArray(this.compatibilityReport?.checks) ? this.compatibilityReport.checks : [];
+
+		try {
+			const template = html`
 			<div class="settings-view-root">
 				<div class="settings-view-header">
 					<div class="settings-view-title-wrap">
@@ -1195,19 +1225,17 @@ export class SettingsPanel {
 									? html`<div class="settings-desc">Checking account status…</div>`
 									: html`
 										<div class="settings-desc">
-											${this.authStatus && this.authStatus.configured_providers.length > 0
-												? `Connected providers: ${this.authStatus.configured_providers.length}`
+											${authProviders.length > 0
+												? `Connected providers: ${authProviders.length}`
 												: "No provider connected yet."}
 										</div>
 										<div class="settings-actions">
 											<button class="ghost-btn" @click=${() => this.refreshAuthStatus()}>Refresh account status</button>
 										</div>
-										${this.authStatus && this.authStatus.configured_providers.length > 0
+										${authProviders.length > 0
 											? html`
 												<div class="account-chips">
-													${this.authStatus.configured_providers.map(
-														(p) => html`<span class="account-chip">${p.provider} · ${p.source === "environment" ? "env" : p.kind}</span>`,
-													)}
+													${authProviders.map((p) => html`<span class="account-chip">${p.provider} · ${p.source === "environment" ? "env" : p.kind}</span>`)}
 												</div>
 											`
 											: null}
@@ -1295,7 +1323,7 @@ export class SettingsPanel {
 										? html`
 											<div class="settings-desc">
 												RPC compatibility: ${this.compatibilityReport.ok ? "OK" : "Failed"}
-												${this.compatibilityReport.checks.length > 0 ? html` (${this.compatibilityReport.checks.join(", ")})` : null}
+												${compatibilityChecks.length > 0 ? html` (${compatibilityChecks.join(", ")})` : null}
 											</div>
 											${this.compatibilityReport.error ? html`<div class="settings-desc">${this.compatibilityReport.error}</div>` : null}
 										`
@@ -1309,7 +1337,27 @@ export class SettingsPanel {
 			</div>
 		`;
 
-		render(template, this.container);
+			render(template, this.container);
+		} catch (err) {
+			console.error("Settings panel render failed:", err);
+			this.container.innerHTML = `
+				<div class="settings-view-root">
+					<div class="settings-view-header">
+						<div class="settings-view-title-wrap">
+							<div class="settings-view-title">Settings</div>
+							<div class="settings-view-meta">Failed to render settings content.</div>
+						</div>
+					</div>
+					<div class="settings-view-body">
+						<div class="settings-group">
+							<div class="settings-section">
+								<div class="settings-desc">Something went wrong while rendering settings. Close and reopen Settings to retry.</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			`;
+		}
 	}
 
 	destroy(): void {

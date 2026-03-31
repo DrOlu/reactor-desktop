@@ -131,6 +131,7 @@ let desktopUpdateChecking = false;
 let projectSwitchTask: Promise<void> = Promise.resolve();
 let projectSwitchVersion = 0;
 let workspacePaneApplyVersion = 0;
+let settingsPaneRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 
 class StaleProjectTaskError extends Error {
 	constructor() {
@@ -1853,6 +1854,7 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 			await panel.open();
 			if (isStale()) return;
 		}
+		scheduleSettingsPaneRecovery("apply-settings");
 		syncDebugOverlay();
 		return;
 	}
@@ -2639,6 +2641,32 @@ function wireCommandPaletteBuiltins(): void {
 	]);
 }
 
+function scheduleSettingsPaneRecovery(reason: string, delayMs = 80): void {
+	if (settingsPaneRecoveryTimer) {
+		clearTimeout(settingsPaneRecoveryTimer);
+	}
+	settingsPaneRecoveryTimer = setTimeout(() => {
+		settingsPaneRecoveryTimer = null;
+		void recoverSettingsPaneIfBlank(reason);
+	}, delayMs);
+}
+
+async function recoverSettingsPaneIfBlank(reason: string): Promise<void> {
+	const workspace = getActiveWorkspace();
+	if (!workspace || workspace.pane !== "settings") return;
+	const settingsContainer = document.getElementById("settings-pane");
+	if (!settingsContainer) return;
+	if (settingsContainer.childElementCount > 0 && settingsPanel?.isVisible()) return;
+	recordDebugTrace(`settings-recover reason=${reason}`);
+	try {
+		settingsPanel = null;
+		const panel = mountSettingsPanel();
+		await panel.open();
+	} catch (err) {
+		console.error("Settings pane blank recovery failed:", err);
+	}
+}
+
 function requestOpenSettingsPanel(): void {
 	const workspace = getActiveWorkspace();
 	if (!workspace) return;
@@ -2646,23 +2674,21 @@ function requestOpenSettingsPanel(): void {
 	persistWorkspaces();
 	syncWorkspaceTabsBar();
 	setPaneVisibility("settings");
-	try {
-		const panel = mountSettingsPanel();
-		void panel.open();
-	} catch (err) {
-		console.error("Failed to pre-open settings pane:", err);
-	}
-	void applyWorkspacePane(workspace).catch((err) => {
-		console.error("Failed to open settings pane:", err);
-		try {
-			settingsPanel = null;
-			setPaneVisibility("settings");
-			const panel = mountSettingsPanel();
-			void panel.open();
-		} catch (innerErr) {
-			console.error("Settings pane recovery failed:", innerErr);
-		}
-	});
+	void applyWorkspacePane(workspace)
+		.catch((err) => {
+			console.error("Failed to open settings pane:", err);
+			try {
+				settingsPanel = null;
+				setPaneVisibility("settings");
+				const panel = mountSettingsPanel();
+				void panel.open();
+			} catch (innerErr) {
+				console.error("Settings pane recovery failed:", innerErr);
+			}
+		})
+		.finally(() => {
+			scheduleSettingsPaneRecovery("request-open");
+		});
 }
 
 function openSettings(): void {
@@ -2915,6 +2941,10 @@ function renderApp(): void {
 		if (settingsPanel.isVisible() && !settingsPanel.hasRenderedContent()) {
 			settingsPanel.render();
 		}
+	}
+	const activeWorkspace = getActiveWorkspace();
+	if (activeWorkspace?.pane === "settings" && settingsPaneContainer && settingsPaneContainer.childElementCount === 0) {
+		scheduleSettingsPaneRecovery("render-app");
 	}
 
 	applySidebarWidth();
