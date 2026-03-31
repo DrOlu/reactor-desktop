@@ -4666,7 +4666,9 @@ export class ChatView {
 
 	render(): void {
 		this.doRender();
-		this.scrollToBottom();
+		if (this.projectPath) {
+			this.scrollToBottom();
+		}
 		this.syncWorkingStatusAnimation();
 		this.ensureActiveSlashItemVisible();
 	}

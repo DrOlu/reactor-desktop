@@ -4654,6 +4654,7 @@ body.sidebar-resizing {
 	display: flex;
 	align-items: center;
 	justify-content: center;
+	overflow-y: visible;
 }
 
 .welcome-dashboard {
