@@ -467,6 +467,7 @@ export class ChatView {
 		error: null,
 		updatedAt: 0,
 	};
+	private welcomeProjectMenuOpen = false;
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -509,6 +510,7 @@ export class ChatView {
 		}).__PI_DESKTOP_PUSH_TRACE__;
 		push?.(`chat:setProjectPath ${previous ?? "-"} -> ${path ?? "-"}`);
 		this.gitMenuOpen = false;
+		this.welcomeProjectMenuOpen = false;
 		this.modelPickerOpen = false;
 		this.selectedSkillDraft = null;
 		this.slashPaletteOpen = false;
@@ -3566,21 +3568,7 @@ export class ChatView {
 	}
 
 	private renderEmptyState(): TemplateResult {
-		return html`
-			<div class="chat-row assistant-row intro-row">
-				<div class="message-shell assistant-message-shell">
-					<div class="assistant-block intro-block">
-						<div class="assistant-content intro-text">Hey! How can I help you today?</div>
-					</div>
-				</div>
-			</div>
-			<div class="chat-row intro-actions-row">
-				<div class="intro-actions">
-					<button class="ghost-btn intro-chip" @click=${() => this.setInputText("Summarize this repository and suggest the top 5 improvements")}>Summarize repository</button>
-					<button class="ghost-btn intro-chip" @click=${() => this.setInputText("Find bugs and propose a prioritized fix plan")}>Find bugs</button>
-				</div>
-			</div>
-		`;
+		return this.renderCenteredWelcome();
 	}
 
 	private async openExternalUrl(url: string): Promise<void> {
@@ -3722,35 +3710,57 @@ export class ChatView {
 	}
 
 	private renderWelcomeDashboard(): TemplateResult {
+		return this.renderCenteredWelcome();
+	}
+
+	private renderCenteredWelcome(): TemplateResult {
 		const snapshot = this.welcomeDashboard;
 		const brandIconUrl = new URL("../../assets/branding/pi-desktop-icon.svg", import.meta.url).href;
-		const cliLabel = snapshot.currentCliVersion ? `CLI ${snapshot.currentCliVersion}` : "CLI unavailable";
-		const updateLabel = snapshot.updateAvailable
-			? `Update available${snapshot.latestCliVersion ? ` · ${snapshot.latestCliVersion}` : ""}`
-			: "CLI up to date";
-		const inventoryLabel = `${snapshot.skills.length} skills · ${snapshot.extensions.length} extensions · ${snapshot.themes.length} themes`;
+		const hasProject = Boolean(this.projectPath);
+		const projectLabel = this.projectPath ? this.fileNameFromPath(this.projectPath) : "Add project";
 
 		return html`
 			<div class="welcome-dashboard welcome-dashboard-minimal">
 				<div class="welcome-brand-lockup" aria-hidden="true">
 					<div class="welcome-brand-mark"><img src=${brandIconUrl} alt="Pi Desktop" /></div>
-					<div class="welcome-brand-name">Pi Desktop</div>
 				</div>
 				<h2>Let’s build</h2>
-				<p>Add a project to start your workspace.</p>
-				<div class="welcome-actions welcome-actions-centered">
-					<button class="welcome-action primary" @click=${() => this.onAddProject?.()}>Add project</button>
-					<button class="welcome-action" @click=${() => this.onOpenPackages?.()}>Packages</button>
-					<button class="welcome-action" @click=${() => this.onOpenSettings?.()}>Settings</button>
+				<div class="welcome-project-wrap">
+					<button
+						class="welcome-project-trigger ${hasProject ? "active" : ""}"
+						@click=${() => {
+							this.welcomeProjectMenuOpen = !this.welcomeProjectMenuOpen;
+							this.render();
+						}}
+					>
+						<span>${projectLabel}</span>
+						<span class="welcome-project-caret">${this.welcomeProjectMenuOpen ? "⌃" : "⌄"}</span>
+					</button>
+					${this.welcomeProjectMenuOpen
+						? html`
+							<div class="welcome-project-menu">
+								${hasProject ? html`<div class="welcome-project-item current"><span>📁 ${projectLabel}</span><span>✓</span></div>` : nothing}
+								<button class="welcome-project-item" @click=${() => {
+									this.welcomeProjectMenuOpen = false;
+									this.onAddProject?.();
+								}}>📂 Add new project</button>
+								<div class="welcome-project-sep"></div>
+								<button class="welcome-project-item" @click=${() => {
+									this.welcomeProjectMenuOpen = false;
+									this.onOpenPackages?.();
+								}}>Packages</button>
+								<button class="welcome-project-item" @click=${() => {
+									this.welcomeProjectMenuOpen = false;
+									this.onOpenSettings?.();
+								}}>Settings</button>
+							</div>
+						`
+						: nothing}
 				</div>
-				<div class="welcome-meta-line">${inventoryLabel}</div>
-				<div class="welcome-meta-line muted">${snapshot.loading ? "Refreshing local Pi inventory…" : `${cliLabel} · ${updateLabel}`}</div>
-				<div class="welcome-link-row">
-					<button class="welcome-link-btn" @click=${() => void this.refreshWelcomeDashboard(true)}>Refresh</button>
-					<button class="welcome-link-btn" @click=${() => void this.openExternalUrl("https://github.com/mariozechner/pi-coding-agent")}>Pi docs</button>
+				<div class="welcome-meta-line muted">
+					${snapshot.loading ? "Refreshing local Pi inventory…" : `${snapshot.skills.length} skills · ${snapshot.extensions.length} extensions · ${snapshot.themes.length} themes`}
 				</div>
 				${snapshot.error ? html`<div class="welcome-error">${snapshot.error}</div>` : nothing}
-				<div class="welcome-updated">Updated ${formatAge(snapshot.updatedAt)}</div>
 			</div>
 		`;
 	}
@@ -4589,6 +4599,11 @@ export class ChatView {
 					if (this.gitMenuOpen && !target.closest(".git-branch-wrap")) {
 						this.gitMenuOpen = false;
 						this.gitBranchQuery = "";
+						changed = true;
+					}
+
+					if (this.welcomeProjectMenuOpen && !target.closest(".welcome-project-wrap")) {
+						this.welcomeProjectMenuOpen = false;
 						changed = true;
 					}
 

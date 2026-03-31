@@ -4716,6 +4716,87 @@ body.sidebar-resizing {
 	line-height: 1.35;
 }
 
+.welcome-project-wrap {
+	position: relative;
+	justify-self: center;
+	width: min(520px, 100%);
+}
+
+.welcome-project-trigger {
+	width: 100%;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 10px;
+	border: none;
+	background: transparent;
+	padding: 0;
+	font-size: 64px;
+	line-height: 1;
+	letter-spacing: -0.03em;
+	color: color-mix(in srgb, var(--text) 48%, var(--bg));
+	cursor: pointer;
+}
+
+.welcome-project-trigger.active {
+	color: color-mix(in srgb, var(--text) 92%, var(--bg));
+}
+
+.welcome-project-caret {
+	font-size: 36px;
+	line-height: 1;
+	color: color-mix(in srgb, var(--text) 52%, var(--bg));
+	margin-top: 8px;
+}
+
+.welcome-project-menu {
+	position: absolute;
+	left: 50%;
+	transform: translateX(-50%);
+	top: calc(100% + 12px);
+	width: min(560px, calc(100vw - 70px));
+	border-radius: 20px;
+	border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+	background: color-mix(in srgb, var(--bg-elev) 96%, transparent);
+	box-shadow: 0 14px 36px rgba(0, 0, 0, 0.16);
+	padding: 10px;
+	display: grid;
+	gap: 4px;
+	z-index: 5;
+}
+
+.welcome-project-item {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	border: none;
+	background: transparent;
+	color: var(--text);
+	font-size: 33px;
+	line-height: 1.15;
+	padding: 10px 12px;
+	border-radius: 12px;
+	text-align: left;
+	cursor: pointer;
+}
+
+.welcome-project-item.current {
+	font-size: 33px;
+	cursor: default;
+}
+
+.welcome-project-item:hover {
+	background: color-mix(in srgb, var(--bg-soft) 74%, transparent);
+}
+
+.welcome-project-sep {
+	height: 1px;
+	background: color-mix(in srgb, var(--border) 84%, transparent);
+	margin: 3px 6px;
+}
+
 .welcome-actions {
 	display: flex;
 	flex-wrap: wrap;
@@ -6001,6 +6082,16 @@ body.sidebar-resizing {
 		font-size: 46px;
 	}
 
+	.welcome-project-trigger,
+	.welcome-project-item,
+	.welcome-project-item.current {
+		font-size: 42px;
+	}
+
+	.welcome-project-caret {
+		font-size: 28px;
+	}
+
 	.composer-controls {
 		flex-wrap: wrap;
 	}
@@ -6048,6 +6139,25 @@ body.sidebar-resizing {
 
 	.welcome-dashboard p {
 		font-size: 15px;
+	}
+
+	.welcome-project-wrap {
+		width: 100%;
+	}
+
+	.welcome-project-trigger,
+	.welcome-project-item,
+	.welcome-project-item.current {
+		font-size: 30px;
+	}
+
+	.welcome-project-caret {
+		font-size: 22px;
+		margin-top: 4px;
+	}
+
+	.welcome-project-menu {
+		width: calc(100vw - 38px);
 	}
 
 	.welcome-actions-centered {
