@@ -468,6 +468,9 @@ export class ChatView {
 		updatedAt: 0,
 	};
 	private welcomeProjectMenuOpen = false;
+	private welcomeHeadlineTimer: ReturnType<typeof setInterval> | null = null;
+	private welcomeHeadlineIndex = 0;
+	private readonly welcomeHeadlines = ["Ready when you are", "Your move when you’re back", "Come back when you want, I’m here", "I’m waiting for you"];
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -519,6 +522,7 @@ export class ChatView {
 		this.slashSkillsUpdatedAt = 0;
 		if (!path) {
 			this.bindingStatusText = null;
+			this.welcomeHeadlineIndex = (this.welcomeHeadlineIndex + 1) % this.welcomeHeadlines.length;
 			this.modelLoadRequestSeq += 1;
 			this.loadingModels = false;
 			this.runHasAssistantText = false;
@@ -906,6 +910,10 @@ export class ChatView {
 		this.cancelStreamingUiReconcile();
 		this.runHasAssistantText = false;
 		this.clearWorkingStatusTimer(true);
+		if (this.welcomeHeadlineTimer) {
+			clearInterval(this.welcomeHeadlineTimer);
+			this.welcomeHeadlineTimer = null;
+		}
 		for (const unlisten of this.nativeFileDropUnlisteners) {
 			unlisten();
 		}
@@ -3718,13 +3726,14 @@ export class ChatView {
 		const brandIconUrl = new URL("../../assets/branding/pi-desktop-icon.svg", import.meta.url).href;
 		const hasProject = Boolean(this.projectPath);
 		const projectLabel = this.projectPath ? this.fileNameFromPath(this.projectPath) : "Add project";
+		const welcomeHeadline = this.welcomeHeadlines[this.welcomeHeadlineIndex] ?? this.welcomeHeadlines[0];
 
 		return html`
 			<div class="welcome-dashboard welcome-dashboard-minimal">
 				<div class="welcome-brand-lockup" aria-hidden="true">
 					<div class="welcome-brand-mark"><img src=${brandIconUrl} alt="Pi Desktop" /></div>
 				</div>
-				<h2>Ready when you are — Pi</h2>
+				<h2>${welcomeHeadline}</h2>
 				<div class="welcome-project-wrap">
 					<button
 						class="welcome-project-trigger ${hasProject ? "active" : ""}"
@@ -3757,7 +3766,7 @@ export class ChatView {
 						`
 						: nothing}
 				</div>
-				<div class="welcome-meta-line muted">
+				<div class="welcome-meta-line muted ${this.welcomeProjectMenuOpen ? "hidden" : ""}">
 					${snapshot.loading ? "Refreshing local Pi inventory…" : `${snapshot.skills.length} skills · ${snapshot.extensions.length} extensions · ${snapshot.themes.length} themes`}
 				</div>
 				${snapshot.error ? html`<div class="welcome-error">${snapshot.error}</div>` : nothing}
@@ -4578,6 +4587,16 @@ export class ChatView {
 
 	private doRender(): void {
 		const hasProject = Boolean(this.projectPath);
+		if (!hasProject && !this.welcomeHeadlineTimer) {
+			this.welcomeHeadlineTimer = setInterval(() => {
+				if (this.projectPath) return;
+				this.welcomeHeadlineIndex = (this.welcomeHeadlineIndex + 1) % this.welcomeHeadlines.length;
+				this.render();
+			}, 10000);
+		} else if (hasProject && this.welcomeHeadlineTimer) {
+			clearInterval(this.welcomeHeadlineTimer);
+			this.welcomeHeadlineTimer = null;
+		}
 		const hasMessages = this.messages.length > 0;
 		const showWorkingIndicator = hasProject && this.shouldShowWorkingIndicator();
 		if (!hasProject && !this.welcomeDashboard.loading && this.welcomeDashboard.updatedAt === 0) {
