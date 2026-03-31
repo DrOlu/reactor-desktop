@@ -3902,7 +3902,7 @@ export class ChatView {
 				? (running > 0 ? Date.now() : Math.max(workflow.endedAt, workflow.startedAt)) - workflow.startedAt
 				: 0;
 		const durationLabel = durationMs > 0 ? formatDuration(durationMs) : "0s";
-		const summaryPrimary = running > 0 ? `Working for ${durationLabel}` : `Worked for ${durationLabel}`;
+		const summaryPrimary = durationLabel;
 		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : `${total} complete`;
 		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
 		const manualExpanded = this.isToolWorkflowExpanded(workflow.id);
@@ -3951,7 +3951,7 @@ export class ChatView {
 													class="tool-workflow-line"
 													@click=${() => this.toggleToolGroupExpanded(workflow.id, group.id)}
 												>
-													<span class="tool-workflow-line-text">${this.renderToolPreview(group.preview)}</span>
+													<span class="tool-workflow-line-text ${groupRunning ? "running" : ""}">${this.renderToolPreview(group.preview)}</span>
 													${count > 1 ? html`<span class="tool-workflow-count">×${count}</span>` : nothing}
 												</button>
 												${groupExpanded
@@ -3966,7 +3966,7 @@ export class ChatView {
 										`;
 									})}
 								</div>
-								${hasFinalContent ? html`<div class="assistant-final-divider"><span>Final message</span></div>` : nothing}
+								${hasFinalContent ? html`<div class="assistant-final-divider"><span>Agent</span></div>` : nothing}
 								${workflow.finalText
 									? html`<div class="assistant-content ${workflow.isStreaming ? "streaming-cursor" : ""}"><markdown-block .content=${workflow.finalText}></markdown-block></div>`
 									: nothing}

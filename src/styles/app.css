@@ -5054,6 +5054,23 @@ body.sidebar-resizing {
 	text-overflow: ellipsis;
 }
 
+.tool-workflow-line-text.running {
+	--tool-run-idle: color-mix(in srgb, var(--text) 70%, var(--muted));
+	--tool-run-active: color-mix(in srgb, var(--text) 92%, var(--accent));
+	color: var(--tool-run-idle);
+	animation: toolRunSweep 1.7s ease-in-out infinite;
+}
+
+@keyframes toolRunSweep {
+	0%,
+	100% {
+		color: var(--tool-run-idle);
+	}
+	50% {
+		color: var(--tool-run-active);
+	}
+}
+
 .tool-workflow-count {
 	font-size: 11px;
 	color: color-mix(in srgb, var(--muted) 88%, var(--text));
