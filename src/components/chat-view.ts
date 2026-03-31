@@ -3766,6 +3766,52 @@ export class ChatView {
 		const duration = startedAt > 0 ? formatDuration((running > 0 ? Date.now() : Math.max(endedAt, startedAt)) - startedAt) : null;
 		const primaryLabel = running > 0 ? `Working with ${total} tool call${total === 1 ? "" : "s"}` : duration ? `Worked for ${duration}` : `Worked with ${total} tool call${total === 1 ? "" : "s"}`;
 		const secondaryLabel = running > 0 ? "in progress" : failed > 0 ? `${failed} failed` : `${total} complete`;
+		const showSummary = total > 1 || groups.length > 1;
+		const showDetails = showSummary ? expanded : true;
+
+		const workflowList = html`
+			<div class="tool-workflow-list">
+				${groups.map((group) => {
+					const count = group.calls.length;
+					const groupExpanded = group.calls.some((tc) => tc.isExpanded);
+					const groupRunning = group.calls.some((tc) => tc.isRunning);
+					const groupFailed = group.calls.some((tc) => tc.isError);
+					return html`
+						<div class="tool-workflow-item ${groupExpanded ? "expanded" : ""}">
+							<button class="tool-workflow-line" @click=${() => this.toggleToolCallGroupExpanded(group)}>
+								<span class="tool-workflow-line-text">${group.preview}</span>
+								${count > 1 ? html`<span class="tool-workflow-count">×${count}</span>` : nothing}
+								<span class="tool-workflow-state ${groupRunning ? "running" : groupFailed ? "error" : "done"}">${groupRunning ? "running" : groupFailed ? "failed" : "done"}</span>
+								<span class="tool-workflow-caret">${groupExpanded ? "▾" : "▸"}</span>
+							</button>
+							${groupExpanded
+								? html`
+									<div class="tool-workflow-details">
+										${group.calls.map((call, index) => {
+											const output = (call.streamingOutput ?? call.result ?? "").trimEnd();
+											const hasOutput = output.length > 0;
+											const placeholder = call.isRunning ? "Waiting for tool output…" : "No output reported.";
+											return html`
+												<div class="tool-workflow-detail-run">
+													${group.calls.length > 1 ? html`<div class="tool-workflow-detail-label">Run ${index + 1}</div>` : nothing}
+													<pre class="tool-workflow-output ${hasOutput ? "" : "tool-output-empty"}">${hasOutput ? output : placeholder}${call.isRunning
+														? html`<span class="streaming-inline"></span>`
+														: nothing}</pre>
+												</div>
+											`;
+										})}
+									</div>
+								`
+								: nothing}
+						</div>
+					`;
+				})}
+			</div>
+		`;
+
+		if (!showSummary) {
+			return html`<div class="tool-workflow tool-workflow-flat">${workflowList}</div>`;
+		}
 
 		return html`
 			<div class="tool-workflow ${expanded ? "expanded" : ""}">
@@ -3776,73 +3822,43 @@ export class ChatView {
 					<span class="workflow-summary-caret">${expanded ? "▾" : "▸"}</span>
 					<span class="workflow-divider" aria-hidden="true"></span>
 				</button>
-				${expanded
-					? html`
-						<div class="tool-workflow-list">
-							${groups.map((group) => {
-								const count = group.calls.length;
-								const groupExpanded = group.calls.some((tc) => tc.isExpanded);
-								const groupRunning = group.calls.some((tc) => tc.isRunning);
-								const groupFailed = group.calls.some((tc) => tc.isError);
-								return html`
-									<div class="tool-workflow-item ${groupExpanded ? "expanded" : ""}">
-										<button class="tool-workflow-line" @click=${() => this.toggleToolCallGroupExpanded(group)}>
-											<span class="tool-workflow-line-text">${group.preview}</span>
-											${count > 1 ? html`<span class="tool-workflow-count">×${count}</span>` : nothing}
-											<span class="tool-workflow-state ${groupRunning ? "running" : groupFailed ? "error" : "done"}">${groupRunning ? "running" : groupFailed ? "failed" : "done"}</span>
-											<span class="tool-workflow-caret">${groupExpanded ? "▾" : "▸"}</span>
-										</button>
-										${groupExpanded
-											? html`
-												<div class="tool-workflow-details">
-													${group.calls.map((call, index) => {
-														const output = (call.streamingOutput ?? call.result ?? "").trimEnd();
-														const hasOutput = output.length > 0;
-														const placeholder = call.isRunning ? "Waiting for tool output…" : "No output reported.";
-														return html`
-															<div class="tool-workflow-detail-run">
-																${group.calls.length > 1 ? html`<div class="tool-workflow-detail-label">Run ${index + 1}</div>` : nothing}
-																<pre class="tool-workflow-output ${hasOutput ? "" : "tool-output-empty"}">${hasOutput ? output : placeholder}${call.isRunning
-																	? html`<span class="streaming-inline"></span>`
-																	: nothing}</pre>
-															</div>
-														`;
-													})}
-												</div>
-											`
-											: nothing}
-									</div>
-								`;
-							})}
-						</div>
-					`
-					: nothing}
+				${showDetails ? workflowList : nothing}
 			</div>
 		`;
 	}
 
-	private renderAssistantMessage(msg: UiMessage): TemplateResult {
-		const canCopy = Boolean(
-			msg.text.trim().length > 0 ||
-				msg.toolCalls.length > 0 ||
-				(msg.thinking ?? "").trim().length > 0 ||
-				(msg.errorText ?? "").trim().length > 0,
-		);
+	private hasAssistantTextAfter(messages: UiMessage[], index: number): boolean {
+		for (let i = index + 1; i < messages.length; i += 1) {
+			const candidate = messages[i];
+			if (candidate.role !== "assistant") continue;
+			if (candidate.text.trim().length > 0) return true;
+		}
+		return false;
+	}
+
+	private renderAssistantMessage(msg: UiMessage, context: { previous: UiMessage | null; index: number; all: UiMessage[] }): TemplateResult {
+		const canCopy = Boolean(msg.text.trim().length > 0 || (msg.errorText ?? "").trim().length > 0);
 		const errorLine = (msg.errorText ?? "").trim();
 		const formattedErrorLine = errorLine
 			? (/^error\b[:\s-]*/i.test(errorLine) ? errorLine : `Error: ${errorLine}`)
 			: "";
 		const hasToolWorkflow = msg.toolCalls.length > 0;
+		const hasText = msg.text.trim().length > 0;
+		const previousHasTools = Boolean(context.previous?.role === "assistant" && context.previous.toolCalls.length > 0);
+		const showFinalDivider = hasText && (hasToolWorkflow || previousHasTools);
+		const shouldRenderThinking = Boolean(msg.thinking) && !(hasToolWorkflow && !hasText);
+		const hasLaterAssistantText = this.hasAssistantTextAfter(context.all, context.index);
+		const showMissingWrapUp = hasToolWorkflow && !hasText && !msg.isStreaming && !this.currentIsStreaming() && !hasLaterAssistantText;
+
 		return html`
-			<div class="chat-row assistant-row" data-message-id=${msg.id}>
+			<div class="chat-row assistant-row ${hasToolWorkflow && !hasText ? "assistant-tool-only-row" : ""}" data-message-id=${msg.id}>
 				<div class="message-shell assistant-message-shell">
 					<div class="assistant-block">
 						${hasToolWorkflow ? this.renderToolWorkflow(msg) : nothing}
-						${this.renderThinking(msg)}
-						${msg.text && hasToolWorkflow
-							? html`<div class="assistant-final-divider"><span>Final message</span></div>`
-							: nothing}
-						${msg.text
+						${shouldRenderThinking ? this.renderThinking(msg) : nothing}
+						${showFinalDivider ? html`<div class="assistant-final-divider"><span>Final message</span></div>` : nothing}
+						${showMissingWrapUp ? html`<div class="assistant-wrapup-missing">No final message returned for this tool run.</div>` : nothing}
+						${hasText
 							? html`
 								<div class="assistant-content ${msg.isStreaming ? "streaming-cursor" : ""}">
 									<markdown-block .content=${msg.text}></markdown-block>
@@ -5010,9 +5026,15 @@ export class ChatView {
 					${!hasProject
 						? this.renderWelcomeDashboard()
 						: hasMessages
-							? html`${this.messages.map((m) => {
+							? html`${this.messages.map((m, index, all) => {
 									if (m.role === "user") return this.renderUserMessage(m);
-									if (m.role === "assistant") return this.renderAssistantMessage(m);
+									if (m.role === "assistant") {
+										return this.renderAssistantMessage(m, {
+											previous: index > 0 ? all[index - 1] ?? null : null,
+											index,
+											all,
+										});
+									}
 									return this.renderSystemMessage(m);
 								})}`
 							: this.bindingStatusText
