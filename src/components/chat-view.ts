@@ -48,6 +48,7 @@ interface UiMessage {
 	thinking?: string;
 	thinkingExpanded?: boolean;
 	thinkingScrollTop?: number;
+	isThinkingStreaming?: boolean;
 	isStreaming?: boolean;
 	errorText?: string;
 	deliveryMode?: DeliveryMode;
@@ -1171,6 +1172,7 @@ export class ChatView {
 						text,
 						thinking: thinking || undefined,
 						thinkingExpanded: this.allThinkingExpanded,
+						isThinkingStreaming: false,
 						toolCalls,
 					});
 					break;
@@ -2299,6 +2301,7 @@ export class ChatView {
 				const last = this.messages[this.messages.length - 1];
 				if (last && last.role === "assistant") {
 					last.isStreaming = false;
+					last.isThinkingStreaming = false;
 				}
 				this.retryStatus = "";
 				const runError = this.extractRuntimeErrorMessage(event);
@@ -2343,6 +2346,7 @@ export class ChatView {
 						errorText: assistantError || undefined,
 						toolCalls: [],
 						isStreaming: true,
+						isThinkingStreaming: false,
 						thinkingExpanded: this.allThinkingExpanded,
 					});
 					if (initialText.trim().length > 0) {
@@ -2393,6 +2397,7 @@ export class ChatView {
 				if (subtype === "error") {
 					if (last?.role === "assistant") {
 						last.isStreaming = false;
+						last.isThinkingStreaming = false;
 						const streamError = this.extractRuntimeErrorMessage(assistantEvent) || this.extractRuntimeErrorMessage(event);
 						if (streamError) {
 							last.errorText = streamError;
@@ -2407,6 +2412,7 @@ export class ChatView {
 				if (subtype === "text_delta") {
 					const partialText = this.extractAssistantPartialContent(assistantEvent, "text");
 					last.text = this.mergeStreamingText(last.text, partialText, assistantEvent.delta);
+					last.isThinkingStreaming = false;
 					if (last.text.trim().length > 0) {
 						this.runHasAssistantText = true;
 						if (this.runSawToolActivity) {
@@ -2420,11 +2426,13 @@ export class ChatView {
 					const partialThinking = this.extractAssistantPartialContent(assistantEvent, "thinking");
 					const currentThinking = last.thinking || "";
 					last.thinking = this.mergeStreamingText(currentThinking, partialThinking, assistantEvent.delta);
+					last.isThinkingStreaming = true;
 					this.scheduleStreamingUiReconcile(1800);
 					if ((last.thinking?.length || 0) % 100 === 0) this.render();
 				} else if (subtype === "toolcall_end") {
 					this.runSawToolActivity = true;
 					this.keepWorkflowExpandedUntilAssistantText = true;
+					last.isThinkingStreaming = false;
 					const tc = assistantEvent.toolCall as Record<string, unknown>;
 					if (tc) {
 						const rawId = typeof tc.id === "string" ? tc.id.trim() : "";
@@ -2459,6 +2467,7 @@ export class ChatView {
 				if (turnRole === "assistant") {
 					const last = this.messages[this.messages.length - 1];
 					if (last?.role === "assistant") {
+						last.isThinkingStreaming = false;
 						const turnError = this.extractAssistantMessageError(turnMessage);
 						if (turnError) {
 							last.errorText = turnError;
@@ -2473,6 +2482,7 @@ export class ChatView {
 				const last = this.messages[this.messages.length - 1];
 				if (last?.role === "assistant") {
 					last.isStreaming = false;
+					last.isThinkingStreaming = false;
 					const completed = event.message as Record<string, unknown> | undefined;
 					const completedError = this.extractAssistantMessageError(completed);
 					if (completedError) {
@@ -3226,6 +3236,7 @@ export class ChatView {
 		for (const message of this.messages) {
 			if (message.role !== "assistant") continue;
 			message.isStreaming = false;
+			message.isThinkingStreaming = false;
 			for (const toolCall of message.toolCalls) {
 				toolCall.isRunning = false;
 				toolCall.streamingOutput = undefined;
@@ -3880,20 +3891,15 @@ export class ChatView {
 		nextIndex: number;
 	} | null {
 		const start = this.messages[startIndex];
-		if (!start || start.role !== "assistant" || start.toolCalls.length === 0) return null;
+		if (!start || start.role !== "assistant") return null;
+		const startIsThinkingOnly = this.isThinkingOnlyAssistantMessage(start);
+		const startHasTools = start.toolCalls.length > 0;
+		if (!startIsThinkingOnly && !startHasTools) return null;
 
 		const grouped: UiMessage[] = [];
 		let sawTools = false;
 		let consumedFinalMessage = false;
 		let cursor = startIndex;
-
-		const leadingThinking: UiMessage[] = [];
-		for (let index = startIndex - 1; index >= 0; index -= 1) {
-			const candidate = this.messages[index];
-			if (!this.isThinkingOnlyAssistantMessage(candidate)) break;
-			leadingThinking.unshift(candidate);
-		}
-		grouped.push(...leadingThinking);
 
 		while (cursor < this.messages.length) {
 			const candidate = this.messages[cursor];
@@ -3910,7 +3916,14 @@ export class ChatView {
 				continue;
 			}
 
-			if (!sawTools) break;
+			if (!sawTools) {
+				if (hasThinking && !hasText && !hasError) {
+					grouped.push(candidate);
+					cursor += 1;
+					continue;
+				}
+				break;
+			}
 
 			if (!consumedFinalMessage && (hasText || hasError)) {
 				grouped.push(candidate);
@@ -3928,8 +3941,11 @@ export class ChatView {
 			break;
 		}
 
+		if (grouped.length === 0) return null;
 		const toolCalls = grouped.flatMap((entry) => entry.toolCalls);
-		if (toolCalls.length === 0) return null;
+		const isProvisionalWorkflow =
+			toolCalls.length === 0 && this.currentIsStreaming() && this.keepWorkflowExpandedUntilAssistantText && !this.runHasAssistantText;
+		if (toolCalls.length === 0 && !isProvisionalWorkflow) return null;
 
 		const startedAt = toolCalls.reduce((min, tc) => {
 			if (!tc.startedAt) return min;
@@ -3953,7 +3969,7 @@ export class ChatView {
 			.map((entry) => (entry.errorText ?? "").trim())
 			.filter(Boolean)
 			.join("\n");
-		const workflowId = `workflow-${start.id}`;
+		const workflowId = `workflow-${grouped[0]?.id ?? start.id}`;
 
 		const nextIndex = Math.max(startIndex + 1, cursor);
 		return {
@@ -3996,12 +4012,13 @@ export class ChatView {
 				: 0;
 		const durationLabel = durationMs > 0 ? formatDuration(durationMs) : "0s";
 		const summaryPrimary = durationLabel;
-		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : `${total} complete`;
+		const summarySecondary = total === 0 ? "thinking" : running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : `${total} complete`;
 		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
 		const manualExpanded = this.isToolWorkflowExpanded(workflow.id);
-		const autoExpanded = workflow.isTerminal && this.keepWorkflowExpandedUntilAssistantText && (running > 0 || this.runSawToolActivity);
+		const autoExpanded = workflow.isTerminal && this.keepWorkflowExpandedUntilAssistantText && (running > 0 || this.runSawToolActivity || total === 0);
 		const expanded = autoExpanded || manualExpanded;
 		const thinkingExpanded = this.isWorkflowThinkingExpanded(workflow.id);
+		const thinkingAnimating = running === 0 && workflow.messages.some((entry) => entry.isThinkingStreaming);
 		if (!expanded) {
 			this.expandedToolGroupByWorkflowId.delete(workflow.id);
 			this.expandedWorkflowThinkingIds.delete(workflow.id);
@@ -4031,8 +4048,7 @@ export class ChatView {
 								${workflow.thinkingText
 									? html`
 										<div class="tool-workflow-thinking">
-											<button class="tool-workflow-thinking-toggle ${running > 0 ? "animating" : "done"}" @click=${() => this.toggleWorkflowThinkingExpanded(workflow.id)}>
-												<span class="tool-workflow-thinking-caret">${thinkingExpanded ? "▾" : "▸"}</span>
+											<button class="tool-workflow-thinking-toggle ${thinkingAnimating ? "animating" : "done"}" @click=${() => this.toggleWorkflowThinkingExpanded(workflow.id)}>
 												<span class="tool-workflow-thinking-text">Thinking…</span>
 											</button>
 											${thinkingExpanded ? html`<div class="tool-workflow-thinking-content">${workflow.thinkingText}</div>` : nothing}
@@ -4094,17 +4110,7 @@ export class ChatView {
 		const rows: TemplateResult[] = [];
 		for (let index = 0; index < this.messages.length; index += 1) {
 			const msg = this.messages[index];
-			if (this.isThinkingOnlyAssistantMessage(msg)) {
-				let lookahead = index + 1;
-				while (lookahead < this.messages.length && this.isThinkingOnlyAssistantMessage(this.messages[lookahead])) {
-					lookahead += 1;
-				}
-				const next = this.messages[lookahead];
-				if (next?.role === "assistant" && next.toolCalls.length > 0) {
-					continue;
-				}
-			}
-			if (msg.role === "assistant" && msg.toolCalls.length > 0) {
+			if (msg.role === "assistant") {
 				const workflowCandidate = this.collectAssistantWorkflow(index);
 				if (workflowCandidate) {
 					rows.push(this.renderAssistantWorkflow(workflowCandidate.workflow));
