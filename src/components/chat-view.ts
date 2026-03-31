@@ -3773,12 +3773,14 @@ export class ChatView {
 		let text = value.replace(/^\s*thinking\.\.\.\s*/i, "").trim();
 		if (!text) return "";
 		const paragraphs = text
-			.split(/\n{2,}/)
+		.split(/\n{2,}/)
 			.map((part) => part.trim())
 			.filter(Boolean);
 		const deduped: string[] = [];
+		const seen = new Set<string>();
 		for (const part of paragraphs) {
-			if (deduped[deduped.length - 1] === part) continue;
+			if (seen.has(part)) continue;
+			seen.add(part);
 			deduped.push(part);
 		}
 		text = deduped.join("\n\n").trim();
@@ -4130,22 +4132,49 @@ export class ChatView {
 				group: ToolCallGroup;
 			};
 		const detailEntries: WorkflowDetailEntry[] = [];
+		let lastThinkingFull = "";
 		for (const message of workflow.messages) {
 			const normalizedThinking = this.normalizeThinkingText((message.thinking ?? "").replace(/^\s+/, ""));
 			if (normalizedThinking) {
-				const entryId = `${workflow.id}:thinking:${message.id}`;
+				let displayThinking = normalizedThinking;
+				if (lastThinkingFull) {
+					if (normalizedThinking.startsWith(lastThinkingFull)) {
+						displayThinking = normalizedThinking.slice(lastThinkingFull.length).replace(/^\s+/, "").trim();
+					} else if (lastThinkingFull.startsWith(normalizedThinking)) {
+						displayThinking = "";
+					}
+				}
+				lastThinkingFull = normalizedThinking;
+
 				const previous = detailEntries[detailEntries.length - 1];
-				if (previous && previous.kind === "thinking" && previous.text === normalizedThinking) {
+				if (!displayThinking) {
+					if (previous && previous.kind === "thinking") {
+						previous.animating = previous.animating || Boolean(message.isThinkingStreaming);
+					}
+				} else if (previous && previous.kind === "thinking") {
 					previous.animating = previous.animating || Boolean(message.isThinkingStreaming);
+					if (displayThinking === previous.text || previous.text.startsWith(displayThinking)) {
+						// no-op: duplicate or shorter repeat
+					} else if (displayThinking.startsWith(previous.text)) {
+						previous.text = displayThinking;
+					} else {
+						detailEntries.push({
+							kind: "thinking",
+							id: `${workflow.id}:thinking:${message.id}`,
+							text: displayThinking,
+							animating: Boolean(message.isThinkingStreaming),
+						});
+					}
 				} else {
 					detailEntries.push({
 						kind: "thinking",
-						id: entryId,
-						text: normalizedThinking,
+						id: `${workflow.id}:thinking:${message.id}`,
+						text: displayThinking,
 						animating: Boolean(message.isThinkingStreaming),
 					});
 				}
 			}
+
 			for (const toolCall of message.toolCalls) {
 				const preview = this.summarizeToolCall(toolCall);
 				const previous = detailEntries[detailEntries.length - 1];
