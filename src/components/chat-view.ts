@@ -3723,6 +3723,7 @@ export class ChatView {
 
 	private renderWelcomeDashboard(): TemplateResult {
 		const snapshot = this.welcomeDashboard;
+		const brandIconUrl = new URL("../../assets/branding/pi-desktop-icon.svg", import.meta.url).href;
 		const cliLabel = snapshot.currentCliVersion ? `CLI ${snapshot.currentCliVersion}` : "CLI unavailable";
 		const updateLabel = snapshot.updateAvailable
 			? `Update available${snapshot.latestCliVersion ? ` · ${snapshot.latestCliVersion}` : ""}`
@@ -3732,7 +3733,7 @@ export class ChatView {
 		return html`
 			<div class="welcome-dashboard welcome-dashboard-minimal">
 				<div class="welcome-brand-lockup" aria-hidden="true">
-					<div class="welcome-brand-mark">🌊</div>
+					<div class="welcome-brand-mark"><img src=${brandIconUrl} alt="Pi Desktop" /></div>
 					<div class="welcome-brand-name">Pi Desktop</div>
 				</div>
 				<h2>Let’s build</h2>

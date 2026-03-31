@@ -4682,9 +4682,15 @@ body.sidebar-resizing {
 	border-radius: 16px;
 	display: grid;
 	place-items: center;
-	font-size: 28px;
 	border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
 	background: color-mix(in srgb, var(--bg-elev) 72%, transparent);
+	overflow: hidden;
+}
+
+.welcome-brand-mark img {
+	width: 34px;
+	height: 34px;
+	display: block;
 }
 
 .welcome-brand-name {
