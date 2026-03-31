@@ -5036,7 +5036,7 @@ body.sidebar-resizing {
 }
 
 .tool-workflow-line {
-	width: min(100%, 72ch);
+	width: min(100%, 64ch);
 	max-width: 100%;
 	min-width: 0;
 	border: none;
@@ -5050,9 +5050,10 @@ body.sidebar-resizing {
 	cursor: pointer;
 }
 
-.tool-workflow-line:hover {
-	color: var(--text);
-	background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
+.tool-workflow-line:hover,
+.tool-workflow-line:focus-visible {
+	color: inherit;
+	background: transparent;
 }
 
 .tool-workflow-line-text {
@@ -5066,45 +5067,53 @@ body.sidebar-resizing {
 	display: block;
 }
 
+.tool-workflow-line:hover .tool-workflow-line-text,
+.tool-workflow-line:focus-visible .tool-workflow-line-text {
+	color: color-mix(in srgb, var(--text) 88%, var(--muted));
+}
+
 .tool-workflow-line-text.running {
-	--tool-run-idle: color-mix(in srgb, var(--text) 70%, var(--muted));
-	--tool-run-active: color-mix(in srgb, var(--text) 92%, var(--accent));
-	color: var(--tool-run-idle);
-	animation: toolRunSweep 1.6s ease-in-out infinite;
-}
-
-.tool-workflow-running-indicator {
-	font-size: 10px;
-	letter-spacing: 0.02em;
-	color: color-mix(in srgb, var(--accent) 76%, var(--text));
-	animation: toolRunDots 1.2s ease-in-out infinite;
-	margin-left: auto;
-}
-
-@keyframes toolRunDots {
-	0%,
-	100% {
-		opacity: 0.32;
-	}
-	50% {
-		opacity: 1;
-	}
-}
-
-@keyframes toolRunSweep {
-	0%,
-	100% {
-		color: var(--tool-run-idle);
-	}
-	50% {
-		color: var(--tool-run-active);
-	}
+	--thinking-idle: color-mix(in srgb, var(--muted) 88%, var(--text));
+	--thinking-active: color-mix(in srgb, var(--text) 80%, var(--muted));
+	color: var(--thinking-idle);
+	animation: thinkingCharSweep 1.8s ease-in-out infinite;
 }
 
 .tool-workflow-count {
 	font-size: 11px;
 	color: color-mix(in srgb, var(--muted) 88%, var(--text));
 	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	flex-shrink: 0;
+}
+
+.tool-workflow-thinking {
+	margin-top: 4px;
+	margin-bottom: 8px;
+}
+
+.tool-workflow-thinking-label {
+	font-size: 11px;
+	line-height: 1.3;
+	user-select: none;
+	--thinking-idle: color-mix(in srgb, var(--muted) 88%, var(--text));
+	--thinking-active: color-mix(in srgb, var(--text) 80%, var(--muted));
+}
+
+.tool-workflow-thinking-label.animating .thinking-char {
+	animation: thinkingCharSweep 1.8s ease-in-out infinite;
+	animation-delay: calc(var(--thinking-char-index, 0) * 0.12s);
+}
+
+.tool-workflow-thinking-label.done .thinking-char {
+	color: var(--thinking-active);
+}
+
+.tool-workflow-thinking-content {
+	margin-top: 4px;
+	font-size: 12px;
+	line-height: 1.45;
+	color: color-mix(in srgb, var(--muted) 92%, var(--text));
+	white-space: pre-wrap;
 }
 
 .tool-workflow-state {

@@ -3774,13 +3774,13 @@ export class ChatView {
 		const command = this.pickToolArg(tc.args, ["command", "cmd", "shell", "script"]);
 		const path = this.pickToolArg(tc.args, ["path", "filePath", "targetPath", "from", "to"]);
 		const query = this.pickToolArg(tc.args, ["query", "pattern", "glob", "name"]);
-		if (name === "bash" && command) return `Ran ${truncate(command, 96)}`;
-		if ((name === "read" || name === "readfile") && path) return `Read ${truncate(path, 88)}`;
-		if ((name === "write" || name === "writefile") && path) return `Wrote ${truncate(path, 88)}`;
-		if (name === "edit" && path) return `Edited ${truncate(path, 88)}`;
-		if (name.includes("search") && query) return `Explored ${truncate(query, 88)}`;
-		if ((name === "list" || name.includes("ls")) && path) return `Explored ${truncate(path, 88)}`;
-		if (path) return `${tc.name} ${truncate(path, 88)}`;
+		if (name === "bash" && command) return `Ran ${truncate(command, 84)}`;
+		if ((name === "read" || name === "readfile") && path) return `Read ${truncate(path, 74)}`;
+		if ((name === "write" || name === "writefile") && path) return `Wrote ${truncate(path, 74)}`;
+		if (name === "edit" && path) return `Edited ${truncate(path, 74)}`;
+		if (name.includes("search") && query) return `Explored ${truncate(query, 74)}`;
+		if ((name === "list" || name.includes("ls")) && path) return `Explored ${truncate(path, 74)}`;
+		if (path) return `${tc.name} ${truncate(path, 74)}`;
 		return `Ran ${tc.name}`;
 	}
 
@@ -3843,6 +3843,7 @@ export class ChatView {
 			messages: UiMessage[];
 			toolCalls: ToolCallBlock[];
 			toolGroups: ToolCallGroup[];
+			thinkingText: string;
 			finalText: string;
 			errorText: string;
 			isStreaming: boolean;
@@ -3904,7 +3905,13 @@ export class ChatView {
 			if (!tc.endedAt) return max;
 			return Math.max(max, tc.endedAt);
 		}, 0);
+		const thinkingParts = grouped
+			.map((entry) => this.normalizeThinkingText((entry.thinking ?? "").replace(/^\s+/, "")))
+			.filter(Boolean);
+		const dedupedThinkingParts = thinkingParts.filter((part, index) => index === 0 || part !== thinkingParts[index - 1]);
+		const thinkingText = dedupedThinkingParts.join("\n\n").trim();
 		const finalText = grouped
+			.filter((entry) => entry.toolCalls.length === 0)
 			.map((entry) => entry.text.trim())
 			.filter(Boolean)
 			.join("\n\n");
@@ -3922,6 +3929,7 @@ export class ChatView {
 				messages: grouped,
 				toolCalls,
 				toolGroups: this.buildToolCallGroups(toolCalls),
+				thinkingText,
 				finalText,
 				errorText,
 				isStreaming: grouped.some((entry) => entry.isStreaming),
@@ -3938,6 +3946,7 @@ export class ChatView {
 		messages: UiMessage[];
 		toolCalls: ToolCallBlock[];
 		toolGroups: ToolCallGroup[];
+		thinkingText: string;
 		finalText: string;
 		errorText: string;
 		isStreaming: boolean;
@@ -3957,7 +3966,7 @@ export class ChatView {
 		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : `${total} complete`;
 		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
 		const manualExpanded = this.isToolWorkflowExpanded(workflow.id);
-		const autoExpanded = !hasFinalContent && (this.keepWorkflowExpandedUntilAssistantText || workflow.isStreaming || running > 0);
+		const autoExpanded = workflow.isTerminal && this.keepWorkflowExpandedUntilAssistantText && (running > 0 || this.runSawToolActivity);
 		const expanded = autoExpanded || manualExpanded;
 		if (!expanded) {
 			this.expandedToolGroupByWorkflowId.delete(workflow.id);
@@ -3984,6 +3993,16 @@ export class ChatView {
 						</button>
 						${expanded
 							? html`
+								${workflow.thinkingText
+									? html`
+										<div class="tool-workflow-thinking">
+											<div class="tool-workflow-thinking-label ${autoExpanded ? "animating" : "done"}">
+												${"thinking…".split("").map((char, index) => html`<span class="thinking-char" style=${`--thinking-char-index:${index};`}>${char}</span>`)}
+											</div>
+											<div class="tool-workflow-thinking-content">${workflow.thinkingText}</div>
+										</div>
+									`
+									: nothing}
 								<div class="tool-workflow-list">
 									${workflow.toolGroups.map((group) => {
 										const count = group.calls.length;
@@ -4004,7 +4023,6 @@ export class ChatView {
 												>
 													<span class="tool-workflow-line-text ${groupRunning ? "running" : ""}">${this.renderToolPreview(group.preview)}</span>
 													${count > 1 ? html`<span class="tool-workflow-count">×${count}</span>` : nothing}
-													${groupRunning ? html`<span class="tool-workflow-running-indicator" aria-hidden="true">•••</span>` : nothing}
 												</button>
 												${groupExpanded
 													? html`
