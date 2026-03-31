@@ -440,6 +440,7 @@ export class ChatView {
 	private expandedToolWorkflowIds = new Set<string>();
 	private expandedToolGroupByWorkflowId = new Map<string, string>();
 	private expandedWorkflowThinkingIds = new Set<string>();
+	private collapsedAutoWorkflowIds = new Set<string>();
 	private selectedSkillDraft: ComposerSkillDraft | null = null;
 	private slashPaletteOpen = false;
 	private slashPaletteQuery = "";
@@ -588,6 +589,7 @@ export class ChatView {
 		this.expandedToolWorkflowIds.clear();
 		this.expandedToolGroupByWorkflowId.clear();
 		this.expandedWorkflowThinkingIds.clear();
+		this.collapsedAutoWorkflowIds.clear();
 		this.compactionCycle = null;
 		this.keepWorkflowExpandedUntilAssistantText = false;
 		if (!path) {
@@ -622,6 +624,7 @@ export class ChatView {
 		this.expandedToolWorkflowIds.clear();
 		this.expandedToolGroupByWorkflowId.clear();
 		this.expandedWorkflowThinkingIds.clear();
+		this.collapsedAutoWorkflowIds.clear();
 		this.compactionCycle = null;
 		this.runHasAssistantText = false;
 		this.runSawToolActivity = false;
@@ -1034,6 +1037,7 @@ export class ChatView {
 			this.expandedToolWorkflowIds.clear();
 			this.expandedToolGroupByWorkflowId.clear();
 			this.expandedWorkflowThinkingIds.clear();
+			this.collapsedAutoWorkflowIds.clear();
 			this.forkEntryIdByMessageId.clear();
 			this.lastAssistantContextTokens = this.deriveLatestAssistantContextTokens(backendMessages);
 			if (state.isStreaming) {
@@ -2281,6 +2285,7 @@ export class ChatView {
 				this.runHasAssistantText = false;
 				this.runSawToolActivity = false;
 				this.keepWorkflowExpandedUntilAssistantText = true;
+				this.collapsedAutoWorkflowIds.clear();
 				if (this.state) {
 					this.state = { ...this.state, isStreaming: true };
 					this.onStateChange?.(this.state);
@@ -3049,6 +3054,7 @@ export class ChatView {
 		this.runHasAssistantText = false;
 		this.runSawToolActivity = false;
 		this.keepWorkflowExpandedUntilAssistantText = false;
+		this.collapsedAutoWorkflowIds.clear();
 		this.render();
 		this.scrollToBottom(true);
 	}
@@ -3253,6 +3259,7 @@ export class ChatView {
 		this.runHasAssistantText = false;
 		this.runSawToolActivity = false;
 		this.keepWorkflowExpandedUntilAssistantText = false;
+		this.collapsedAutoWorkflowIds.clear();
 		this.onRunStateChange?.(false);
 	}
 
@@ -3664,18 +3671,8 @@ export class ChatView {
 		`;
 	}
 
-	private hasInlineWorkflowActivity(): boolean {
-		for (let index = 0; index < this.messages.length; index += 1) {
-			const msg = this.messages[index];
-			if (msg.role !== "assistant") continue;
-			if (this.collectAssistantWorkflow(index)) return true;
-		}
-		return false;
-	}
-
 	private shouldShowWorkingIndicator(): boolean {
 		if (!this.currentIsStreaming()) return false;
-		if (this.hasInlineWorkflowActivity()) return false;
 		return !this.runHasAssistantText;
 	}
 
@@ -3832,13 +3829,17 @@ export class ChatView {
 		return this.expandedToolWorkflowIds.has(workflowId);
 	}
 
-	private toggleToolWorkflowExpanded(workflowId: string): void {
-		if (this.expandedToolWorkflowIds.has(workflowId)) {
+	private toggleToolWorkflowExpanded(workflowId: string, autoExpanded = false, currentlyExpanded = false): void {
+		if (currentlyExpanded) {
 			this.expandedToolWorkflowIds.delete(workflowId);
 			this.expandedToolGroupByWorkflowId.delete(workflowId);
 			this.expandedWorkflowThinkingIds.delete(workflowId);
+			if (autoExpanded) {
+				this.collapsedAutoWorkflowIds.add(workflowId);
+			}
 		} else {
 			this.expandedToolWorkflowIds.add(workflowId);
+			this.collapsedAutoWorkflowIds.delete(workflowId);
 		}
 		this.render();
 	}
@@ -4022,11 +4023,14 @@ export class ChatView {
 				: 0;
 		const durationLabel = durationMs > 0 ? formatDuration(durationMs) : "0s";
 		const summaryPrimary = durationLabel;
-		const summarySecondary = total === 0 ? "thinking" : running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : `${total} complete`;
+		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : total > 0 ? `${total} complete` : "";
 		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
 		const manualExpanded = this.isToolWorkflowExpanded(workflow.id);
 		const autoExpanded = workflow.isTerminal && this.keepWorkflowExpandedUntilAssistantText && (running > 0 || this.runSawToolActivity || total === 0);
-		const expanded = autoExpanded || manualExpanded;
+		if (!autoExpanded) {
+			this.collapsedAutoWorkflowIds.delete(workflow.id);
+		}
+		const expanded = (autoExpanded && !this.collapsedAutoWorkflowIds.has(workflow.id)) || manualExpanded;
 		const thinkingExpanded = this.isWorkflowThinkingExpanded(workflow.id);
 		const thinkingAnimating = running === 0 && workflow.messages.some((entry) => entry.isThinkingStreaming);
 		if (!expanded) {
@@ -4041,14 +4045,13 @@ export class ChatView {
 						<button
 							class="tool-workflow-summary"
 							@click=${() => {
-								if (autoExpanded) return;
-								this.toggleToolWorkflowExpanded(workflow.id);
+								this.toggleToolWorkflowExpanded(workflow.id, autoExpanded, expanded);
 							}}
 						>
 							<span class="workflow-divider" aria-hidden="true"></span>
 							<span class="workflow-summary-center">
 								<span class="workflow-summary-label">${summaryPrimary}</span>
-								<span class="workflow-summary-meta">${summarySecondary}</span>
+								${summarySecondary ? html`<span class="workflow-summary-meta">${summarySecondary}</span>` : nothing}
 								<span class="workflow-summary-caret">${expanded ? "▾" : "▸"}</span>
 							</span>
 							<span class="workflow-divider" aria-hidden="true"></span>

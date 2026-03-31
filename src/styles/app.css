@@ -5127,9 +5127,9 @@ body.sidebar-resizing {
 .tool-workflow-thinking-content {
 	margin: 2px 0 8px;
 	padding: 0 0 0 10px;
-	font-size: 12px;
+	font-size: 11px;
 	line-height: 1.45;
-	color: color-mix(in srgb, var(--muted) 92%, var(--text));
+	color: color-mix(in srgb, var(--text) 74%, var(--muted));
 	white-space: pre-wrap;
 	max-height: 220px;
 	overflow: auto;
