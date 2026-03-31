@@ -447,6 +447,7 @@ export class ChatView {
 	private slashSkillsLoading = false;
 	private slashSkillsUpdatedAt = 0;
 	private runHasAssistantText = false;
+	private keepWorkflowExpandedUntilAssistantText = false;
 	private readonly workingStatusPhrases = [
 		"starting",
 		"warming up",
@@ -584,6 +585,7 @@ export class ChatView {
 		this.expandedToolWorkflowIds.clear();
 		this.expandedToolGroupByWorkflowId.clear();
 		this.compactionCycle = null;
+		this.keepWorkflowExpandedUntilAssistantText = false;
 		if (!path) {
 			this.bindingStatusText = null;
 			this.welcomeHeadlineIndex = (this.welcomeHeadlineIndex + 1) % this.welcomeHeadlines.length;
@@ -616,6 +618,7 @@ export class ChatView {
 		this.expandedToolGroupByWorkflowId.clear();
 		this.compactionCycle = null;
 		this.runHasAssistantText = false;
+		this.keepWorkflowExpandedUntilAssistantText = false;
 		this.clearWorkingStatusTimer(true);
 		this.bindingStatusText = projectPath ? (statusText ?? "Loading session…") : null;
 		this.render();
@@ -1036,8 +1039,10 @@ export class ChatView {
 					if ((entry.role as string) !== "assistant") return false;
 					return this.extractText((entry as Record<string, unknown>).content).trim().length > 0;
 				});
+				this.keepWorkflowExpandedUntilAssistantText = !this.runHasAssistantText;
 			} else {
 				this.runHasAssistantText = false;
+				this.keepWorkflowExpandedUntilAssistantText = false;
 			}
 			this.pendingDeliveryMode = state.isStreaming ? "steer" : "prompt";
 			this.bindingStatusText = null;
@@ -2244,6 +2249,7 @@ export class ChatView {
 			case "agent_start":
 				this.pendingDeliveryMode = "steer";
 				this.runHasAssistantText = false;
+				this.keepWorkflowExpandedUntilAssistantText = true;
 				if (this.state) {
 					this.state = { ...this.state, isStreaming: true };
 					this.onStateChange?.(this.state);
@@ -2271,6 +2277,7 @@ export class ChatView {
 					this.pushRuntimeNotice(`Run failed: ${truncate(runError, 180)}`, "error", 2600);
 				}
 				this.runHasAssistantText = false;
+				this.keepWorkflowExpandedUntilAssistantText = false;
 				this.onRunStateChange?.(false);
 				rpcBridge
 					.getState()
@@ -2308,7 +2315,10 @@ export class ChatView {
 						isStreaming: true,
 						thinkingExpanded: this.allThinkingExpanded,
 					});
-					if (initialText.trim().length > 0) this.runHasAssistantText = true;
+					if (initialText.trim().length > 0) {
+						this.runHasAssistantText = true;
+						this.keepWorkflowExpandedUntilAssistantText = false;
+					}
 					this.render();
 					this.scrollToBottom();
 					break;
@@ -2363,7 +2373,10 @@ export class ChatView {
 				if (subtype === "text_delta") {
 					const partialText = this.extractAssistantPartialContent(assistantEvent, "text");
 					last.text = this.mergeStreamingText(last.text, partialText, assistantEvent.delta);
-					if (last.text.trim().length > 0) this.runHasAssistantText = true;
+					if (last.text.trim().length > 0) {
+						this.runHasAssistantText = true;
+						this.keepWorkflowExpandedUntilAssistantText = false;
+					}
 					this.scheduleStreamingUiReconcile(1800);
 					this.render();
 					this.scrollToBottom();
@@ -3187,6 +3200,7 @@ export class ChatView {
 		}
 		this.pendingDeliveryMode = "prompt";
 		this.runHasAssistantText = false;
+		this.keepWorkflowExpandedUntilAssistantText = false;
 		this.onRunStateChange?.(false);
 	}
 
@@ -3906,7 +3920,7 @@ export class ChatView {
 		const summarySecondary = running > 0 ? `${total} running` : failed > 0 ? `${failed} failed` : `${total} complete`;
 		const hasFinalContent = Boolean(workflow.finalText || workflow.errorText);
 		const manualExpanded = this.isToolWorkflowExpanded(workflow.id);
-		const autoExpanded = running > 0 || (workflow.isTerminal && this.currentIsStreaming() && !hasFinalContent);
+		const autoExpanded = this.keepWorkflowExpandedUntilAssistantText && workflow.isTerminal && !hasFinalContent;
 		const expanded = autoExpanded || manualExpanded;
 		if (!expanded) {
 			this.expandedToolGroupByWorkflowId.delete(workflow.id);
@@ -3951,9 +3965,9 @@ export class ChatView {
 													class="tool-workflow-line ${groupRunning ? "running" : ""}"
 													@click=${() => this.toggleToolGroupExpanded(workflow.id, group.id)}
 												>
-													${groupRunning ? html`<span class="tool-workflow-running-indicator" aria-hidden="true">•••</span>` : nothing}
 													<span class="tool-workflow-line-text ${groupRunning ? "running" : ""}">${this.renderToolPreview(group.preview)}</span>
 													${count > 1 ? html`<span class="tool-workflow-count">×${count}</span>` : nothing}
+													${groupRunning ? html`<span class="tool-workflow-running-indicator" aria-hidden="true">•••</span>` : nothing}
 												</button>
 												${groupExpanded
 													? html`

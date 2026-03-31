@@ -4998,7 +4998,7 @@ body.sidebar-resizing {
 	color: color-mix(in srgb, var(--text) 82%, var(--muted));
 	white-space: nowrap;
 	font-variant-numeric: tabular-nums;
-	min-width: 7ch;
+	width: 7ch;
 	text-align: center;
 }
 
@@ -5032,11 +5032,12 @@ body.sidebar-resizing {
 
 .tool-workflow-item {
 	border-radius: 8px;
+	max-width: min(100%, 760px);
 }
 
 .tool-workflow-line {
-	width: fit-content;
-	max-width: 100%;
+	width: min(100%, 760px);
+	max-width: min(100%, 760px);
 	border: none;
 	background: transparent;
 	padding: 5px 8px;
@@ -5053,16 +5054,14 @@ body.sidebar-resizing {
 	background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
 }
 
-.tool-workflow-line.running {
-	background: color-mix(in srgb, var(--bg-soft) 62%, transparent);
-}
-
 .tool-workflow-line-text {
 	font-size: 12px;
 	color: color-mix(in srgb, var(--text) 74%, var(--muted));
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	flex: 1;
+	min-width: 0;
 }
 
 .tool-workflow-line-text.running {
@@ -5077,6 +5076,7 @@ body.sidebar-resizing {
 	letter-spacing: 0.02em;
 	color: color-mix(in srgb, var(--accent) 76%, var(--text));
 	animation: toolRunDots 1.2s ease-in-out infinite;
+	margin-left: auto;
 }
 
 @keyframes toolRunDots {
