@@ -110,6 +110,12 @@ interface WelcomeDashboardSummary {
 	updatedAt: number;
 }
 
+interface WelcomeProjectSummary {
+	id: string;
+	name: string;
+	path: string;
+}
+
 interface ComposerSkillDraft {
 	name: string;
 	commandText: string;
@@ -137,6 +143,10 @@ function joinFsPath(base: string, child: string): string {
 	const sep = base.includes("\\") ? "\\" : "/";
 	const cleanBase = base.replace(/[\\/]+$/, "");
 	return `${cleanBase}${sep}${child}`;
+}
+
+function normalizeComparablePath(value: string | null | undefined): string {
+	return (value ?? "").replace(/\\/g, "/").replace(/\/+$|\s+$/g, "").toLowerCase();
 }
 
 function formatUsd(value: number): string {
@@ -358,6 +368,7 @@ export class ChatView {
 	private onAddProject: (() => void) | null = null;
 	private onOpenSettings: (() => void) | null = null;
 	private onOpenPackages: (() => void) | null = null;
+	private onSelectWelcomeProject: ((projectId: string) => void) | null = null;
 	private onPromptSubmitted: (() => void) | null = null;
 	private onRunStateChange: ((running: boolean) => void) | null = null;
 	private availableModels: ModelOption[] = [];
@@ -468,6 +479,8 @@ export class ChatView {
 		updatedAt: 0,
 	};
 	private welcomeProjectMenuOpen = false;
+	private welcomeProjects: WelcomeProjectSummary[] = [];
+	private welcomeActiveProjectId: string | null = null;
 	private welcomeHeadlineTimer: ReturnType<typeof setInterval> | null = null;
 	private welcomeHeadlineIndex = 0;
 	private readonly welcomeHeadlines = ["Ready when you are", "Your move when you’re back", "Come back when you want, I’m here", "I’m waiting for you"];
@@ -494,6 +507,18 @@ export class ChatView {
 
 	setOnOpenPackages(cb: () => void): void {
 		this.onOpenPackages = cb;
+	}
+
+	setOnSelectWelcomeProject(cb: (projectId: string) => void): void {
+		this.onSelectWelcomeProject = cb;
+	}
+
+	setWelcomeProjects(projects: Array<{ id: string; name: string; path: string }>, activeProjectId: string | null): void {
+		this.welcomeProjects = projects
+			.filter((entry) => Boolean(entry?.id) && Boolean(entry?.name) && Boolean(entry?.path))
+			.map((entry) => ({ id: entry.id, name: entry.name, path: entry.path }));
+		this.welcomeActiveProjectId = activeProjectId;
+		if (!this.projectPath) this.render();
 	}
 
 	setOnPromptSubmitted(cb: () => void): void {
@@ -3724,8 +3749,13 @@ export class ChatView {
 	private renderCenteredWelcome(): TemplateResult {
 		const snapshot = this.welcomeDashboard;
 		const brandIconUrl = new URL("../../assets/branding/pi-desktop-icon.svg", import.meta.url).href;
-		const hasProject = Boolean(this.projectPath);
-		const projectLabel = this.projectPath ? this.fileNameFromPath(this.projectPath) : "Add project";
+		const comparableProjectPath = normalizeComparablePath(this.projectPath);
+		const activeProject =
+			this.welcomeProjects.find((project) => project.id === this.welcomeActiveProjectId) ??
+			this.welcomeProjects.find((project) => normalizeComparablePath(project.path) === comparableProjectPath) ??
+			null;
+		const hasProject = Boolean(activeProject || this.projectPath);
+		const projectLabel = activeProject?.name ?? (this.projectPath ? this.fileNameFromPath(this.projectPath) : "Add project");
 		const welcomeHeadline = this.welcomeHeadlines[this.welcomeHeadlineIndex] ?? this.welcomeHeadlines[0];
 
 		return html`
@@ -3748,7 +3778,19 @@ export class ChatView {
 					${this.welcomeProjectMenuOpen
 						? html`
 							<div class="welcome-project-menu">
-								${hasProject ? html`<div class="welcome-project-item current"><span>${projectLabel}</span><span>✓</span></div>` : nothing}
+								${this.welcomeProjects.map((project) => {
+									const isCurrent = project.id === activeProject?.id;
+									return html`
+										<button class="welcome-project-item ${isCurrent ? "current" : ""}" @click=${() => {
+											this.welcomeProjectMenuOpen = false;
+											if (!isCurrent) this.onSelectWelcomeProject?.(project.id);
+										}}>
+											<span>${project.name}</span>
+											<span>${isCurrent ? "✓" : ""}</span>
+										</button>
+									`;
+								})}
+								${this.welcomeProjects.length > 0 ? html`<div class="welcome-project-sep"></div>` : nothing}
 								<button class="welcome-project-item" @click=${() => {
 									this.welcomeProjectMenuOpen = false;
 									this.onAddProject?.();

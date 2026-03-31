@@ -1603,7 +1603,10 @@ function ensureDebugOverlayPolling(): void {
 }
 
 function syncSidebarSelectionFromWorkspace(workspace: WorkspaceState | null = getActiveWorkspace()): void {
-	if (!sidebar) return;
+	if (!sidebar) {
+		chatView?.setWelcomeProjects([], workspace?.activeProjectId ?? null);
+		return;
+	}
 	if (!workspace) {
 		sidebar.clearActiveProject();
 		sidebar.setActiveSessionPath(null);
@@ -1611,6 +1614,7 @@ function syncSidebarSelectionFromWorkspace(workspace: WorkspaceState | null = ge
 		sidebar.setSuppressedSessionPaths([]);
 		sidebar.setAttentionSessions([]);
 		sidebar.setTransientSessionDraft(null);
+		chatView?.setWelcomeProjects(sidebar.listProjects(), null);
 		return;
 	}
 
@@ -1626,6 +1630,7 @@ function syncSidebarSelectionFromWorkspace(workspace: WorkspaceState | null = ge
 	} else {
 		sidebar.clearActiveProject();
 	}
+	chatView?.setWelcomeProjects(sidebar.listProjects(), getWorkspaceActiveProjectId(workspace));
 
 	const suppressedDraftSessionPaths = workspace.sessionTabs
 		.filter((tab) => isEphemeralSessionTab(tab) && Boolean(tab.sessionPath))
@@ -2373,6 +2378,9 @@ async function initialize(): Promise<void> {
 			persistWorkspaces();
 			syncWorkspaceTabsBar();
 			void applyWorkspacePane(workspace);
+		});
+		chatView.setOnSelectWelcomeProject((projectId) => {
+			sidebar?.setActiveProject(projectId, true);
 		});
 		chatView.setOnPromptSubmitted(() => {
 			startSidebarSessionsWarmRefresh();
