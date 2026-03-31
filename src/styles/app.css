@@ -5125,11 +5125,15 @@ body.sidebar-resizing {
 }
 
 .tool-workflow-thinking-content {
-	margin: 4px 8px 0;
+	margin: 2px 0 8px;
+	padding: 0 0 0 10px;
 	font-size: 12px;
 	line-height: 1.45;
 	color: color-mix(in srgb, var(--muted) 92%, var(--text));
 	white-space: pre-wrap;
+	max-height: 220px;
+	overflow: auto;
+	border-left: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
 }
 
 .tool-workflow-state {

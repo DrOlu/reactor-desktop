@@ -3664,8 +3664,18 @@ export class ChatView {
 		`;
 	}
 
+	private hasInlineWorkflowActivity(): boolean {
+		for (let index = 0; index < this.messages.length; index += 1) {
+			const msg = this.messages[index];
+			if (msg.role !== "assistant") continue;
+			if (this.collectAssistantWorkflow(index)) return true;
+		}
+		return false;
+	}
+
 	private shouldShowWorkingIndicator(): boolean {
 		if (!this.currentIsStreaming()) return false;
+		if (this.hasInlineWorkflowActivity()) return false;
 		return !this.runHasAssistantText;
 	}
 
