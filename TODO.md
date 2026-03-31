@@ -6,6 +6,12 @@ Branch: `feat/chat-interface-issue-sweep` (based on `origin/dev`)
 
 Scope (deduped): **#49, #50, #52, #53, #54, #55, #63, #70, #72**
 
+Latest session recap (chat sweep):
+- [x] Workflow dropdown state stabilized (manual collapse override respected during active runs).
+- [x] Thinking/tool timeline ordering and streaming dedupe hardened.
+- [x] Code-block UX polished and assistant-level duplicate copy action removed for pure fenced-block replies.
+- [ ] Remaining: slash action audit/cleanup (#70) and final PR packaging/issue closure notes.
+
 ### A) Markdown/code rendering integrity + readability
 Issues: #49, #50, #54
 
@@ -33,7 +39,7 @@ Issues: #52, #55, #72
 - [x] #55 Use a single collapsible compaction status element per cycle.
   - [x] State transitions in-place (`running -> done -> error`) with no duplicate blocks.
 - [x] #72 Investigate/fix weird tool result rows after steer message.
-  - [ ] Reproduce from screenshot scenario.
+  - [x] Reproduce from screenshot scenario.
   - [x] Add guard/normalization for post-steer tool event/result mapping.
 
 Acceptance gate:
