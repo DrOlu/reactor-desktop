@@ -1,5 +1,85 @@
 # TODO — V1/V1.1 release cleanup plan
 
+## Chat interface sweep plan (new branch)
+
+Branch: `feat/chat-interface-issue-sweep` (based on `origin/dev`)
+
+Scope (deduped): **#49, #50, #52, #53, #54, #55, #63, #70, #72**
+
+### A) Markdown/code rendering integrity + readability
+Issues: #49, #50, #54
+
+- [ ] #49 Ensure fenced code blocks always render in chat and file markdown contexts.
+  - [ ] Verify `CodeBlock` component registration/import in all markdown hosts.
+  - [ ] Add regression check for language-tagged and plain fenced blocks.
+- [ ] #50 Make code-block copy actions hover/focus-only (keyboard accessible).
+  - [ ] No layout jump when action appears.
+  - [ ] Keep inline code behavior unchanged.
+- [ ] #54 Remove chat-level horizontal overflow for normal text flow.
+  - [ ] Add robust wrapping (`overflow-wrap`) for long tokens/pasted formatted text.
+  - [ ] Preserve horizontal scroll only inside code blocks.
+
+Acceptance gate:
+- [ ] No missing code blocks
+- [ ] No chat-level horizontal scrollbar for normal messages
+- [ ] Copy action UX matches hover/focus behavior
+
+### B) Chat canvas tool/compaction noise reduction
+Issues: #52, #55, #72
+
+- [ ] #52 Compact tool rows by default with meaningful action preview text.
+  - [ ] Progressive disclosure for full details.
+  - [ ] Group repeated consecutive same-tool runs (`tool × N`).
+- [ ] #55 Use a single collapsible compaction status element per cycle.
+  - [ ] State transitions in-place (`running -> done -> error`) with no duplicate blocks.
+- [ ] #72 Investigate/fix weird tool result rows after steer message.
+  - [ ] Reproduce from screenshot scenario.
+  - [ ] Add guard/normalization for post-steer tool event/result mapping.
+
+Acceptance gate:
+- [ ] Assistant text remains dominant in tool-heavy runs
+- [ ] No duplicate compaction/tool status boxes
+- [ ] Steer flow no longer produces malformed tool entries
+
+### C) Composer/scroll/actions behavior
+Issues: #53, #70
+
+- [ ] #53 Dynamic composer offset so latest content is always visible.
+  - [ ] Measure composer with `ResizeObserver`.
+  - [ ] Drive chat bottom padding and jump-to-latest offset via CSS variable.
+- [ ] #70 Audit slash actions (`/`) and keep only meaningful chat-surface actions.
+  - [ ] Verify `/compact` and other supported actions are functional.
+  - [ ] Remove/disable slash actions already covered by better UX entrypoints.
+
+Acceptance gate:
+- [ ] Bottom-most assistant content never hidden by tall composer
+- [ ] Slash action list is reliable and intentionally curated
+
+### D) Roadmap alignment / parity integration
+Issue: #63 (umbrella)
+
+- [ ] Keep #63 open as umbrella and close sub-issues via implementation PRs.
+- [ ] Track completed slices in issue comments + changelog after each merge.
+- [ ] Ensure clean-room parity guardrails remain documented in PR descriptions.
+
+### Execution order (recommended PR slicing)
+
+- [ ] PR-1: Rendering integrity baseline (#49, #54)
+- [ ] PR-2: Code block UX polish (#50)
+- [ ] PR-3: Composer offset + scroll correctness (#53)
+- [ ] PR-4: Tool/compaction timeline cleanup (#52, #55, #72)
+- [ ] PR-5: Slash action audit/cleanup (#70)
+- [ ] PR-6: #63 rollout summary + visual QA pass
+
+### Test matrix (must pass before closing issues)
+
+- [ ] Long markdown/code responses (tagged + untagged fenced blocks)
+- [ ] Large pasted formatted text (no chat horizontal overflow)
+- [ ] Tall composer + attachments + long streaming response
+- [ ] Steer/follow-up runs with multiple tool calls
+- [ ] Slash command smoke (`/compact`, curated list)
+- [ ] Dark/light visual regression snapshots
+
 ## Active issue (current session)
 - [x] #33 RPC reliability: fix duplicate tool cards + loading/reconnect UX
   - [x] Make RPC bridge listener setup idempotent under concurrent `ensureListeners()` calls
