@@ -3724,7 +3724,7 @@ export class ChatView {
 				<div class="welcome-brand-lockup" aria-hidden="true">
 					<div class="welcome-brand-mark"><img src=${brandIconUrl} alt="Pi Desktop" /></div>
 				</div>
-				<h2>Let’s build</h2>
+				<h2>Ready when you are — Pi</h2>
 				<div class="welcome-project-wrap">
 					<button
 						class="welcome-project-trigger ${hasProject ? "active" : ""}"
