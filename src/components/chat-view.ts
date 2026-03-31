@@ -3744,7 +3744,7 @@ export class ChatView {
 					<div class="welcome-actions">
 						<button class="welcome-action primary" @click=${() => this.onAddProject?.()}>Add project</button>
 						<button class="welcome-action" @click=${() => this.onOpenPackages?.()}>Open packages</button>
-						<button class="welcome-action" @click=${() => this.onOpenSettings?.()}>Settings</button>
+						<button class="welcome-action" @click=${() => this.onOpenSettings?.()}>Appearance & settings</button>
 					</div>
 				</div>
 

@@ -1764,11 +1764,7 @@ function setPaneVisibility(pane: WorkspaceState["pane"]): void {
 
 function resolveSettingsRuntimeProjectPath(workspace: WorkspaceState | null): string | null {
 	if (!workspace) return null;
-	const workspacePath = getWorkspaceActiveProjectPath(workspace);
-	if (!workspacePath) return null;
-	const sidebarMatch = sidebar?.getProjectByPath(workspacePath) ?? null;
-	if (!sidebarMatch) return null;
-	return sidebarMatch.path;
+	return getWorkspaceActiveProjectPath(workspace);
 }
 
 async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWorkspace()): Promise<void> {
@@ -2461,6 +2457,9 @@ function mountSettingsPanel(): SettingsPanel {
 		persistWorkspaces();
 		syncWorkspaceTabsBar();
 		void applyWorkspacePane(workspace);
+	});
+	panel.setOnRequestAddProject(() => {
+		void sidebar?.openFolder();
 	});
 	settingsPanel = panel;
 	return panel;

@@ -62,6 +62,7 @@ export class SettingsPanel {
 		followUpMode: "one-at-a-time",
 	};
 	private onClose: (() => void) | null = null;
+	private onRequestAddProject: (() => void) | null = null;
 	private saving = false;
 	private authStatus: PiAuthStatus | null = null;
 	private authLoading = false;
@@ -111,6 +112,10 @@ export class SettingsPanel {
 
 	setOnClose(callback: () => void): void {
 		this.onClose = callback;
+	}
+
+	setOnRequestAddProject(callback: () => void): void {
+		this.onRequestAddProject = callback;
 	}
 
 	setOnDesktopStatusChange(callback: (status: DesktopUpdateStatus | null) => void): void {
@@ -754,8 +759,8 @@ export class SettingsPanel {
 	}
 
 	private async loadState(): Promise<void> {
-		const hasRuntimeProject = Boolean(this.runtimeProjectPath);
-		if (hasRuntimeProject) {
+		const runtimeReady = Boolean(this.runtimeProjectPath) && rpcBridge.isConnected;
+		if (runtimeReady) {
 			try {
 				const sessionState = await rpcBridge.getState();
 				this.state.autoCompactionEnabled = Boolean(sessionState.autoCompactionEnabled);
@@ -796,7 +801,7 @@ export class SettingsPanel {
 			// ignore missing persisted settings
 		}
 
-		if (!hasRuntimeProject) {
+		if (!runtimeReady) {
 			this.applyAppearanceProfileForCurrentResolvedTheme(false);
 			return;
 		}
@@ -1176,9 +1181,13 @@ export class SettingsPanel {
 
 		const authProviders = Array.isArray(this.authStatus?.configured_providers) ? this.authStatus.configured_providers : [];
 		const compatibilityChecks = Array.isArray(this.compatibilityReport?.checks) ? this.compatibilityReport.checks : [];
-		const runtimeControlsEnabled = Boolean(this.runtimeProjectPath);
+		const hasProjectContext = Boolean(this.runtimeProjectPath);
+		const runtimeControlsEnabled = hasProjectContext && rpcBridge.isConnected;
 
 		if (!runtimeControlsEnabled) {
+			const runtimeMessage = hasProjectContext
+				? "Runtime is still starting for this project. You can change appearance now; assistant/account settings unlock when runtime is ready."
+				: "Open a project to enable assistant, account, update diagnostics, and compatibility settings.";
 			try {
 				render(
 					html`
@@ -1186,7 +1195,7 @@ export class SettingsPanel {
 							<div class="settings-view-header">
 								<div class="settings-view-title-wrap">
 									<div class="settings-view-title">Settings</div>
-									<div class="settings-view-meta">Desktop preferences that work without an active project.</div>
+									<div class="settings-view-meta">Desktop preferences that work immediately.</div>
 								</div>
 								<div class="settings-view-header-actions">
 									<button class="settings-back-btn" @click=${() => this.close()}>← Back</button>
@@ -1209,7 +1218,14 @@ export class SettingsPanel {
 									<section class="settings-group settings-group-full">
 										<div class="settings-section">
 											<div class="settings-section-title">Runtime</div>
-											<div class="settings-desc">Open a project to enable assistant, account, update diagnostics, and compatibility settings.</div>
+											<div class="settings-desc">${runtimeMessage}</div>
+											${!hasProjectContext
+												? html`
+													<div class="settings-actions" style="margin-top:10px;">
+														<button class="ghost-btn" @click=${() => this.onRequestAddProject?.()}>Add project</button>
+													</div>
+												`
+												: nothing}
 										</div>
 									</section>
 								</div>
