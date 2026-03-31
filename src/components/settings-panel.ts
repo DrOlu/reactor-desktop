@@ -1173,6 +1173,56 @@ export class SettingsPanel {
 		`;
 	}
 
+	private renderBasicSettingsShell(runtimeMessage: string, options: { showAddProject: boolean; warning?: string } = { showAddProject: false }): void {
+		const { showAddProject, warning } = options;
+		render(
+			html`
+				<div class="settings-view-root">
+					<div class="settings-view-header">
+						<div class="settings-view-title-wrap">
+							<div class="settings-view-title">Settings</div>
+							<div class="settings-view-meta">Desktop preferences that work immediately.</div>
+						</div>
+						<div class="settings-view-header-actions">
+							<button class="settings-back-btn" @click=${() => this.close()}>← Back</button>
+						</div>
+					</div>
+					<div class="settings-view-body">
+						<div class="settings-view-grid">
+							<section class="settings-group settings-group-full">
+								<div class="settings-section">
+									<div class="settings-section-title">Appearance</div>
+									<div class="settings-label">Theme</div>
+									<div class="settings-desc">Choose light, dark, or system mode.</div>
+									<div class="theme-grid" style="margin-top:10px;">
+										<button class="theme-btn ${this.state.theme === "light" ? "active" : ""}" @click=${() => this.setTheme("light")}>Light</button>
+										<button class="theme-btn ${this.state.theme === "dark" ? "active" : ""}" @click=${() => this.setTheme("dark")}>Dark</button>
+										<button class="theme-btn ${this.state.theme === "system" ? "active" : ""}" @click=${() => this.setTheme("system")}>System</button>
+									</div>
+								</div>
+							</section>
+							<section class="settings-group settings-group-full">
+								<div class="settings-section">
+									<div class="settings-section-title">Runtime</div>
+									<div class="settings-desc">${runtimeMessage}</div>
+									${warning ? html`<div class="settings-desc" style="margin-top:8px;">${warning}</div>` : nothing}
+									${showAddProject
+										? html`
+											<div class="settings-actions" style="margin-top:10px;">
+												<button class="ghost-btn" @click=${() => this.onRequestAddProject?.()}>Add project</button>
+											</div>
+										`
+										: nothing}
+								</div>
+							</section>
+						</div>
+					</div>
+				</div>
+			`,
+			this.container,
+		);
+	}
+
 	render(): void {
 		if (!this.isOpen) {
 			this.container.innerHTML = "";
@@ -1189,51 +1239,7 @@ export class SettingsPanel {
 				? "Runtime is still starting for this project. You can change appearance now; assistant/account settings unlock when runtime is ready."
 				: "Open a project to enable assistant, account, update diagnostics, and compatibility settings.";
 			try {
-				render(
-					html`
-						<div class="settings-view-root">
-							<div class="settings-view-header">
-								<div class="settings-view-title-wrap">
-									<div class="settings-view-title">Settings</div>
-									<div class="settings-view-meta">Desktop preferences that work immediately.</div>
-								</div>
-								<div class="settings-view-header-actions">
-									<button class="settings-back-btn" @click=${() => this.close()}>← Back</button>
-								</div>
-							</div>
-							<div class="settings-view-body">
-								<div class="settings-view-grid">
-									<section class="settings-group settings-group-full">
-										<div class="settings-section">
-											<div class="settings-section-title">Appearance</div>
-											<div class="settings-label">Theme</div>
-											<div class="settings-desc">Choose light, dark, or system mode.</div>
-											<div class="theme-grid" style="margin-top:10px;">
-												<button class="theme-btn ${this.state.theme === "light" ? "active" : ""}" @click=${() => this.setTheme("light")}>Light</button>
-												<button class="theme-btn ${this.state.theme === "dark" ? "active" : ""}" @click=${() => this.setTheme("dark")}>Dark</button>
-												<button class="theme-btn ${this.state.theme === "system" ? "active" : ""}" @click=${() => this.setTheme("system")}>System</button>
-											</div>
-										</div>
-									</section>
-									<section class="settings-group settings-group-full">
-										<div class="settings-section">
-											<div class="settings-section-title">Runtime</div>
-											<div class="settings-desc">${runtimeMessage}</div>
-											${!hasProjectContext
-												? html`
-													<div class="settings-actions" style="margin-top:10px;">
-														<button class="ghost-btn" @click=${() => this.onRequestAddProject?.()}>Add project</button>
-													</div>
-												`
-												: nothing}
-										</div>
-									</section>
-								</div>
-							</div>
-						</div>
-					`,
-					this.container,
-				);
+				this.renderBasicSettingsShell(runtimeMessage, { showAddProject: !hasProjectContext });
 			} catch (err) {
 				console.error("Settings no-project render failed:", err);
 				this.container.innerHTML = "<div class=\"settings-view-root\"><div class=\"settings-view-body\"><div class=\"settings-desc\">Unable to render settings right now.</div></div></div>";
@@ -1458,23 +1464,14 @@ export class SettingsPanel {
 			render(template, this.container);
 		} catch (err) {
 			console.error("Settings panel render failed:", err);
-			this.container.innerHTML = `
-				<div class="settings-view-root">
-					<div class="settings-view-header">
-						<div class="settings-view-title-wrap">
-							<div class="settings-view-title">Settings</div>
-							<div class="settings-view-meta">Failed to render settings content.</div>
-						</div>
-					</div>
-					<div class="settings-view-body">
-						<div class="settings-group">
-							<div class="settings-section">
-								<div class="settings-desc">Something went wrong while rendering settings. Close and reopen Settings to retry.</div>
-							</div>
-						</div>
-					</div>
-				</div>
-			`;
+			try {
+				this.renderBasicSettingsShell(
+					"Advanced runtime settings are temporarily unavailable. You can still use appearance settings.",
+					{ showAddProject: false, warning: "Open another session or reopen settings once runtime stabilizes." },
+				);
+			} catch {
+				this.container.innerHTML = "<div class=\"settings-view-root\"><div class=\"settings-view-body\"><div class=\"settings-desc\">Unable to render settings right now.</div></div></div>";
+			}
 		}
 	}
 

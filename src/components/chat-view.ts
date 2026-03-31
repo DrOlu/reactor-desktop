@@ -3739,11 +3739,11 @@ export class ChatView {
 					${this.welcomeProjectMenuOpen
 						? html`
 							<div class="welcome-project-menu">
-								${hasProject ? html`<div class="welcome-project-item current"><span>📁 ${projectLabel}</span><span>✓</span></div>` : nothing}
+								${hasProject ? html`<div class="welcome-project-item current"><span>${projectLabel}</span><span>✓</span></div>` : nothing}
 								<button class="welcome-project-item" @click=${() => {
 									this.welcomeProjectMenuOpen = false;
 									this.onAddProject?.();
-								}}>📂 Add new project</button>
+								}}>Add new project</button>
 								<div class="welcome-project-sep"></div>
 								<button class="welcome-project-item" @click=${() => {
 									this.welcomeProjectMenuOpen = false;
