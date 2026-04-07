@@ -39,6 +39,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Hardened Settings pane mounting/open flow to recover from race conditions and stale container rebinding during workspace/project transitions.
 - Settings now degrade to a safe basic shell when runtime-dependent sections fail to render, instead of showing a blank pane.
 - No-project Settings flow is now runtime-decoupled, so Appearance settings remain available even before RPC runtime is connected.
+- Creating a new workspace now uses a true modal flow with fullscreen interaction blocking + keyboard focus trap, preventing background chat/pane interaction while the create dialog is active.
 - Removed centered welcome dropdown jitter by stabilizing open/close layout behavior and avoiding no-project auto-scroll on re-render.
 - Prevented active workflow dropdowns from auto-reopening after user-initiated manual collapse during ongoing tool runs.
 - Removed transient blank spacing before workflow materialization by avoiding empty assistant placeholder rows during stream startup.
