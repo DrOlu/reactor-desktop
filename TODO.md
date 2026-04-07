@@ -13,6 +13,7 @@ Done in this session:
 - [x] Fixed workflow summary counts to report combined outcomes (e.g. complete + failed + running).
 - [x] Removed blinking streaming cursor from assistant message body.
 - [x] Removed composer status line noise beneath model picker.
+- [x] Filtered internal extension status keys (e.g. `oqto_title_changed`) so extension title-sync does not render stray text above composer controls.
 
 Remaining before closing #70:
 - [ ] Final command-by-command QA matrix pass and polish (especially less-used built-ins and extension-config command mappings).
@@ -20,6 +21,7 @@ Remaining before closing #70:
   - [x] Slash palette keyboard UX polish complete (active row visibility + live composer command preview while navigating).
   - [x] Command palette keyboard visibility polish complete (selected command row auto-scrolls into view).
   - [x] User message bubble width/render regression fixed (no more squeezed `he j` wrapping artifacts on short messages).
+  - [x] Alt+Enter queued-follow-up UX polished: queued items stay in a minimal composer queue strip and no longer override the active chat canvas flow during tool runs.
   - [x] `/name` parity pass complete (inline sidebar rename when no arg, shared rename pipeline when arg provided).
   - [x] `/new` parity pass complete (reuses sidebar fresh-session flow via `startFreshSessionTab()`).
   - [x] `/import` parity pass complete (supports native file picker when no path arg is provided).
@@ -301,6 +303,7 @@ The app should feel native while still reflecting Pi’s actual resource model.
 - [x] Refine no-project/new-thread welcome dashboard toward clean Codex-inspired centered flow (#63, partial)
 - [ ] Final new-file draft UX polish pass
 - [ ] Final session delete/select stability polish pass
+- [x] Terminal UX baseline pass: switch from terminal-tab pane to bottom docked terminal in chat (VS Code-style), then polish into xterm-powered terminal surface with isolated shell execution (no chat-canvas leakage), `cd` cwd handling, and clear/abort keyboard controls.
 
 ### Manual smoke tests that still matter
 - [ ] Parallel runs in separate session tabs with different models

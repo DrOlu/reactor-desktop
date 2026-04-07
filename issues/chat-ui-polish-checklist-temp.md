@@ -25,6 +25,9 @@ Context: consolidated from latest UX feedback for Codex-like chat/workflow parit
 - [x] Tighten code block spacing, header/footer proportions, and copy icon sizing.
 - [x] Soften copy button/copied state visual weight for minimal look.
 
+## Composer/status cleanliness
+- [x] Suppress internal extension status-key events (for example `oqto_title_changed`) so title-sync events do not render stray text above composer controls.
+
 ## Remaining QA pass
 - [ ] Validate long code blocks (horizontal + vertical scroll behavior).
 - [ ] Validate mixed markdown (paragraph + code block + paragraph) copy button behavior.

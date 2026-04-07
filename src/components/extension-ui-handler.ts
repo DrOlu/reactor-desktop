@@ -110,6 +110,15 @@ function shouldSuppressUiStatusText(text: string): boolean {
 	return false;
 }
 
+function shouldSuppressUiStatusKey(key: string): boolean {
+	const normalized = key.trim().toLowerCase();
+	if (!normalized) return false;
+	if (normalized === "oqto_title_changed") return true;
+	if (/(^|[_.-])title([_.-])?changed($|[_.-])/.test(normalized)) return true;
+	if (normalized.includes("session.title_changed")) return true;
+	return false;
+}
+
 export interface NotificationActionTarget {
 	workspaceId?: string;
 	tabId?: string;
@@ -655,6 +664,13 @@ export class ExtensionUiHandler {
 
 	private setStatus(request: ExtensionUiRequest): void {
 		if (!this.statusContainer) return;
+
+		const statusKey = typeof request.statusKey === "string" ? request.statusKey.trim() : "";
+		if (statusKey && shouldSuppressUiStatusKey(statusKey)) {
+			this.statusContainer.classList.add("hidden");
+			this.statusContainer.innerHTML = "";
+			return;
+		}
 
 		if (request.statusText === undefined) {
 			// Clear status

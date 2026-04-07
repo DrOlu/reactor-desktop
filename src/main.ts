@@ -25,6 +25,7 @@ import {
 import { syncDesktopThemeWithPiTheme } from "./theme/pi-theme-bridge.js";
 import { DESKTOP_THEME_CHANGED_EVENT, getResolvedDesktopTheme, initializeDesktopTheme, toggleDesktopTheme } from "./theme/theme-manager.js";
 import { ensureBundledThemesInstalled } from "./theme/bundled-themes.js";
+import { ensureDesktopSdkCompatExtensionInstalled } from "./extensions/sdk-compat-extension.js";
 import "./styles/app.css";
 
 interface WorkspaceSessionTab {
@@ -92,6 +93,10 @@ const SIDEBAR_WIDTH_KEY = "pi-desktop.sidebar.width.v1";
 const SIDEBAR_COLLAPSED_STATE_KEY = "pi-desktop.sidebar.collapsed.v1";
 const SIDEBAR_WIDTH_MIN = 240;
 const SIDEBAR_WIDTH_MAX = 540;
+const TERMINAL_DOCK_HEIGHT_KEY = "pi-desktop.terminal-dock-height.v1";
+const TERMINAL_DOCK_MIN_HEIGHT = 180;
+const TERMINAL_DOCK_MAX_HEIGHT = 640;
+const TERMINAL_DOCK_DEFAULT_HEIGHT = 280;
 const NEW_SESSION_TAB_TITLE = "New session";
 const NEW_FILE_TAB_TITLE = "New file";
 const DEBUG_OVERLAY_STORAGE_KEY = "pi-desktop.debug-overlay.v1";
@@ -143,6 +148,8 @@ let workspaces: WorkspaceState[] = [];
 let activeWorkspaceId: string | null = null;
 let sidebarWidth = 320;
 let removeSidebarResizeHandlers: (() => void) | null = null;
+let removeTerminalDockResizeHandlers: (() => void) | null = null;
+let terminalDockHeightPx = loadTerminalDockHeight();
 let sidebarSessionsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let sidebarSessionsWarmInterval: ReturnType<typeof setInterval> | null = null;
 let sidebarSessionsWarmStopTimer: ReturnType<typeof setTimeout> | null = null;
@@ -176,6 +183,63 @@ function recordDebugTrace(message: string): void {
 
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
+}
+
+function clampTerminalDockHeight(value: number): number {
+	return Math.min(TERMINAL_DOCK_MAX_HEIGHT, Math.max(TERMINAL_DOCK_MIN_HEIGHT, Math.round(value)));
+}
+
+function loadTerminalDockHeight(): number {
+	try {
+		const raw = localStorage.getItem(TERMINAL_DOCK_HEIGHT_KEY);
+		const parsed = raw ? Number(raw) : TERMINAL_DOCK_DEFAULT_HEIGHT;
+		if (!Number.isFinite(parsed)) return TERMINAL_DOCK_DEFAULT_HEIGHT;
+		return clampTerminalDockHeight(parsed);
+	} catch {
+		return TERMINAL_DOCK_DEFAULT_HEIGHT;
+	}
+}
+
+function persistTerminalDockHeight(): void {
+	try {
+		localStorage.setItem(TERMINAL_DOCK_HEIGHT_KEY, String(terminalDockHeightPx));
+	} catch {
+		// ignore
+	}
+}
+
+function setTerminalDockHeight(nextHeight: number, persist = false): void {
+	const clamped = clampTerminalDockHeight(nextHeight);
+	if (clamped === terminalDockHeightPx) return;
+	terminalDockHeightPx = clamped;
+	if (persist) persistTerminalDockHeight();
+	syncTerminalDockVisibility(getActiveWorkspace());
+}
+
+function setupTerminalDockResize(terminalPane: HTMLElement): void {
+	removeTerminalDockResizeHandlers?.();
+	const onPointerDown = (event: PointerEvent) => {
+		const target = event.target instanceof Element ? event.target.closest(".terminal-resize-handle") : null;
+		if (!target) return;
+		event.preventDefault();
+		const startY = event.clientY;
+		const startHeight = terminalDockHeightPx;
+		const onPointerMove = (moveEvent: PointerEvent) => {
+			const deltaY = startY - moveEvent.clientY;
+			setTerminalDockHeight(startHeight + deltaY, false);
+		};
+		const onPointerUp = () => {
+			window.removeEventListener("pointermove", onPointerMove);
+			window.removeEventListener("pointerup", onPointerUp);
+			persistTerminalDockHeight();
+		};
+		window.addEventListener("pointermove", onPointerMove);
+		window.addEventListener("pointerup", onPointerUp);
+	};
+	terminalPane.addEventListener("pointerdown", onPointerDown);
+	removeTerminalDockResizeHandlers = () => {
+		terminalPane.removeEventListener("pointerdown", onPointerDown);
+	};
 }
 
 function pickSessionAttentionMessage(current?: string | null): string {
@@ -1577,11 +1641,11 @@ function loadWorkspaces(): void {
 						emoji: typeof w.emoji === "string" && w.emoji.trim().length > 0 ? w.emoji.trim() : null,
 						pinned: false,
 						leftMode: w.leftMode === "files" ? "files" : "projects",
-						pane: w.pane === "file" || w.pane === "packages" || w.pane === "settings" || w.pane === "terminal" ? w.pane : "chat",
+						pane: w.pane === "file" || w.pane === "packages" || w.pane === "settings" ? w.pane : "chat",
 						activeProjectId: normalizeStoredId(w.activeProjectId),
 						activeProjectPath: normalizeStoredPath(w.activeProjectPath),
 						filePath: typeof w.filePath === "string" ? w.filePath : null,
-						terminalOpen: Boolean(w.terminalOpen),
+						terminalOpen: Boolean(w.terminalOpen || w.pane === "terminal"),
 						sessionTitle: fallbackSessionTitle,
 						sessionTabs,
 						activeSessionTabId:
@@ -1864,26 +1928,14 @@ function syncContentTabsBar(workspace: WorkspaceState | null = getActiveWorkspac
 			path: tab.path ?? undefined,
 			closable: true,
 		})),
-		...(workspace.terminalOpen
-			? [
-				{
-					id: "terminal",
-					type: "terminal" as const,
-					title: "Terminal",
-					closable: true,
-				},
-			]
-			: []),
 	];
 
 	const activeTabId =
 		workspace.pane === "file" && workspace.activeFileTabId
 			? workspace.activeFileTabId
-			: workspace.pane === "terminal" && workspace.terminalOpen
-				? "terminal"
-				: workspace.activeSessionTabId;
+			: workspace.activeSessionTabId;
 
-	contentTabsBar.setTerminalActive(workspace.pane === "terminal");
+	contentTabsBar.setTerminalActive(workspace.pane === "chat" && workspace.terminalOpen);
 	contentTabsBar.setTabs(tabs, activeTabId);
 }
 
@@ -1893,13 +1945,28 @@ function setPaneVisibility(pane: WorkspaceState["pane"]): void {
 	const terminalPane = document.getElementById("terminal-pane");
 	const packagesPane = document.getElementById("packages-pane");
 	const settingsPane = document.getElementById("settings-pane");
-	if (!sessionPane || !filePane || !terminalPane || !packagesPane || !settingsPane) return;
+	if (!sessionPane || !filePane || !packagesPane || !settingsPane) return;
 
 	sessionPane.classList.toggle("hidden-pane", pane !== "chat");
 	filePane.classList.toggle("hidden-pane", pane !== "file");
-	terminalPane.classList.toggle("hidden-pane", pane !== "terminal");
 	packagesPane.classList.toggle("hidden-pane", pane !== "packages");
 	settingsPane.classList.toggle("hidden-pane", pane !== "settings");
+	if (pane !== "chat") {
+		terminalPane?.classList.add("hidden-pane");
+		terminalPane?.classList.remove("terminal-dock-visible");
+	}
+}
+
+function syncTerminalDockVisibility(workspace: WorkspaceState | null = getActiveWorkspace()): void {
+	const terminalPane = document.getElementById("terminal-pane");
+	if (!terminalPane) return;
+	terminalPane.style.setProperty("--terminal-dock-height", `${terminalDockHeightPx}px`);
+	const shouldShow = Boolean(workspace && workspace.pane === "chat" && workspace.terminalOpen);
+	terminalPane.classList.toggle("hidden-pane", !shouldShow);
+	terminalPane.classList.toggle("terminal-dock-visible", shouldShow);
+	if (shouldShow && workspace) {
+		terminalPanel?.setProjectPath(getWorkspaceActiveProjectPath(workspace));
+	}
 }
 
 function resolveSettingsRuntimeProjectPath(workspace: WorkspaceState | null): string | null {
@@ -1926,10 +1993,17 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 		settingsPanel?.hideWithoutClearing();
 		syncRunningSessionIndicators();
 		setPaneVisibility("chat");
+		syncTerminalDockVisibility(null);
 		return;
 	}
 
 	ensureWorkspaceContentState(workspace);
+	if (workspace.pane === "terminal") {
+		workspace.pane = "chat";
+		workspace.terminalOpen = true;
+		persistWorkspaces();
+		syncWorkspaceTabsBar();
+	}
 	const workspaceProjectPath = getWorkspaceActiveProjectPath(workspace);
 	const resolved = getResolvedDesktopTheme();
 	const profiles = loadDesktopAppearanceProfiles();
@@ -1947,9 +2021,11 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 	if (workspace.pane !== "file") {
 		fileViewer?.setProjectPath(workspaceProjectPath);
 	}
+	syncTerminalDockVisibility(workspace);
 	if (isStale()) return;
 
 	if (workspace.pane === "file") {
+		syncTerminalDockVisibility({ ...workspace, terminalOpen: false, pane: "file" });
 		const activeFileTab = getActiveFileTab(workspace);
 		const draftBasePath = activeFileTab && isDraftFileTab(activeFileTab) ? normalizeStoredPath(activeFileTab.draftDirectoryPath) : null;
 		fileViewer?.setProjectPath(draftBasePath ?? getFileTabProjectPath(activeFileTab) ?? getWorkspaceActiveProjectPath(workspace));
@@ -1965,15 +2041,8 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 		return;
 	}
 
-	if (workspace.pane === "terminal" && workspace.terminalOpen) {
-		terminalPanel?.setProjectPath(getWorkspaceActiveProjectPath(workspace));
-		if (isStale()) return;
-		setPaneVisibility("terminal");
-		terminalPanel?.focusInput();
-		return;
-	}
-
 	if (workspace.pane === "packages") {
+		syncTerminalDockVisibility({ ...workspace, terminalOpen: false, pane: "packages" });
 		settingsPanel?.hideWithoutClearing();
 		packagesView?.setProjectPath(getWorkspaceActiveProjectPath(workspace));
 		if (isStale()) return;
@@ -1986,6 +2055,7 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 	}
 
 	if (workspace.pane === "settings") {
+		syncTerminalDockVisibility({ ...workspace, terminalOpen: false, pane: "settings" });
 		if (isStale()) return;
 		setPaneVisibility("settings");
 		try {
@@ -2010,7 +2080,12 @@ async function applyWorkspacePane(workspace: WorkspaceState | null = getActiveWo
 	settingsPanel?.hideWithoutClearing();
 	syncActiveChatRuntimeBinding(workspace);
 	setPaneVisibility("chat");
-	chatView?.focusInput();
+	syncTerminalDockVisibility(workspace);
+	if (workspace.terminalOpen) {
+		terminalPanel?.focusInput();
+	} else {
+		chatView?.focusInput();
+	}
 	syncDebugOverlay();
 }
 
@@ -2412,6 +2487,10 @@ async function initialize(): Promise<void> {
 	loadSidebarWidth();
 	applySidebarWidth();
 	await ensureBundledThemesInstalled();
+	const compatInstall = await ensureDesktopSdkCompatExtensionInstalled();
+	if (compatInstall.error && !compatInstall.skipped) {
+		console.warn("Failed to install desktop compatibility extension:", compatInstall.error);
+	}
 
 	try {
 		connectionError = null;
@@ -2494,8 +2573,9 @@ async function initialize(): Promise<void> {
 		chatView.setOnOpenTerminal(() => {
 			const workspace = getActiveWorkspace();
 			if (!workspace) return;
-			workspace.terminalOpen = true;
-			workspace.pane = "terminal";
+			const shouldOpen = workspace.pane !== "chat" ? true : !workspace.terminalOpen;
+			workspace.terminalOpen = shouldOpen;
+			workspace.pane = "chat";
 			persistWorkspaces();
 			syncWorkspaceTabsBar();
 			void applyWorkspacePane(workspace);
@@ -2514,10 +2594,18 @@ async function initialize(): Promise<void> {
 			syncWorkspaceTabsBar();
 			void applyWorkspacePane(workspace);
 		});
-		chatView.setOnOpenExtensionConfig(async (commandName) => {
-			if (commandName !== "name-ai-config") return false;
+		chatView.setOnOpenExtensionConfig(async (commandName, args) => {
+			const normalizedName = commandName.trim().toLowerCase().replace(/^\/+/, "");
+			const normalizedArgs = args.trim().toLowerCase();
+			const configIntent =
+				normalizedName.endsWith("config") ||
+				normalizedArgs === "config" ||
+				normalizedArgs.startsWith("config ");
+			if (!configIntent) return false;
 			openPackagesPane();
-			return await (packagesView?.openExtensionConfigBySource("npm:pi-session-auto-rename") ?? false);
+			if (!packagesView) return false;
+			await packagesView.refreshPackages(false);
+			return await packagesView.openExtensionConfigByCommand(normalizedName, args);
 		});
 		chatView.setOnBeginRenameCurrentSession(() => {
 			const workspace = getActiveWorkspace();
@@ -2764,6 +2852,16 @@ function initializeComponents(): void {
 						tabId: targetTabId,
 						sessionPath: targetSessionPath,
 					});
+				}
+
+				const notifyText =
+					(typeof request.message === "string" && request.message.trim()) ||
+					(typeof request.title === "string" && request.title.trim()) ||
+					"";
+				const notifyType = typeof request.notifyType === "string" ? request.notifyType.trim().toLowerCase() : "info";
+				const isForeground = typeof document !== "undefined" && document.visibilityState !== "hidden" && document.hasFocus();
+				if (notifyText && isForeground) {
+					chatView?.notify(notifyText, notifyType === "error" ? "error" : "info");
 				}
 			}
 
@@ -3183,9 +3281,11 @@ function renderApp(): void {
 							</svg>
 						</button>
 						<div id="content-tabs-container" data-tauri-drag-region></div>
-						<div id="session-pane"><div id="chat-container"></div></div>
+						<div id="session-pane">
+							<div id="chat-container"></div>
+							<div id="terminal-pane" class="hidden-pane"></div>
+						</div>
 						<div id="file-pane" class="hidden-pane"></div>
-						<div id="terminal-pane" class="hidden-pane"></div>
 						<div id="packages-pane" class="hidden-pane"></div>
 						<div id="settings-pane" class="hidden-pane"></div>
 					</div>
@@ -3220,7 +3320,7 @@ function renderApp(): void {
 
 			if (tabId === "terminal") {
 				workspace.terminalOpen = true;
-				workspace.pane = "terminal";
+				workspace.pane = "chat";
 				pruneEphemeralTabsWhenLeavingDraft(workspace);
 				persistWorkspaces();
 				syncWorkspaceTabsBar();
@@ -3275,8 +3375,9 @@ function renderApp(): void {
 		contentTabsBar.setOnOpenTerminal(() => {
 			const workspace = getActiveWorkspace();
 			if (!workspace) return;
-			workspace.terminalOpen = true;
-			workspace.pane = "terminal";
+			const shouldOpen = workspace.pane !== "chat" ? true : !workspace.terminalOpen;
+			workspace.terminalOpen = shouldOpen;
+			workspace.pane = "chat";
 			persistWorkspaces();
 			syncWorkspaceTabsBar();
 			void applyWorkspacePane(workspace);
@@ -3319,7 +3420,7 @@ function renderApp(): void {
 
 			if (tabId === "terminal") {
 				workspace.terminalOpen = false;
-				if (workspace.pane === "terminal") workspace.pane = "chat";
+				workspace.pane = "chat";
 				persistWorkspaces();
 				syncWorkspaceTabsBar();
 				void applyWorkspacePane(workspace);
@@ -3451,8 +3552,18 @@ function renderApp(): void {
 
 	const terminalPane = document.getElementById("terminal-pane");
 	if (terminalPane) {
+		setupTerminalDockResize(terminalPane);
 		terminalPanel = new TerminalPanel(terminalPane);
 		terminalPanel.setProjectPath(null);
+		terminalPanel.setOnRequestClose(() => {
+			const workspace = getActiveWorkspace();
+			if (!workspace) return;
+			workspace.terminalOpen = false;
+			workspace.pane = "chat";
+			persistWorkspaces();
+			syncWorkspaceTabsBar();
+			void applyWorkspacePane(workspace);
+		});
 	}
 
 	const packagesPane = document.getElementById("packages-pane");
@@ -3482,6 +3593,7 @@ function renderApp(): void {
 	const sidebarContainer = document.getElementById("sidebar-container");
 	if (!sidebarContainer) return;
 	sidebar = new Sidebar(sidebarContainer);
+	packagesView?.setProjectOptionsProvider(() => sidebar?.listProjects() ?? []);
 	sidebar.setOnCollapsedChange(() => {
 		applyWorkspaceTopbarOffset();
 		syncSidebarCollapseToggleButton();

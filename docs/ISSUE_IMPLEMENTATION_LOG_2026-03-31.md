@@ -110,6 +110,14 @@ Additional UX hardening (2026-04-06 follow-up):
 - Composer now supports terminal-style full history navigation via `ArrowUp`/`ArrowDown` for prior user prompts and slash commands.
 - Slash keyboard navigation now previews selected command text directly in composer and keeps highlighted rows visible.
 - Command palette keyboard navigation now auto-scrolls selected rows into view.
+- Extension config routing is now dynamic (command-metadata based) instead of hardcoded to `name-ai-config`/`pi-session-auto-rename`, and Desktop now routes config-intent commands like `/auto-rename config` to the owning package modal.
+- Auto-rename package recommendation switched to `@byteowlz/pi-auto-rename` (legacy `pi-session-auto-rename` kept as alias for compatibility).
+- Added dedicated auto-rename settings editor in Packages modal (mode/model/fallback/prefix/debug + save/test) so users can configure behavior without memorizing command args.
+- Added extension-error compatibility hinting in chat for deprecated `ctx.modelRegistry.getApiKey()` usage (actionable guidance toward `getApiKeyAndHeaders`).
+- Desktop now ensures a global compatibility extension (`~/.pi/agent/extensions/pi-desktop-sdk-compat.ts`) that shims legacy `modelRegistry.getApiKey()` via `getApiKeyAndHeaders()` for older extensions (including current `@byteowlz/pi-auto-rename` versions), preventing runtime crashes.
+- Expanded capability docs (`docs/PACKAGE_CAPABILITY_TEMPLATE.md`, `docs/CAPABILITY_MODEL.md`) with explicit command/default-behavior contracts and SDK compatibility requirements for extension authors.
+- Extension `notify` responses now surface in-app while Desktop is foregrounded, so extension command feedback is visible without requiring background notifications.
+- Internal extension status keys used for title-sync (e.g. `oqto_title_changed`) are now suppressed from visible status overlays, preventing stray session-title text from appearing above the composer controls.
 - User message bubble width/wrapping regression fixed (`he j` squeeze artifact removed).
 
 Remaining:

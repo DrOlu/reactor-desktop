@@ -11,6 +11,16 @@ Bring all composer slash commands to a stable, desktop-native behavior model whe
 - 🔴 Not implemented: **0 / 20**
 - 📝 Deferred follow-up polish: `/tree` + `/fork` visual/interaction cleanup tracked separately (`issues/tree-fork-polish-followup.md`).
 
+## Compatibility audit note (2026-04-06)
+
+Composer slash command discovery/execution is aligned with CLI command metadata. A remaining false-negative "commands are broken/outdated" symptom was traced to an extension runtime API mismatch in `@byteowlz/pi-auto-rename` (`ctx.modelRegistry.getApiKey` is no longer available in current Pi runtime; use `getApiKeyAndHeaders`).
+
+Desktop now installs a small global compatibility extension (`pi-desktop-sdk-compat.ts`) that restores legacy `getApiKey` access via `getApiKeyAndHeaders`, so existing extensions keep working while upstream packages migrate. Desktop also surfaces extension runtime errors with clearer context, and capability template docs now define the SDK compatibility/default-behavior contract to prevent this class of failure in extension packages.
+
+Additional UX parity polish:
+- `/auto-rename` command metadata now shows short args hints (`config`, `test`, `init`, `regen`) in slash command descriptions.
+- Packages -> extension settings now provides a dedicated auto-rename config form (mode + model/fallback + prefix/debug + save/test) instead of requiring users to know raw command args.
+
 ## Current implementation snapshot
 
 | Command | Current behavior | Reuse quality | Notes |
@@ -46,8 +56,8 @@ Bring all composer slash commands to a stable, desktop-native behavior model whe
 ## Runtime commands
 Runtime-discovered commands (`extension` / `prompt` / `skill`) come from `get_commands`.
 
-- Extension `*-config` commands can be mapped to Desktop config UI.
-- Current mapping implemented: `name-ai-config` -> opens package config modal for `pi-session-auto-rename`.
+- Extension config-intent commands (`*-config` or commands invoked with `config` args, e.g. `/auto-rename config`) can be mapped to Desktop package config UI.
+- Current mapping is dynamic: Desktop resolves the owning installed extension from runtime command metadata and opens that package’s config modal (no hardcoded package-name mapping).
 
 ## Plan (step-by-step)
 1. Validate `/name` parity smoke checks (with arg + no arg inline edit path).
