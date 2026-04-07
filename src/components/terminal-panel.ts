@@ -1,18 +1,25 @@
 /**
- * TerminalPanel - lightweight command runner panel
+ * TerminalPanel - docked terminal experience (xterm surface + local shell execution)
  */
 
-import { html, nothing, render } from "lit";
-import { rpcBridge } from "../rpc/bridge.js";
+import { Command } from "@tauri-apps/plugin-shell";
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
+import { html, render } from "lit";
 
-interface TerminalEntry {
-	id: string;
-	kind: "command" | "stdout" | "stderr" | "meta";
-	text: string;
+type ShellKind = "posix" | "powershell" | "cmd";
+
+interface ShellProfile {
+	name: string;
+	label: string;
+	kind: ShellKind;
 }
 
-function uid(prefix = "entry"): string {
-	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
+interface TerminalExecResult {
+	code: number | null;
+	signal: number | null;
+	stdout: string;
+	stderr: string;
 }
 
 function normalizeText(value: unknown): string {
@@ -25,127 +32,478 @@ function normalizeText(value: unknown): string {
 	}
 }
 
+function shellProfilesForPlatform(): ShellProfile[] {
+	const platform = navigator.platform.toLowerCase();
+	if (platform.includes("win")) {
+		return [
+			{ name: "terminal-pwsh-exe", label: "pwsh", kind: "powershell" },
+			{ name: "terminal-pwsh", label: "pwsh", kind: "powershell" },
+			{ name: "terminal-cmd-exe", label: "cmd", kind: "cmd" },
+			{ name: "terminal-cmd", label: "cmd", kind: "cmd" },
+		];
+	}
+	if (platform.includes("mac")) {
+		return [
+			{ name: "terminal-zsh-path", label: "zsh", kind: "posix" },
+			{ name: "terminal-zsh", label: "zsh", kind: "posix" },
+			{ name: "terminal-bash-path", label: "bash", kind: "posix" },
+			{ name: "terminal-bash", label: "bash", kind: "posix" },
+			{ name: "terminal-sh-path", label: "sh", kind: "posix" },
+			{ name: "terminal-sh", label: "sh", kind: "posix" },
+		];
+	}
+	return [
+		{ name: "terminal-bash-path", label: "bash", kind: "posix" },
+		{ name: "terminal-bash", label: "bash", kind: "posix" },
+		{ name: "terminal-sh-path", label: "sh", kind: "posix" },
+		{ name: "terminal-sh", label: "sh", kind: "posix" },
+	];
+}
+
+function compactPath(path: string | null): string {
+	if (!path) return "~";
+	const normalized = path.replace(/\\/g, "/");
+	const globalHome = (globalThis as { __PI_HOME__?: string }).__PI_HOME__;
+	const home = (typeof globalHome === "string" ? globalHome : "").replace(/\\/g, "/").replace(/\/+$/, "");
+	if (home && normalized.startsWith(home)) {
+		const suffix = normalized.slice(home.length).replace(/^\//, "");
+		return suffix ? `~/${suffix}` : "~";
+	}
+	return normalized;
+}
+
+function isPrintableKey(event: KeyboardEvent, key: string): boolean {
+	if (event.ctrlKey || event.metaKey || event.altKey) return false;
+	return key.length === 1;
+}
+
 export class TerminalPanel {
 	private container: HTMLElement;
-	private entries: TerminalEntry[] = [];
-	private command = "";
-	private running = false;
 	private cwd: string | null = null;
+	private running = false;
+	private onRequestClose: (() => void) | null = null;
+
+	private xterm: Terminal | null = null;
+	private fitAddon: FitAddon | null = null;
+	private resizeObserver: ResizeObserver | null = null;
+
+	private inputBuffer = "";
+	private commandHistory: string[] = [];
+	private commandHistoryIndex = -1;
+	private commandHistoryDraft = "";
+
+	private shellProfile: ShellProfile | null = null;
+	private resolvingShellProfile: Promise<ShellProfile> | null = null;
 
 	constructor(container: HTMLElement) {
 		this.container = container;
 		this.render();
 	}
 
+	setOnRequestClose(cb: () => void): void {
+		this.onRequestClose = cb;
+	}
+
 	setProjectPath(path: string | null): void {
-		this.cwd = path;
+		const next = path && path.trim().length > 0 ? path : null;
+		if (this.cwd === next) return;
+		this.cwd = next;
 		this.render();
 	}
 
 	focusInput(): void {
-		const input = this.container.querySelector("#terminal-input") as HTMLInputElement | null;
-		input?.focus();
+		this.xterm?.focus();
 	}
 
-	private push(kind: TerminalEntry["kind"], text: string): void {
-		this.entries.push({ id: uid(kind), kind, text });
-		if (this.entries.length > 350) {
-			this.entries = this.entries.slice(this.entries.length - 350);
+	private applyTheme(): void {
+		if (!this.xterm) return;
+		const styles = getComputedStyle(document.documentElement);
+		const background = styles.getPropertyValue("--bg").trim() || "#0f1115";
+		const foreground = styles.getPropertyValue("--text").trim() || "#d7dce2";
+		const muted = styles.getPropertyValue("--muted").trim() || "#95a1b2";
+		this.xterm.options.theme = {
+			background,
+			foreground,
+			cursor: foreground,
+			selectionBackground: muted,
+		};
+	}
+
+	private ensureTerminal(): void {
+		const viewport = this.container.querySelector<HTMLElement>("#terminal-viewport");
+		if (!viewport) return;
+
+		if (!this.xterm) {
+			this.fitAddon = new FitAddon();
+			this.xterm = new Terminal({
+				cursorBlink: true,
+				convertEol: true,
+				scrollback: 6000,
+				fontSize: 12,
+				lineHeight: 1.35,
+				fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+			});
+			this.xterm.loadAddon(this.fitAddon);
+			this.applyTheme();
+			this.xterm.open(viewport);
+			this.fitAddon.fit();
+			this.installKeyboardBindings();
+			this.printPrompt();
 		}
-		this.render();
-		requestAnimationFrame(() => {
-			const body = this.container.querySelector("#terminal-log") as HTMLElement | null;
-			if (body) body.scrollTop = body.scrollHeight;
+
+		if (!this.resizeObserver) {
+			this.resizeObserver = new ResizeObserver(() => {
+				this.fitAddon?.fit();
+			});
+			this.resizeObserver.observe(viewport);
+		}
+	}
+
+	private installKeyboardBindings(): void {
+		if (!this.xterm) return;
+		this.xterm.onKey(({ key, domEvent }) => {
+			if (domEvent.ctrlKey && !domEvent.metaKey && domEvent.key.toLowerCase() === "c") {
+				domEvent.preventDefault();
+				if (this.running) {
+					void this.abortRunningCommand();
+				} else {
+					this.clearCurrentInput();
+					this.xterm?.write("^C\r\n");
+					this.printPrompt();
+				}
+				return;
+			}
+
+			if (this.running) {
+				domEvent.preventDefault();
+				return;
+			}
+
+			if (domEvent.key === "Enter") {
+				domEvent.preventDefault();
+				const command = this.inputBuffer;
+				this.inputBuffer = "";
+				this.xterm?.write("\r\n");
+				void this.executeCommand(command);
+				return;
+			}
+
+			if (domEvent.key === "Backspace") {
+				domEvent.preventDefault();
+				if (this.inputBuffer.length === 0) return;
+				this.inputBuffer = this.inputBuffer.slice(0, -1);
+				this.xterm?.write("\b \b");
+				return;
+			}
+
+			if (domEvent.key === "ArrowUp") {
+				domEvent.preventDefault();
+				this.navigateHistory("up");
+				return;
+			}
+
+			if (domEvent.key === "ArrowDown") {
+				domEvent.preventDefault();
+				this.navigateHistory("down");
+				return;
+			}
+
+			if (domEvent.ctrlKey && !domEvent.metaKey && domEvent.key.toLowerCase() === "l") {
+				domEvent.preventDefault();
+				this.clearScreen();
+				return;
+			}
+
+			if (!isPrintableKey(domEvent, key)) return;
+			this.inputBuffer += key;
+			this.xterm?.write(key);
 		});
 	}
 
-	private clear(): void {
-		this.entries = [];
-		this.render();
+	private replaceCurrentInput(value: string): void {
+		if (!this.xterm) return;
+		for (let i = 0; i < this.inputBuffer.length; i += 1) {
+			this.xterm.write("\b \b");
+		}
+		this.inputBuffer = value;
+		if (value) this.xterm.write(value);
 	}
 
-	private async run(): Promise<void> {
-		if (this.running) return;
-		const command = this.command.trim();
-		if (!command) return;
-		this.command = "";
+	private navigateHistory(direction: "up" | "down"): void {
+		if (this.commandHistory.length === 0) return;
+		if (direction === "up") {
+			if (this.commandHistoryIndex < 0) {
+				this.commandHistoryDraft = this.inputBuffer;
+				this.commandHistoryIndex = this.commandHistory.length - 1;
+			} else if (this.commandHistoryIndex > 0) {
+				this.commandHistoryIndex -= 1;
+			}
+			const next = this.commandHistory[this.commandHistoryIndex] ?? "";
+			this.replaceCurrentInput(next);
+			return;
+		}
+
+		if (this.commandHistoryIndex < 0) return;
+		if (this.commandHistoryIndex < this.commandHistory.length - 1) {
+			this.commandHistoryIndex += 1;
+			const next = this.commandHistory[this.commandHistoryIndex] ?? "";
+			this.replaceCurrentInput(next);
+			return;
+		}
+
+		this.commandHistoryIndex = -1;
+		this.replaceCurrentInput(this.commandHistoryDraft);
+	}
+
+	private rememberHistory(command: string): void {
+		const trimmed = command.trim();
+		if (!trimmed) return;
+		const last = this.commandHistory[this.commandHistory.length - 1] ?? "";
+		if (last !== trimmed) {
+			this.commandHistory.push(trimmed);
+			if (this.commandHistory.length > 150) {
+				this.commandHistory.splice(0, this.commandHistory.length - 150);
+			}
+		}
+		this.commandHistoryIndex = -1;
+		this.commandHistoryDraft = "";
+	}
+
+	private clearCurrentInput(): void {
+		this.replaceCurrentInput("");
+	}
+
+	private scrollTerminalToBottom(): void {
+		requestAnimationFrame(() => {
+			this.xterm?.scrollToBottom();
+		});
+	}
+
+	private printPrompt(): void {
+		if (!this.xterm) return;
+		this.commandHistoryIndex = -1;
+		this.commandHistoryDraft = "";
+		const pathLabel = compactPath(this.cwd);
+		this.xterm.write(`\x1b[34m${pathLabel}\x1b[0m $ `);
+		this.scrollTerminalToBottom();
+	}
+
+	private writeInfo(text: string): void {
+		if (!this.xterm) return;
+		this.xterm.writeln(`\x1b[90m${text}\x1b[0m`);
+		this.scrollTerminalToBottom();
+	}
+
+	private writeStdErr(text: string): void {
+		if (!this.xterm) return;
+		const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+		for (const line of lines) {
+			if (!line) continue;
+			this.xterm.writeln(`\x1b[31m${line}\x1b[0m`);
+		}
+		this.scrollTerminalToBottom();
+	}
+
+	private writeStdOut(text: string): void {
+		if (!this.xterm) return;
+		if (!text) return;
+		const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, "\r\n");
+		this.xterm.write(normalized);
+		this.scrollTerminalToBottom();
+	}
+
+	private isCdCommand(command: string): boolean {
+		return /^cd(?:\s+.*)?$/i.test(command.trim());
+	}
+
+	private buildShellArgs(profile: ShellProfile, command: string): string[] {
+		switch (profile.kind) {
+			case "powershell":
+				return ["-NoLogo", "-NoProfile", "-Command", command];
+			case "cmd":
+				return ["/C", command];
+			default:
+				return ["-lc", command];
+		}
+	}
+
+	private buildShellProbeArgs(profile: ShellProfile): string[] {
+		switch (profile.kind) {
+			case "powershell":
+				return ["-NoLogo", "-NoProfile", "-Command", "Write-Output __PI_SHELL_OK__"];
+			case "cmd":
+				return ["/C", "echo __PI_SHELL_OK__"];
+			default:
+				return ["-lc", "printf __PI_SHELL_OK__"];
+		}
+	}
+
+	private buildCdProbeCommand(profile: ShellProfile, cdCommand: string): string {
+		switch (profile.kind) {
+			case "powershell":
+				return `${cdCommand}; (Get-Location).Path`;
+			case "cmd":
+				return `${cdCommand} && cd`;
+			default:
+				return `${cdCommand}\npwd`;
+		}
+	}
+
+	private async ensureShellProfile(): Promise<ShellProfile> {
+		if (this.shellProfile) return this.shellProfile;
+		if (this.resolvingShellProfile) return this.resolvingShellProfile;
+		this.resolvingShellProfile = (async () => {
+			const profiles = shellProfilesForPlatform();
+			const failures: string[] = [];
+			for (const profile of profiles) {
+				try {
+					const probe = await Command.create(profile.name, this.buildShellProbeArgs(profile), {
+						cwd: this.cwd || undefined,
+					}).execute();
+					if ((probe.code ?? 1) === 0) {
+						this.shellProfile = profile;
+						return profile;
+					}
+					failures.push(`${profile.name}: probe exit ${probe.code ?? -1}`);
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					failures.push(`${profile.name}: ${message}`);
+				}
+			}
+			const preview = failures.slice(0, 2).join(" | ");
+			throw new Error(
+				`No allowed shell command found. Restart app and verify capabilities.${preview ? ` (${preview})` : ""}`,
+			);
+		})();
+		try {
+			return await this.resolvingShellProfile;
+		} finally {
+			this.resolvingShellProfile = null;
+		}
+	}
+
+	private async executeShell(command: string): Promise<TerminalExecResult> {
+		const profile = await this.ensureShellProfile();
+		const output = await Command.create(profile.name, this.buildShellArgs(profile, command), {
+			cwd: this.cwd || undefined,
+		}).execute();
+		return {
+			code: output.code,
+			signal: output.signal,
+			stdout: normalizeText(output.stdout),
+			stderr: normalizeText(output.stderr),
+		};
+	}
+
+	private async executeCdCommand(command: string): Promise<void> {
+		const profile = await this.ensureShellProfile();
+		const probeCommand = this.buildCdProbeCommand(profile, command);
+		const result = await this.executeShell(probeCommand);
+		if (result.stderr.trim()) {
+			this.writeStdErr(result.stderr.trimEnd());
+		}
+
+		const normalizedStdout = result.stdout.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+		const lines = normalizedStdout
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0);
+
+		if ((result.code ?? 1) === 0) {
+			const nextCwd = lines.length > 0 ? lines[lines.length - 1] : "";
+			if (nextCwd) {
+				this.cwd = nextCwd;
+				this.render();
+			}
+			const extraStdout = lines.slice(0, -1).join("\n");
+			if (extraStdout) this.writeStdOut(`${extraStdout}\n`);
+		} else if (lines.length > 0) {
+			this.writeStdOut(`${lines.join("\n")}\n`);
+		}
+	}
+
+	private async executeCommand(rawCommand: string): Promise<void> {
+		const command = rawCommand.trim();
+		if (!command) {
+			this.printPrompt();
+			return;
+		}
+		this.rememberHistory(command);
+
+		if (command === "clear" || command === "cls") {
+			this.clearScreen();
+			return;
+		}
+
+		if (!this.cwd) {
+			this.writeInfo("Open a project to run terminal commands.");
+			this.printPrompt();
+			return;
+		}
+
 		this.running = true;
-		this.push("command", `$ ${command}`);
-
+		this.render();
 		try {
-			const result = await rpcBridge.bash(command);
-			const stdout = normalizeText((result as Record<string, unknown>).stdout);
-			const stderr = normalizeText((result as Record<string, unknown>).stderr);
-			const exitCode = (result as Record<string, unknown>).exitCode;
-
-			if (stdout.trim()) this.push("stdout", stdout.trimEnd());
-			if (stderr.trim()) this.push("stderr", stderr.trimEnd());
-			if (typeof exitCode === "number") this.push("meta", `exit ${exitCode}`);
+			if (this.isCdCommand(command)) {
+				await this.executeCdCommand(command);
+			} else {
+				const result = await this.executeShell(command);
+				if (result.stdout.length > 0) this.writeStdOut(result.stdout);
+				if (result.stderr.length > 0) this.writeStdErr(result.stderr);
+				if (typeof result.code === "number" && result.code !== 0 && !result.stderr.trim()) {
+					this.writeStdErr(`exit ${result.code}`);
+				}
+			}
 		} catch (err) {
-			this.push("stderr", err instanceof Error ? err.message : String(err));
+			this.writeStdErr(err instanceof Error ? err.message : String(err));
 		} finally {
 			this.running = false;
 			this.render();
+			this.printPrompt();
 		}
 	}
 
-	private async abort(): Promise<void> {
+	private async abortRunningCommand(): Promise<void> {
 		if (!this.running) return;
-		try {
-			await rpcBridge.abortBash();
-			this.push("meta", "Command aborted");
-		} catch {
-			// ignore
-		} finally {
-			this.running = false;
-			this.render();
-		}
+		this.writeInfo("Abort is not available for this shell command path yet.");
+	}
+
+	private clearScreen(): void {
+		this.inputBuffer = "";
+		this.xterm?.write("\x1b[2J\x1b[3J\x1b[H");
+		this.printPrompt();
+		this.scrollTerminalToBottom();
 	}
 
 	render(): void {
+		const shellLabel = this.shellProfile?.label ?? shellProfilesForPlatform()[0]?.label ?? "shell";
+		const headerTitle = this.running ? `Terminal ${shellLabel} · running` : `Terminal ${shellLabel}`;
+		const cwdLabel = this.cwd ? compactPath(this.cwd) : "No project open";
 		const template = html`
-			<div class="terminal-panel-root">
+			<div
+				class="terminal-panel-root"
+				@mousedown=${(event: MouseEvent) => {
+					const target = event.target instanceof Element ? event.target : null;
+					if (target?.closest(".terminal-resize-handle")) return;
+					this.xterm?.focus();
+				}}
+			>
+				<div class="terminal-resize-handle" title="Resize terminal" aria-hidden="true"></div>
 				<div class="terminal-panel-header">
-					<div class="terminal-panel-title">Terminal</div>
-					<div class="terminal-panel-cwd" title=${this.cwd || ""}>${this.cwd || "."}</div>
+					<div class="terminal-panel-title">${headerTitle}</div>
+					<div class="terminal-panel-cwd" title=${this.cwd || ""}>${cwdLabel}</div>
 					<div class="terminal-panel-actions">
-						<button class="ghost-btn" @click=${() => this.clear()}>Clear</button>
-						${this.running
-							? html`<button class="ghost-btn" @click=${() => void this.abort()}>Stop</button>`
-							: nothing}
+						<button class="ghost-btn" title="Clear terminal" @click=${() => this.clearScreen()}>Clear</button>
+						<button class="ghost-btn terminal-close-btn" title="Close terminal" @click=${() => this.onRequestClose?.()}>✕</button>
 					</div>
 				</div>
-				<div class="terminal-panel-log" id="terminal-log">
-					${this.entries.length === 0
-						? html`<div class="terminal-panel-empty">Run a shell command in this workspace.</div>`
-						: this.entries.map(
-								(entry) => html`<pre class="terminal-entry ${entry.kind}">${entry.text}</pre>`,
-							)}
-				</div>
-				<div class="terminal-panel-input-row">
-					<span class="terminal-prompt">$</span>
-					<input
-						id="terminal-input"
-						type="text"
-						placeholder="Type a command"
-						.value=${this.command}
-						?disabled=${this.running}
-						@input=${(e: Event) => {
-							this.command = (e.target as HTMLInputElement).value;
-							this.render();
-						}}
-						@keydown=${(e: KeyboardEvent) => {
-							if (e.key === "Enter") {
-								e.preventDefault();
-								void this.run();
-							}
-						}}
-					/>
-					<button class="ghost-btn" ?disabled=${this.running || !this.command.trim()} @click=${() => void this.run()}>Run</button>
-				</div>
+				<div id="terminal-viewport" class="terminal-panel-viewport"></div>
 			</div>
 		`;
 
 		render(template, this.container);
+		this.ensureTerminal();
+		this.applyTheme();
+		this.fitAddon?.fit();
 	}
 }

@@ -12,6 +12,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Composer now supports terminal-style full input history traversal (`ArrowUp` / `ArrowDown`) across previously sent prompts and slash commands.
 - Slash palette keyboard navigation now previews the active command directly in the composer input and keeps the active row visible while traversing.
 - Command palette (`Cmd/Ctrl+K`) keyboard navigation now auto-scrolls the selected row into view for long lists.
+- Terminal UX now uses a VS Code-style bottom dock inside chat instead of opening as a standalone terminal tab/pane, with an xterm-powered shell surface and close/clear dock controls.
+- Composer follow-up queue UX is now minimal and docked near the composer instead of injecting speculative queued bubbles into the chat timeline.
 - Welcome project dropdown now lists all projects in the current workspace and supports direct project switching (plus quick actions for add project, packages, and settings).
 - Welcome heading copy now rotates between Pi-style idle phrases for a calmer ambient experience.
 - Reworked assistant tool-heavy runs into a compact workflow timeline with centered duration summary, grouped repeated tool calls, and progressive disclosure for details.
@@ -20,11 +22,18 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Polished markdown code blocks toward a cleaner Codex-like appearance (single surface, tightened header/content spacing, smaller copy affordance, less chrome).
 - Composer slash palette now shows CLI-first command groups with runtime-discovered extension/prompt/skill commands, while keeping visual chrome minimal.
 - Compaction status rendering was reduced to a minimal workflow-style row with collapsed-by-default details instead of a heavy status card.
+- Auto-rename extension recommendation and desktop config bridge now target `@byteowlz/pi-auto-rename`, with dynamic command-to-package resolution for config-intent slash commands (including `/auto-rename config`) instead of hardcoded package-name routing.
+- Packages modal now includes a dedicated auto-rename settings editor (enabled/mode/model/fallback/prefix/debug + Save/Test actions) backed by `auto-rename.json`, so extension behavior can be configured directly in Desktop.
+- Auto-rename settings now support explicit save target selection (global or project), including choosing among opened sidebar projects for project-scoped config writes.
+- Save target controls were moved next to the Save action in auto-rename settings (instead of top-of-form) for a cleaner, less noisy flow.
+- Runtime slash descriptions now include short argument hints for extension commands such as `/auto-rename` (e.g. `config`, `test`, `init`, `regen`).
+- Expanded package capability docs now define explicit command contracts (`/<base>`, `/<base> config`, `/<base> config <args>`), safe default settings behavior, and extension SDK auth compatibility guidance (`getApiKeyAndHeaders` first, legacy fallback optional).
 
 ### Fixed
 - Bundled default Pi Desktop themes now emit full Pi CLI-compatible theme schema (all required color tokens) instead of a partial Desktop-only color set.
 - Fixed `/scoped-models` settings-open race causing Lit `ChildPart has no parentNode` errors by removing unsupported `innerHTML` mutation paths in `SettingsPanel` render/fallback lifecycle.
 - Fixed user message bubble width/wrapping regression that could squeeze short text into broken wrapping (`he j`) by correcting user-shell width constraints and wrap behavior.
+- Fixed terminal usability gaps by normalizing legacy `pane: "terminal"` workspace state back to chat+dock, adding clearer disconnected/no-project terminal states, improving keyboard handling/history inside the docked terminal, and preventing terminal commands from leaking into the chat canvas timeline.
 - Added bundled-theme auto-repair for legacy invalid `~/.pi/agent/themes/pi-desktop-*.json` files so existing installs stop producing CLI theme validation errors.
 - Theme files created from Settings (“Create theme”) now use the full Pi theme schema, so custom exports are valid in both Desktop and CLI.
 - Hardened Settings pane mounting/open flow to recover from race conditions and stale container rebinding during workspace/project transitions.
@@ -39,6 +48,12 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Fixed workflow summary counters to report mixed outcomes correctly (complete + failed + running) instead of over-reporting failures.
 - Removed blinking assistant-body streaming cursor artifact and removed noisy composer status text beneath model controls.
 - Fixed compaction timeline behavior so compaction rows stay anchored at the correct chronological position instead of drifting to the newest row.
+- Alt+Enter in composer now surfaces explicit queued-message behavior (`followUp`) with clearer queued labeling in user bubbles.
+- Extension `notify` responses are now surfaced as in-app notices while Desktop is foregrounded, so command feedback from extension workflows (including auto-rename commands) is visible instead of appearing to no-op.
+- Extension runtime errors now include better source context in chat notices, and Desktop emits an explicit compatibility hint when an extension still uses deprecated `ctx.modelRegistry.getApiKey()`.
+- Desktop now ensures a global compatibility extension (`~/.pi/agent/extensions/pi-desktop-sdk-compat.ts`) is installed to shim `modelRegistry.getApiKey()` via `getApiKeyAndHeaders()` for legacy extensions, restoring runtime compatibility for packages such as `@byteowlz/pi-auto-rename`.
+- Auto-rename settings now correctly hydrate saved `model`/`fallbackModel` values from object-form config (`{ provider, id }`) and keep those values visible in model dropdowns (including unavailable-but-saved models).
+- Suppressed internal extension status-key events (for example `oqto_title_changed`) from rendering as floating composer status text, fixing stray session-title overlays above the attach/model row.
 
 ## [0.1.8] - 2026-03-23
 

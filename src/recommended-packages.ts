@@ -37,16 +37,16 @@ export const RECOMMENDED_PACKAGES: RecommendedPackageDefinition[] = [
 		aliases: ["pi-desktop-notify"],
 	},
 	{
-		id: "pi-session-auto-rename",
-		name: "Pi Session Auto Rename",
-		description: "Automatically renames Pi sessions with AI after turns, with configurable naming behavior.",
+		id: "pi-auto-rename",
+		name: "Pi Auto Rename",
+		description: "Automatically renames Pi sessions from the first prompt, with configurable model, fallback, and prefix behavior.",
 		installScopeHint: "global",
-		source: "npm:pi-session-auto-rename",
+		source: "npm:@byteowlz/pi-auto-rename",
 		sourceKind: "npm",
 		publisher: "community",
 		resourcesLabel: "1 extension",
-		installSourceHint: "npm:pi-session-auto-rename",
-		aliases: ["pi-session-auto-rename"],
+		installSourceHint: "npm:@byteowlz/pi-auto-rename",
+		aliases: ["@byteowlz/pi-auto-rename", "pi-session-auto-rename"],
 	},
 ];
 

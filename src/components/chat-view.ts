@@ -25,6 +25,14 @@ interface PendingImage {
 	size: number;
 }
 
+interface QueuedComposerMessage {
+	id: string;
+	text: string;
+	attachments: PendingImage[];
+	imageCount: number;
+	createdAt: number;
+}
+
 interface ToolCallBlock {
 	id: string;
 	name: string;
@@ -187,6 +195,24 @@ interface CompactionCycleState {
 	errorMessage: string | null;
 	details: string[];
 	expanded: boolean;
+}
+
+function runtimeCommandUsageHint(name: string): string | null {
+	const normalized = normalizeText(name).toLowerCase().replace(/^\/+/, "");
+	if (normalized === "auto-rename" || normalized === "name-ai-config") {
+		return "Args: config, test, init, regen, <name>";
+	}
+	return null;
+}
+
+function withRuntimeCommandUsageHint(name: string, description: string): string {
+	const hint = runtimeCommandUsageHint(name);
+	if (!hint) return description;
+	const normalized = normalizeText(description);
+	if (!normalized) return hint;
+	const lower = normalized.toLowerCase();
+	if (lower.includes("config") && lower.includes("test")) return normalized;
+	return `${normalized} · ${hint}`;
 }
 
 const BUILTIN_SLASH_COMMANDS: Array<{ name: string; description: string }> = [
@@ -406,6 +432,8 @@ function formatThinkingDisplayName(level: ThinkingLevel): string {
 	}
 }
 
+const THINKING_LEVEL_CYCLE_ORDER: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
 function uiIcon(name: "edit" | "retry" | "copy" | "attach" | "send" | "stop" | "spinner" | "spark" | "terminal" | "git"): TemplateResult {
 	switch (name) {
 		case "edit":
@@ -415,7 +443,13 @@ function uiIcon(name: "edit" | "retry" | "copy" | "attach" | "send" | "stop" | "
 		case "copy":
 			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.4"></rect><rect x="3" y="3" width="8" height="8" rx="1.4"></rect></svg>`;
 		case "attach":
-			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.1v9.8"></path><path d="M3.1 8h9.8"></path></svg>`;
+			return html`
+				<svg viewBox="0 0 16 16" aria-hidden="true">
+					<path d="M4.2 2.6h5.1l2.5 2.5v7.1a1.2 1.2 0 0 1-1.2 1.2H4.2A1.2 1.2 0 0 1 3 12.2V3.8a1.2 1.2 0 0 1 1.2-1.2z"></path>
+					<path d="M9.3 2.6v2.5h2.5"></path>
+					<path d="M5.6 4.5v3.6a2.4 2.4 0 1 0 4.8 0V4.9a1.6 1.6 0 1 0-3.2 0v3a.8.8 0 1 0 1.6 0V5.5"></path>
+				</svg>
+			`;
 		case "send":
 			return html`<svg class="send-arrow-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12.7V3.6"></path><path d="M4.6 7L8 3.6 11.4 7"></path></svg>`;
 		case "stop":
@@ -460,7 +494,7 @@ export class ChatView {
 	private onAddProject: (() => void) | null = null;
 	private onOpenSettings: ((sectionId?: string) => void) | null = null;
 	private onOpenPackages: (() => void) | null = null;
-	private onOpenExtensionConfig: ((commandName: string) => boolean | Promise<boolean>) | null = null;
+	private onOpenExtensionConfig: ((commandName: string, args: string) => boolean | Promise<boolean>) | null = null;
 	private onBeginRenameCurrentSession: (() => boolean | Promise<boolean>) | null = null;
 	private onRenameCurrentSession: ((nextName: string) => boolean | Promise<boolean>) | null = null;
 	private onCreateFreshSession: (() => boolean | Promise<boolean>) | null = null;
@@ -479,6 +513,7 @@ export class ChatView {
 	private lastBackendSessionFile: string | null = null;
 	private settingModel = false;
 	private settingThinking = false;
+	private unsupportedThinkingLevelsByModel = new Map<string, Set<ThinkingLevel>>();
 	private modelPickerOpen = false;
 	private modelPickerActiveProvider = "";
 	private modelPickerGlobalListenersBound = false;
@@ -494,7 +529,9 @@ export class ChatView {
 	private compactionInsertIndex: number | null = null;
 	private lastRuntimeNoticeSignature = "";
 	private lastRuntimeNoticeAt = 0;
+	private extensionCompatibilityHintsShown = new Set<string>();
 	private pendingDeliveryMode: DeliveryMode = "prompt";
+	private queuedComposerMessages: QueuedComposerMessage[] = [];
 	private openingForkPicker = false;
 	private forkPickerOpen = false;
 	private forkOptions: ForkOption[] = [];
@@ -627,7 +664,7 @@ export class ChatView {
 		this.onOpenPackages = cb;
 	}
 
-	setOnOpenExtensionConfig(cb: (commandName: string) => boolean | Promise<boolean>): void {
+	setOnOpenExtensionConfig(cb: (commandName: string, args: string) => boolean | Promise<boolean>): void {
 		this.onOpenExtensionConfig = cb;
 	}
 
@@ -895,7 +932,7 @@ export class ChatView {
 		if (source !== "extension" && source !== "prompt" && source !== "skill") return null;
 		const name = normalizeText(raw.name).replace(/^\/+/, "").trim().toLowerCase();
 		if (!name) return null;
-		const description = normalizeText(raw.description) || `Run /${name}`;
+		const description = withRuntimeCommandUsageHint(name, normalizeText(raw.description) || `Run /${name}`);
 		return {
 			name,
 			description,
@@ -1127,7 +1164,7 @@ export class ChatView {
 			if (item.source === "builtin") {
 				await this.executeBuiltinSlashCommand(item.commandName, args);
 			} else {
-				await this.executeRuntimeSlashCommand(trimmedCommandText, item.source, item.commandName);
+				await this.executeRuntimeSlashCommand(trimmedCommandText, item.source, item.commandName, args);
 			}
 		} catch (err) {
 			console.error(`Slash command failed (${item.commandName}):`, err);
@@ -1139,11 +1176,24 @@ export class ChatView {
 		}
 	}
 
-	private async executeRuntimeSlashCommand(commandText: string, source: SlashCommandSource, commandName: string): Promise<void> {
+	private async executeRuntimeSlashCommand(
+		commandText: string,
+		source: SlashCommandSource,
+		commandName: string,
+		args: string,
+	): Promise<void> {
 		if (source === "builtin") return;
-		if (source === "extension" && this.onOpenExtensionConfig && commandName.toLowerCase().endsWith("config")) {
-			const handled = await this.onOpenExtensionConfig(commandName.toLowerCase());
-			if (handled) return;
+		if (source === "extension" && this.onOpenExtensionConfig) {
+			const normalizedName = commandName.trim().toLowerCase();
+			const normalizedArgs = args.trim().toLowerCase();
+			const configIntent =
+				normalizedName.endsWith("config") ||
+				normalizedArgs === "config" ||
+				normalizedArgs.startsWith("config ");
+			if (configIntent) {
+				const handled = await this.onOpenExtensionConfig(normalizedName, args);
+				if (handled) return;
+			}
 		}
 		const options = this.currentIsStreaming() ? { streamingBehavior: "steer" as const } : {};
 		await rpcBridge.prompt(commandText, options);
@@ -1635,6 +1685,7 @@ export class ChatView {
 			const previousSessionFile = this.lastBackendSessionFile;
 			const currentSessionFile = state.sessionFile ?? null;
 			this.state = state;
+			this.syncComposerQueueFromState(state);
 			this.lastBackendSessionFile = currentSessionFile;
 			if ((previousSessionFile ?? "") !== (currentSessionFile ?? "")) {
 				this.sessionStats = {
@@ -2119,6 +2170,7 @@ export class ChatView {
 		try {
 			await rpcBridge.setModel(provider, modelId);
 			this.state = await rpcBridge.getState();
+			this.syncComposerQueueFromState(this.state);
 			if (this.state) this.onStateChange?.(this.state);
 			void this.refreshSessionStats(true);
 			this.pushNotice(`Switched to ${provider}/${modelId}`, "success");
@@ -2133,8 +2185,40 @@ export class ChatView {
 		}
 	}
 
-	private async setThinkingLevel(level: ThinkingLevel): Promise<void> {
-		if (this.settingThinking) return;
+	private thinkingLevelModelKey(state: RpcSessionState | null | undefined = this.state): string {
+		const provider = state?.model?.provider?.trim() ?? "";
+		const modelId = state?.model?.id?.trim() ?? "";
+		if (!provider || !modelId) return "";
+		return `${provider}::${modelId}`;
+	}
+
+	private markThinkingLevelUnsupported(level: ThinkingLevel, state: RpcSessionState | null | undefined = this.state): void {
+		const key = this.thinkingLevelModelKey(state);
+		if (!key) return;
+		const existing = this.unsupportedThinkingLevelsByModel.get(key) ?? new Set<ThinkingLevel>();
+		existing.add(level);
+		this.unsupportedThinkingLevelsByModel.set(key, existing);
+	}
+
+	private clearThinkingLevelUnsupported(level: ThinkingLevel, state: RpcSessionState | null | undefined = this.state): void {
+		const key = this.thinkingLevelModelKey(state);
+		if (!key) return;
+		const existing = this.unsupportedThinkingLevelsByModel.get(key);
+		if (!existing) return;
+		existing.delete(level);
+		if (existing.size === 0) {
+			this.unsupportedThinkingLevelsByModel.delete(key);
+		}
+	}
+
+	private unsupportedThinkingLevelsForCurrentModel(): Set<ThinkingLevel> {
+		const key = this.thinkingLevelModelKey(this.state);
+		if (!key) return new Set<ThinkingLevel>();
+		return this.unsupportedThinkingLevelsByModel.get(key) ?? new Set<ThinkingLevel>();
+	}
+
+	private async setThinkingLevel(level: ThinkingLevel): Promise<ThinkingLevel | null> {
+		if (this.settingThinking) return this.state?.thinkingLevel ?? null;
 		const requestedLevel = level;
 		if (this.state) {
 			this.state = { ...this.state, thinkingLevel: requestedLevel };
@@ -2144,17 +2228,51 @@ export class ChatView {
 		try {
 			await rpcBridge.setThinkingLevel(requestedLevel);
 			this.state = await rpcBridge.getState();
+			this.syncComposerQueueFromState(this.state);
 			if (this.state) this.onStateChange?.(this.state);
+			if (this.state?.thinkingLevel === requestedLevel) {
+				this.clearThinkingLevelUnsupported(requestedLevel, this.state);
+			} else {
+				this.markThinkingLevelUnsupported(requestedLevel, this.state);
+			}
 			if (requestedLevel === "xhigh" && this.state?.thinkingLevel !== "xhigh") {
 				this.pushNotice(`xhigh is not available for this model (using ${this.state?.thinkingLevel || "high"})`, "info");
 			}
 			void this.refreshSessionStats(true);
+			return this.state?.thinkingLevel ?? null;
 		} catch (err) {
 			console.error("Failed to set thinking level:", err);
 			this.pushNotice("Failed to set thinking level", "error");
+			return this.state?.thinkingLevel ?? null;
 		} finally {
 			this.settingThinking = false;
 			this.render();
+		}
+	}
+
+	private async cycleThinkingLevel(direction: 1 | -1 = 1): Promise<void> {
+		if (this.settingThinking) return;
+		const order = THINKING_LEVEL_CYCLE_ORDER;
+		let cursor = Math.max(0, order.indexOf((this.state?.thinkingLevel ?? "off") as ThinkingLevel));
+
+		for (let attempt = 0; attempt < order.length; attempt += 1) {
+			const blocked = this.unsupportedThinkingLevelsForCurrentModel();
+			let candidate: ThinkingLevel | null = null;
+			for (let step = 1; step <= order.length; step += 1) {
+				const nextIndex = (cursor + step * direction + order.length * 2) % order.length;
+				const nextLevel = order[nextIndex] ?? "off";
+				if (blocked.has(nextLevel)) continue;
+				candidate = nextLevel;
+				cursor = nextIndex;
+				break;
+			}
+			if (!candidate) return;
+			const applied = await this.setThinkingLevel(candidate);
+			if (applied === candidate) return;
+			const appliedIndex = order.indexOf((applied ?? candidate) as ThinkingLevel);
+			if (appliedIndex >= 0) {
+				cursor = appliedIndex;
+			}
 		}
 	}
 
@@ -2962,12 +3080,42 @@ export class ChatView {
 		this.pushNotice(text, kind);
 	}
 
+	private extensionLabelFromPath(pathValue: string | null | undefined): string {
+		const value = normalizeText(pathValue);
+		if (!value) return "Extension";
+		const normalized = value.replace(/\\/g, "/");
+		const parts = normalized.split("/").filter((part) => part.length > 0);
+		if (parts.length === 0) return value;
+		const last = parts[parts.length - 1];
+		if (/^index\.(?:ts|js|mjs|cjs)$/i.test(last) && parts.length >= 2) {
+			return parts[parts.length - 2];
+		}
+		return last;
+	}
+
+	private maybePushExtensionCompatibilityHint(event: Record<string, unknown>, errorMessage: string): void {
+		const normalizedError = errorMessage.trim().toLowerCase();
+		if (!normalizedError.includes("modelregistry.getapikey is not a function")) return;
+		const extensionPath = pickString(event, ["extensionPath", "extension", "path"]);
+		const callbackEvent = pickString(event, ["event", "callback", "method"]);
+		const signature = `${(extensionPath ?? "").toLowerCase()}::${(callbackEvent ?? "").toLowerCase()}::modelregistry.getapikey`;
+		if (this.extensionCompatibilityHintsShown.has(signature)) return;
+		this.extensionCompatibilityHintsShown.add(signature);
+		const extensionLabel = this.extensionLabelFromPath(extensionPath);
+		const during = callbackEvent ? ` during ${callbackEvent}` : "";
+		this.pushRuntimeNotice(
+			`${extensionLabel} uses deprecated ctx.modelRegistry.getApiKey()${during}. Update the extension to ctx.modelRegistry.getApiKeyAndHeaders() (or add a compatibility fallback).`,
+			"error",
+			12000,
+		);
+	}
+
 	private handleEvent(event: Record<string, unknown>): void {
 		const type = event.type as string;
 		if (type === "response") return;
 
 		switch (type) {
-			case "agent_start":
+			case "agent_start": {
 				this.pendingDeliveryMode = "steer";
 				this.runHasAssistantText = false;
 				this.runSawToolActivity = false;
@@ -2983,6 +3131,7 @@ export class ChatView {
 				this.render();
 				this.scrollToBottom();
 				break;
+			}
 
 			case "agent_end": {
 				this.cancelStreamingUiReconcile();
@@ -3008,6 +3157,7 @@ export class ChatView {
 					.getState()
 					.then((s) => {
 						this.state = s;
+						this.syncComposerQueueFromState(s);
 						this.pendingDeliveryMode = s.isStreaming ? "steer" : "prompt";
 						this.onStateChange?.(s);
 						void this.refreshSessionStats(true);
@@ -3024,6 +3174,10 @@ export class ChatView {
 			case "message_start": {
 				const msg = event.message as Record<string, unknown>;
 				const role = typeof msg.role === "string" ? msg.role : "";
+				if (role === "user") {
+					this.promoteQueuedMessageFromUserEvent(msg);
+					break;
+				}
 				if (role === "assistant") {
 					const last = this.messages[this.messages.length - 1];
 					if (last?.role === "assistant" && last.isStreaming) {
@@ -3155,6 +3309,7 @@ export class ChatView {
 				if (turnRole === "assistant") {
 					const last = this.messages[this.messages.length - 1];
 					if (last?.role === "assistant") {
+						last.isStreaming = false;
 						last.isThinkingStreaming = false;
 						const turnError = this.extractAssistantMessageError(turnMessage);
 						if (turnError) {
@@ -3356,9 +3511,12 @@ export class ChatView {
 
 			case "extension_error": {
 				const error = this.extractRuntimeErrorMessage(event) || "Unknown extension error";
-				const source = pickString(event, ["source", "callback", "method", "extension", "provider"]);
-				const prefix = source ? `Extension error (${source})` : "Extension error";
+				const extensionPath = pickString(event, ["extensionPath", "extension"]);
+				const extensionLabel = this.extensionLabelFromPath(extensionPath);
+				const source = pickString(event, ["event", "source", "callback", "method", "provider"]);
+				const prefix = source ? `Extension error (${extensionLabel}:${source})` : `Extension error (${extensionLabel})`;
 				this.pushRuntimeNotice(`${prefix}: ${truncate(error, 180)}`, "error", 2600);
+				this.maybePushExtensionCompatibilityHint(event, error);
 				break;
 			}
 
@@ -3781,6 +3939,67 @@ export class ChatView {
 		this.scrollToBottom(true);
 	}
 
+	private promoteQueuedMessageFromUserEvent(message: Record<string, unknown>): boolean {
+		if (this.queuedComposerMessages.length === 0) return false;
+		const normalize = (value: string): string => value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+		const eventTextRaw = this.extractText(message.content ?? "");
+		const eventText = normalize(eventTextRaw);
+		let matchIndex = -1;
+		if (eventText.length > 0) {
+			matchIndex = this.queuedComposerMessages.findIndex((entry) => normalize(entry.text) === eventText);
+		} else {
+			matchIndex = this.queuedComposerMessages.findIndex((entry) => normalize(entry.text).length === 0);
+			if (matchIndex < 0 && this.queuedComposerMessages.length === 1) {
+				matchIndex = 0;
+			}
+		}
+		if (matchIndex < 0) return false;
+		const [queued] = this.queuedComposerMessages.splice(matchIndex, 1);
+		if (!queued) return false;
+		const last = this.messages[this.messages.length - 1];
+		if (
+			last?.role === "user" &&
+			last.deliveryMode === "followUp" &&
+			normalize(last.text) === normalize(queued.text) &&
+			(last.attachments?.length ?? 0) === queued.attachments.length
+		) {
+			return true;
+		}
+		this.pushUserEcho(queued.text, "followUp", this.cloneImages(queued.attachments));
+		return true;
+	}
+
+	private enqueueComposerQueueMessage(text: string, attachments: PendingImage[]): string {
+		const clonedAttachments = this.cloneImages(attachments);
+		const entry: QueuedComposerMessage = {
+			id: uid("queued"),
+			text,
+			attachments: clonedAttachments,
+			imageCount: clonedAttachments.length,
+			createdAt: Date.now(),
+		};
+		this.queuedComposerMessages = [...this.queuedComposerMessages, entry].slice(-6);
+		return entry.id;
+	}
+
+	private removeComposerQueueMessage(id: string): void {
+		const next = this.queuedComposerMessages.filter((entry) => entry.id !== id);
+		if (next.length === this.queuedComposerMessages.length) return;
+		this.queuedComposerMessages = next;
+	}
+
+	private clearComposerQueueMessages(): void {
+		if (this.queuedComposerMessages.length === 0) return;
+		this.queuedComposerMessages = [];
+	}
+
+	private syncComposerQueueFromState(state: RpcSessionState | null | undefined): void {
+		const pendingCount = Math.max(0, state?.pendingMessageCount ?? 0);
+		if (pendingCount > 0 && this.queuedComposerMessages.length > pendingCount) {
+			this.queuedComposerMessages = this.queuedComposerMessages.slice(this.queuedComposerMessages.length - pendingCount);
+		}
+	}
+
 	private resetComposerHistoryNavigation(): void {
 		this.composerHistoryIndex = -1;
 		this.composerHistoryDraft = "";
@@ -3889,6 +4108,7 @@ export class ChatView {
 				const backendState = await rpcBridge.getState();
 				const backendStreaming = Boolean(backendState.isStreaming);
 				this.state = backendState;
+				this.syncComposerQueueFromState(backendState);
 				this.onStateChange?.(backendState);
 				if (!backendStreaming) {
 					streaming = false;
@@ -3905,7 +4125,13 @@ export class ChatView {
 			actualMode = "prompt";
 		}
 
-		this.pushUserEcho(text, actualMode, images);
+		let queuedMessageId: string | null = null;
+		if (actualMode === "followUp") {
+			queuedMessageId = this.enqueueComposerQueueMessage(text, images);
+			this.pushNotice("Queued message", "info");
+		} else {
+			this.pushUserEcho(text, actualMode, images);
+		}
 		this.clearComposer();
 		this.sendingPrompt = true;
 		this.render();
@@ -3918,9 +4144,23 @@ export class ChatView {
 				await rpcBridge.steer(text, rpcImages);
 			} else {
 				await rpcBridge.followUp(text, rpcImages);
+				void rpcBridge
+					.getState()
+					.then((state) => {
+						this.state = state;
+						this.syncComposerQueueFromState(state);
+						this.onStateChange?.(state);
+						this.render();
+					})
+					.catch(() => {
+						/* ignore */
+					});
 			}
 			this.onPromptSubmitted?.();
 		} catch (err) {
+			if (queuedMessageId) {
+				this.removeComposerQueueMessage(queuedMessageId);
+			}
 			console.error("Failed to send message:", err);
 			this.pushNotice(err instanceof Error ? err.message : "Failed to send message", "error");
 		} finally {
@@ -4075,6 +4315,7 @@ export class ChatView {
 		try {
 			const state = await rpcBridge.getState();
 			this.state = state;
+			this.syncComposerQueueFromState(state);
 			this.pendingDeliveryMode = state.isStreaming ? "steer" : "prompt";
 			this.onStateChange?.(state);
 			this.onRunStateChange?.(Boolean(state.isStreaming));
@@ -4591,9 +4832,7 @@ export class ChatView {
 			<div class="chat-row user-row" data-message-id=${msg.id}>
 				<div class="message-shell user-message-shell">
 					<div class="bubble user-bubble">
-						${msg.deliveryMode && msg.deliveryMode !== "prompt"
-							? html`<div class="bubble-chip">${msg.deliveryMode === "steer" ? "steer" : "follow-up"}</div>`
-							: nothing}
+						${msg.deliveryMode === "steer" ? html`<div class="bubble-chip">steer</div>` : nothing}
 						${msg.text ? html`<div class="bubble-text">${msg.text}</div>` : nothing}
 						${msg.attachments && msg.attachments.length > 0
 							? html`
@@ -5612,7 +5851,7 @@ export class ChatView {
 				<div class="control-group">
 					<button
 						class="composer-icon-btn"
-						title="Attach image"
+						title="Attach file"
 						?disabled=${interactionLocked}
 						@click=${() => {
 							if (interactionLocked) return;
@@ -5732,7 +5971,7 @@ export class ChatView {
 							: nothing}
 					</div>
 
-					<div class="thinking-select-wrap" title="Reasoning effort">
+					<div class="thinking-select-wrap" title="Reasoning effort · Shift+Tab to cycle">
 						<span class="thinking-select-label">${thinkingLabel}</span>
 						<select
 							class="thinking-select-native"
@@ -5776,7 +6015,7 @@ export class ChatView {
 								<button
 									class="send-btn primary-send"
 									?disabled=${interactionLocked || !canSend}
-									title="Send"
+									title="Send (Enter) · Queue while streaming (Alt+Enter)"
 									@click=${() => {
 										if (interactionLocked) return;
 										void this.sendMessage("prompt");
@@ -5786,6 +6025,24 @@ export class ChatView {
 								</button>
 							`}
 				</div>
+			</div>
+		`;
+	}
+
+	private renderQueuedComposerMessages(): TemplateResult | typeof nothing {
+		if (this.queuedComposerMessages.length === 0) return nothing;
+		const recent = this.queuedComposerMessages.slice(-2);
+		return html`
+			<div class="composer-queued-row" aria-live="polite">
+				${recent.map(
+					(entry) => html`
+						<div class="composer-queued-pill" title=${entry.text}>
+							<span class="composer-queued-label">Queued</span>
+							<span class="composer-queued-text">${truncate(entry.text.replace(/\s+/g, " "), 72)}</span>
+							${entry.imageCount > 0 ? html`<span class="composer-queued-meta">+${entry.imageCount} image${entry.imageCount === 1 ? "" : "s"}</span>` : nothing}
+						</div>
+					`,
+				)}
 			</div>
 		`;
 	}
@@ -5908,6 +6165,7 @@ export class ChatView {
 		return html`
 			<div class="composer-shell">
 				<div class="composer-inner">
+					${this.renderQueuedComposerMessages()}
 					<div class="composer-panel">
 						${this.renderPendingImages()}
 						<div class="composer-row">
@@ -5967,6 +6225,11 @@ export class ChatView {
 									if ((e.key === "Backspace" || e.key === "Delete") && this.inputText.length === 0 && this.selectedSkillDraft) {
 										e.preventDefault();
 										this.removeComposerSkillDraft();
+										return;
+									}
+									if (e.key === "Tab" && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+										e.preventDefault();
+										void this.cycleThinkingLevel(1);
 										return;
 									}
 									const textarea = e.currentTarget as HTMLTextAreaElement;
