@@ -3462,20 +3462,29 @@ body.sidebar-resizing {
 	opacity: 0.56;
 }
 
-.sidebar-space-dialog-backdrop {
-	position: absolute;
+.sidebar-space-dialog-portal-host {
+	position: fixed;
 	inset: 0;
-	z-index: 30;
-	background: rgba(4, 8, 14, 0.7);
-	backdrop-filter: blur(2px);
+	z-index: 2550;
+	pointer-events: none;
+}
+
+.sidebar-space-dialog-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 2551;
+	background: rgba(4, 8, 14, 0.66);
+	backdrop-filter: blur(3px);
 	display: flex;
-	align-items: flex-end;
-	padding: 10px;
+	align-items: center;
+	justify-content: center;
+	padding: 18px;
+	pointer-events: auto;
 }
 
 .sidebar-space-dialog {
-	width: 100%;
-	max-height: 100%;
+	width: min(420px, calc(100vw - 36px));
+	max-height: min(560px, calc(100vh - 36px));
 	border-radius: 14px;
 	border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
 	background: color-mix(in srgb, var(--bg-elev) 96%, transparent);
@@ -3483,6 +3492,8 @@ body.sidebar-resizing {
 	padding: 14px;
 	display: grid;
 	gap: 10px;
+	overflow: auto;
+	pointer-events: auto;
 }
 
 .sidebar-space-dialog-title {

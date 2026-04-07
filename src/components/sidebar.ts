@@ -85,6 +85,14 @@ const WORKSPACE_DRAG_THRESHOLD_PX = 5;
 const WORKSPACE_SWIPE_THRESHOLD_PX = 34;
 const WORKSPACE_SWIPE_IDLE_MS = 420;
 const WORKSPACE_SWIPE_COOLDOWN_MS = 180;
+const FOCUSABLE_SELECTOR = [
+	"button:not([disabled])",
+	"[href]",
+	"input:not([disabled]):not([type='hidden'])",
+	"select:not([disabled])",
+	"textarea:not([disabled])",
+	"[tabindex]:not([tabindex='-1'])",
+].join(",");
 
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
@@ -228,6 +236,9 @@ export class Sidebar {
 	private projectEmojiPickerY = 0;
 	private projectEmojiSearchQuery = "";
 	private projectEmojiPortalHost: HTMLElement | null = null;
+	private workspaceCreatePortalHost: HTMLElement | null = null;
+	private workspaceCreateDialogFocusTrapActive = false;
+	private workspaceCreateDialogRestoreFocus: HTMLElement | null = null;
 	private pendingProjectDragId: string | null = null;
 	private draggingProjectId: string | null = null;
 	private projectDragOverId: string | null = null;
@@ -339,7 +350,7 @@ export class Sidebar {
 		this.modeFilterMenuOpen = false;
 		this.workspaceMenuOpen = false;
 		this.workspaceRenameDraft = null;
-		this.workspaceCreateDialogOpen = false;
+		this.closeWorkspaceCreateDialog(false, false);
 		this.workspaceCreateName = "";
 		this.workspaceCreateEmoji = "✨";
 		this.workspaceCreateEmojiPickerOpen = false;
@@ -2513,9 +2524,7 @@ export class Sidebar {
 	private startWorkspaceRename(workspaceId: string): void {
 		const workspace = this.workspaces.find((entry) => entry.id === workspaceId) ?? null;
 		if (!workspace) return;
-		this.workspaceCreateDialogOpen = false;
-		this.workspaceCreateEmojiPickerOpen = false;
-		this.workspaceCreateEmojiQuery = "";
+		this.closeWorkspaceCreateDialog(false, false);
 		this.workspaceRenameDraft = { workspaceId, value: workspace.title };
 		if (this.activeWorkspaceId !== workspaceId) {
 			this.onWorkspaceSelect?.(workspaceId);
@@ -2557,8 +2566,94 @@ export class Sidebar {
 		return `Workspace ${idx}`;
 	}
 
+	private readonly onWorkspaceCreateDialogFocusIn = (event: FocusEvent): void => {
+		if (!this.workspaceCreateDialogOpen) return;
+		const dialog = this.getWorkspaceCreateDialogElement();
+		if (!dialog) return;
+		const target = event.target instanceof Node ? event.target : null;
+		if (target && dialog.contains(target)) return;
+		this.focusWorkspaceCreateDialogPrimaryInput();
+	};
+
+	private readonly onWorkspaceCreateDialogKeyDown = (event: KeyboardEvent): void => {
+		if (!this.workspaceCreateDialogOpen) return;
+		if (event.key === "Escape") {
+			event.preventDefault();
+			event.stopPropagation();
+			this.closeWorkspaceCreateDialog();
+			return;
+		}
+		if (event.key !== "Tab") return;
+		const focusable = this.getWorkspaceCreateDialogFocusableElements();
+		if (focusable.length === 0) {
+			event.preventDefault();
+			event.stopPropagation();
+			return;
+		}
+		const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		const currentIndex = active ? focusable.findIndex((entry) => entry === active) : -1;
+		const nextIndex = event.shiftKey
+			? currentIndex <= 0
+				? focusable.length - 1
+				: currentIndex - 1
+			: currentIndex === -1 || currentIndex >= focusable.length - 1
+				? 0
+				: currentIndex + 1;
+		event.preventDefault();
+		event.stopPropagation();
+		focusable[nextIndex]?.focus();
+	};
+
+	private getWorkspaceCreateDialogElement(): HTMLElement | null {
+		const host = this.workspaceCreatePortalHost && document.body.contains(this.workspaceCreatePortalHost)
+			? this.workspaceCreatePortalHost
+			: this.container;
+		return host.querySelector<HTMLElement>(".sidebar-space-dialog");
+	}
+
+	private getWorkspaceCreateDialogFocusableElements(): HTMLElement[] {
+		const dialog = this.getWorkspaceCreateDialogElement();
+		if (!dialog) return [];
+		return [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter((el) => !el.hasAttribute("disabled") && el.tabIndex !== -1);
+	}
+
+	private focusWorkspaceCreateDialogPrimaryInput(selectText = false): void {
+		const dialog = this.getWorkspaceCreateDialogElement();
+		if (!dialog) return;
+		const input = dialog.querySelector<HTMLInputElement>(".sidebar-space-name-input");
+		if (input) {
+			input.focus();
+			if (selectText) input.select();
+			return;
+		}
+		const firstFocusable = this.getWorkspaceCreateDialogFocusableElements()[0] ?? null;
+		firstFocusable?.focus();
+	}
+
+	private enableWorkspaceCreateDialogFocusTrap(): void {
+		if (this.workspaceCreateDialogFocusTrapActive) return;
+		window.addEventListener("keydown", this.onWorkspaceCreateDialogKeyDown, true);
+		document.addEventListener("focusin", this.onWorkspaceCreateDialogFocusIn, true);
+		this.workspaceCreateDialogFocusTrapActive = true;
+	}
+
+	private disableWorkspaceCreateDialogFocusTrap(): void {
+		if (!this.workspaceCreateDialogFocusTrapActive) return;
+		window.removeEventListener("keydown", this.onWorkspaceCreateDialogKeyDown, true);
+		document.removeEventListener("focusin", this.onWorkspaceCreateDialogFocusIn, true);
+		this.workspaceCreateDialogFocusTrapActive = false;
+	}
+
+	private restoreWorkspaceCreateDialogFocus(): void {
+		const target = this.workspaceCreateDialogRestoreFocus;
+		this.workspaceCreateDialogRestoreFocus = null;
+		if (!target || !document.contains(target)) return;
+		requestAnimationFrame(() => target.focus());
+	}
+
 	private openWorkspaceCreateDialog(): void {
 		this.workspaceRenameDraft = null;
+		this.workspaceCreateDialogRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 		this.workspaceCreateDialogOpen = true;
 		this.workspaceCreateName = this.nextWorkspaceDraftName();
 		this.workspaceCreateEmoji = "✨";
@@ -2567,20 +2662,20 @@ export class Sidebar {
 		this.workspaceMenuOpen = false;
 		this.closeWorkspaceEmojiPicker(false);
 		this.closeContextMenu(false);
+		this.enableWorkspaceCreateDialogFocusTrap();
 		this.render();
-		requestAnimationFrame(() => {
-			const input = this.container.querySelector<HTMLInputElement>(".sidebar-space-name-input");
-			input?.focus();
-			input?.select();
-		});
+		requestAnimationFrame(() => this.focusWorkspaceCreateDialogPrimaryInput(true));
 	}
 
-	private closeWorkspaceCreateDialog(shouldRender = true): void {
-		if (!this.workspaceCreateDialogOpen) return;
+	private closeWorkspaceCreateDialog(shouldRender = true, restoreFocus = true): void {
+		const wasOpen = this.workspaceCreateDialogOpen;
 		this.workspaceCreateDialogOpen = false;
 		this.workspaceCreateEmojiPickerOpen = false;
 		this.workspaceCreateEmojiQuery = "";
-		if (shouldRender) this.render();
+		this.disableWorkspaceCreateDialogFocusTrap();
+		if (restoreFocus && wasOpen) this.restoreWorkspaceCreateDialogFocus();
+		else this.workspaceCreateDialogRestoreFocus = null;
+		if (shouldRender && wasOpen) this.render();
 	}
 
 	private filteredWorkspaceCreateEmojis(): typeof EMOJI_CATALOG {
@@ -2592,7 +2687,7 @@ export class Sidebar {
 	private createWorkspaceFromDialog(): void {
 		const title = this.workspaceCreateName.trim() || this.nextWorkspaceDraftName();
 		const emoji = this.workspaceCreateEmoji.trim() || "✨";
-		this.closeWorkspaceCreateDialog(false);
+		this.closeWorkspaceCreateDialog(false, false);
 		this.onWorkspaceCreate?.({ title, emoji });
 		this.render();
 	}
@@ -2669,8 +2764,7 @@ export class Sidebar {
 		event.preventDefault();
 		if (!this.draggingWorkspaceId) return;
 		if (this.workspaceCreateDialogOpen) {
-			this.workspaceCreateDialogOpen = false;
-			this.workspaceCreateEmojiPickerOpen = false;
+			this.closeWorkspaceCreateDialog(false, false);
 		}
 		if (startedDrag) {
 			this.render();
@@ -3265,8 +3359,15 @@ export class Sidebar {
 		if (!this.workspaceCreateDialogOpen) return nothing;
 		const filteredEmojis = this.filteredWorkspaceCreateEmojis();
 		return html`
-			<div class="sidebar-space-dialog-backdrop" @click=${() => this.closeWorkspaceCreateDialog()}>
-				<div class="sidebar-space-dialog" @click=${(event: Event) => event.stopPropagation()}>
+			<div class="sidebar-space-dialog-backdrop" role="presentation" @click=${() => this.closeWorkspaceCreateDialog()}>
+				<div
+					class="sidebar-space-dialog"
+					role="dialog"
+					aria-modal="true"
+					aria-label="Create a Space"
+					@click=${(event: Event) => event.stopPropagation()}
+					@keydown=${(event: KeyboardEvent) => event.stopPropagation()}
+				>
 					<div class="sidebar-space-dialog-title">Create a Space</div>
 					<div class="sidebar-space-dialog-copy">Spaces are used to organize your tabs and sessions.</div>
 					<div class="sidebar-space-name-row">
@@ -3387,6 +3488,22 @@ export class Sidebar {
 				</div>
 			</div>
 		`;
+	}
+
+	private ensureWorkspaceCreateDialogPortalHost(): HTMLElement | null {
+		if (typeof document === "undefined") return null;
+		if (this.workspaceCreatePortalHost && document.body.contains(this.workspaceCreatePortalHost)) return this.workspaceCreatePortalHost;
+		const host = document.createElement("div");
+		host.className = "sidebar-space-dialog-portal-host";
+		document.body.appendChild(host);
+		this.workspaceCreatePortalHost = host;
+		return host;
+	}
+
+	private renderWorkspaceCreateDialogPortal(): void {
+		const host = this.ensureWorkspaceCreateDialogPortalHost();
+		if (!host) return;
+		render(this.renderWorkspaceCreateDialog(), host);
 	}
 
 	private ensureProjectEmojiPortalHost(): HTMLElement | null {
@@ -4019,13 +4136,13 @@ export class Sidebar {
 					${this.renderWorkspaceDock()}
 				</div>
 
-				${this.renderWorkspaceCreateDialog()}
 				${this.renderWorkspaceEmojiPicker()}
 				${this.renderContextMenu()}
 			</div>
 		`;
 
 		render(template, this.container);
+		this.renderWorkspaceCreateDialogPortal();
 		this.renderProjectEmojiPickerPortal();
 	}
 }
