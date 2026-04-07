@@ -443,7 +443,13 @@ function uiIcon(name: "edit" | "retry" | "copy" | "attach" | "send" | "stop" | "
 		case "copy":
 			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.4"></rect><rect x="3" y="3" width="8" height="8" rx="1.4"></rect></svg>`;
 		case "attach":
-			return html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.1v9.8"></path><path d="M3.1 8h9.8"></path></svg>`;
+			return html`
+				<svg viewBox="0 0 16 16" aria-hidden="true">
+					<path d="M4.2 2.6h5.1l2.5 2.5v7.1a1.2 1.2 0 0 1-1.2 1.2H4.2A1.2 1.2 0 0 1 3 12.2V3.8a1.2 1.2 0 0 1 1.2-1.2z"></path>
+					<path d="M9.3 2.6v2.5h2.5"></path>
+					<path d="M5.6 4.5v3.6a2.4 2.4 0 1 0 4.8 0V4.9a1.6 1.6 0 1 0-3.2 0v3a.8.8 0 1 0 1.6 0V5.5"></path>
+				</svg>
+			`;
 		case "send":
 			return html`<svg class="send-arrow-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12.7V3.6"></path><path d="M4.6 7L8 3.6 11.4 7"></path></svg>`;
 		case "stop":
@@ -5845,7 +5851,7 @@ export class ChatView {
 				<div class="control-group">
 					<button
 						class="composer-icon-btn"
-						title="Attach image"
+						title="Attach file"
 						?disabled=${interactionLocked}
 						@click=${() => {
 							if (interactionLocked) return;
