@@ -13,6 +13,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Slash palette keyboard navigation now previews the active command directly in the composer input and keeps the active row visible while traversing.
 - Command palette (`Cmd/Ctrl+K`) keyboard navigation now auto-scrolls the selected row into view for long lists.
 - Terminal UX now uses a VS Code-style bottom dock inside chat instead of opening as a standalone terminal tab/pane, with an xterm-powered shell surface and close/clear dock controls.
+- Added `Ctrl/Cmd+\`` keyboard shortcut and command-palette `terminal` action to quickly toggle the docked terminal.
 - Composer follow-up queue UX is now minimal and docked near the composer instead of injecting speculative queued bubbles into the chat timeline.
 - Welcome project dropdown now lists all projects in the current workspace and supports direct project switching (plus quick actions for add project, packages, and settings).
 - Welcome heading copy now rotates between Pi-style idle phrases for a calmer ambient experience.
