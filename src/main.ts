@@ -3346,7 +3346,10 @@ function setupKeyboardShortcuts(): void {
 			return;
 		}
 
-		if (isCtrlOrMeta && !isShift && e.code === "Backquote") {
+		const terminalHotkey =
+			(isCtrlOrMeta && (e.code === "Backquote" || e.key === "`" || e.key === "Dead" || e.key === "´")) ||
+			(e.metaKey && e.altKey && e.key.toLowerCase() === "t");
+		if (terminalHotkey) {
 			e.preventDefault();
 			toggleTerminalDock();
 			return;

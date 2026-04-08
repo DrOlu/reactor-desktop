@@ -230,6 +230,7 @@ const BUILTIN_SLASH_COMMANDS: Array<{ name: string; description: string }> = [
 	{ name: "session", description: "Append detailed session info + token stats" },
 	{ name: "changelog", description: "Show latest changelog in collapsible row (/changelog all, /changelog refresh)" },
 	{ name: "hotkeys", description: "Open keyboard shortcuts" },
+	{ name: "terminal", description: "Toggle docked terminal" },
 	{ name: "fork", description: "Open fork flow, /fork <query> pre-fills message search" },
 	{ name: "tree", description: "Open full session tree across branches, /tree <query> pre-fills search" },
 	{ name: "login", description: "Terminal-only today: /login [provider] guidance" },
@@ -1463,6 +1464,14 @@ export class ChatView {
 					this.onOpenShortcuts();
 				} else {
 					this.pushNotice("Keyboard shortcuts panel is unavailable", "info");
+				}
+				return;
+			}
+			case "terminal": {
+				if (this.onOpenTerminal) {
+					this.onOpenTerminal();
+				} else {
+					this.pushNotice("Terminal panel is unavailable", "info");
 				}
 				return;
 			}
