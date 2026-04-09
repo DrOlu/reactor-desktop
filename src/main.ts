@@ -2892,8 +2892,17 @@ async function initialize(): Promise<void> {
 				scheduleSidebarSessionsRefresh();
 			}
 		});
-		chatView.setOnOpenTerminal(() => {
+		chatView.setOnOpenTerminal(async (commandText) => {
+			const command = (commandText ?? "").trim();
+			if (command) {
+				toggleTerminalDock(true);
+				requestAnimationFrame(() => {
+					void terminalPanel?.runCommand(command);
+				});
+				return;
+			}
 			toggleTerminalDock();
+			terminalPanel?.focusInput();
 		});
 		chatView.setOnAddProject(() => {
 			void sidebar?.openFolder();

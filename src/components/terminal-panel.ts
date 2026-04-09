@@ -2,7 +2,7 @@
  * TerminalPanel - docked terminal experience (xterm surface + local shell execution)
  */
 
-import { Command } from "@tauri-apps/plugin-shell";
+import { Command, type Child } from "@tauri-apps/plugin-shell";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { html, render } from "lit";
@@ -77,6 +77,10 @@ function isPrintableKey(event: KeyboardEvent, key: string): boolean {
 	return key.length === 1;
 }
 
+function shellSingleQuote(value: string): string {
+	return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 export class TerminalPanel {
 	private container: HTMLElement;
 	private cwd: string | null = null;
@@ -94,6 +98,8 @@ export class TerminalPanel {
 
 	private shellProfile: ShellProfile | null = null;
 	private resolvingShellProfile: Promise<ShellProfile> | null = null;
+	private runningChild: Child | null = null;
+	private queuedCommands: string[] = [];
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -113,6 +119,20 @@ export class TerminalPanel {
 
 	focusInput(): void {
 		this.xterm?.focus();
+	}
+
+	async runCommand(commandText: string): Promise<void> {
+		const command = commandText.trim();
+		if (!command) return;
+		this.ensureTerminal();
+		this.focusInput();
+		if (this.running) {
+			this.queuedCommands.push(command);
+			this.writeInfo(`Queued: ${command}`);
+			return;
+		}
+		this.xterm?.write(`${command}\r\n`);
+		await this.executeCommand(command);
 	}
 
 	private applyTheme(): void {
@@ -349,6 +369,32 @@ export class TerminalPanel {
 		}
 	}
 
+	private buildPiLoginBridgeCommand(rawProviderArg: string): string | null {
+		const provider = rawProviderArg.trim().toLowerCase();
+		const slashCommand = provider ? `/login ${provider}` : "/login";
+		const scriptedInput = shellSingleQuote(`${slashCommand}\n\n`);
+		const platform = navigator.platform.toLowerCase();
+		if (platform.includes("win")) return null;
+		if (platform.includes("mac")) {
+			return `printf %s ${scriptedInput} | script -q /dev/null pi`;
+		}
+		return `printf %s ${scriptedInput} | script -q -c ${shellSingleQuote("pi")} /dev/null`;
+	}
+
+	private resolveSpecialShellCommand(command: string): { shellCommand: string; infoText: string | null } {
+		const loginMatch = command.match(/^pi\s+login(?:\s+([a-z0-9._-]+))?$/i);
+		if (loginMatch) {
+			const bridgeCommand = this.buildPiLoginBridgeCommand(loginMatch[1] ?? "");
+			if (bridgeCommand) {
+				return {
+					shellCommand: bridgeCommand,
+					infoText: "Running Pi OAuth helper (pi + /login) in pseudo-terminal mode…",
+				};
+			}
+		}
+		return { shellCommand: command, infoText: null };
+	}
+
 	private async ensureShellProfile(): Promise<ShellProfile> {
 		if (this.shellProfile) return this.shellProfile;
 		if (this.resolvingShellProfile) return this.resolvingShellProfile;
@@ -382,23 +428,88 @@ export class TerminalPanel {
 		}
 	}
 
-	private async executeShell(command: string): Promise<TerminalExecResult> {
+	private async executeShell(command: string, options: { streamOutput?: boolean } = {}): Promise<TerminalExecResult> {
 		const profile = await this.ensureShellProfile();
-		const output = await Command.create(profile.name, this.buildShellArgs(profile, command), {
+		const streamOutput = options.streamOutput !== false;
+		const shellCommand = Command.create(profile.name, this.buildShellArgs(profile, command), {
 			cwd: this.cwd || undefined,
-		}).execute();
-		return {
-			code: output.code,
-			signal: output.signal,
-			stdout: normalizeText(output.stdout),
-			stderr: normalizeText(output.stderr),
-		};
+		});
+
+		return await new Promise<TerminalExecResult>((resolve, reject) => {
+			let stdout = "";
+			let stderr = "";
+			let settled = false;
+			let spawnedChild: Child | null = null;
+
+			const cleanup = () => {
+				shellCommand.stdout.off("data", onStdout);
+				shellCommand.stderr.off("data", onStderr);
+				shellCommand.off("close", onClose);
+				shellCommand.off("error", onError);
+				if (this.runningChild && spawnedChild && this.runningChild.pid === spawnedChild.pid) {
+					this.runningChild = null;
+				}
+			};
+
+			const settleWithResult = (result: TerminalExecResult) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(result);
+			};
+
+			const settleWithError = (error: unknown) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(error instanceof Error ? error : new Error(normalizeText(error)));
+			};
+
+			const onStdout = (payload: string) => {
+				const text = normalizeText(payload);
+				if (!text) return;
+				stdout += text;
+				if (streamOutput) this.writeStdOut(text);
+			};
+			const onStderr = (payload: string) => {
+				const text = normalizeText(payload);
+				if (!text) return;
+				stderr += text;
+				if (streamOutput) this.writeStdErr(text);
+			};
+			const onClose = (payload: { code: number | null; signal: number | null }) => {
+				settleWithResult({
+					code: payload.code,
+					signal: payload.signal,
+					stdout,
+					stderr,
+				});
+			};
+			const onError = (message: string) => {
+				settleWithError(new Error(message || "Shell command failed"));
+			};
+
+			shellCommand.stdout.on("data", onStdout);
+			shellCommand.stderr.on("data", onStderr);
+			shellCommand.on("close", onClose);
+			shellCommand.on("error", onError);
+
+			shellCommand
+				.spawn()
+				.then((child) => {
+					spawnedChild = child;
+					this.runningChild = child;
+				})
+				.catch((error) => {
+					settleWithError(error);
+				});
+		});
 	}
 
 	private async executeCdCommand(command: string): Promise<void> {
 		const profile = await this.ensureShellProfile();
 		const probeCommand = this.buildCdProbeCommand(profile, command);
-		const result = await this.executeShell(probeCommand);
+		const result = await this.executeShell(probeCommand, { streamOutput: false });
 		if (result.stderr.trim()) {
 			this.writeStdErr(result.stderr.trimEnd());
 		}
@@ -441,15 +552,18 @@ export class TerminalPanel {
 			return;
 		}
 
+		const resolved = this.resolveSpecialShellCommand(command);
+		if (resolved.infoText) {
+			this.writeInfo(resolved.infoText);
+		}
+
 		this.running = true;
 		this.render();
 		try {
 			if (this.isCdCommand(command)) {
 				await this.executeCdCommand(command);
 			} else {
-				const result = await this.executeShell(command);
-				if (result.stdout.length > 0) this.writeStdOut(result.stdout);
-				if (result.stderr.length > 0) this.writeStdErr(result.stderr);
+				const result = await this.executeShell(resolved.shellCommand, { streamOutput: true });
 				if (typeof result.code === "number" && result.code !== 0 && !result.stderr.trim()) {
 					this.writeStdErr(`exit ${result.code}`);
 				}
@@ -460,16 +574,38 @@ export class TerminalPanel {
 			this.running = false;
 			this.render();
 			this.printPrompt();
+			const next = this.queuedCommands.shift();
+			if (next) {
+				this.xterm?.write(`${next}\r\n`);
+				void this.executeCommand(next);
+			}
 		}
 	}
 
 	private async abortRunningCommand(): Promise<void> {
 		if (!this.running) return;
-		this.writeInfo("Abort is not available for this shell command path yet.");
+		const child = this.runningChild;
+		if (!child) {
+			this.writeInfo("No running child process to abort.");
+			return;
+		}
+		try {
+			await child.kill();
+		} catch (err) {
+			this.writeStdErr(err instanceof Error ? err.message : String(err));
+		}
+	}
+
+	private async handleClearAction(): Promise<void> {
+		if (this.running) {
+			await this.abortRunningCommand();
+		}
+		this.clearScreen();
 	}
 
 	private clearScreen(): void {
 		this.inputBuffer = "";
+		this.queuedCommands = [];
 		this.xterm?.write("\x1b[2J\x1b[3J\x1b[H");
 		this.printPrompt();
 		this.scrollTerminalToBottom();
@@ -493,7 +629,7 @@ export class TerminalPanel {
 					<div class="terminal-panel-title">${headerTitle}</div>
 					<div class="terminal-panel-cwd" title=${this.cwd || ""}>${cwdLabel}</div>
 					<div class="terminal-panel-actions">
-						<button class="ghost-btn" title="Clear terminal" @click=${() => this.clearScreen()}>Clear</button>
+						<button class="ghost-btn" title="Clear terminal" @click=${() => void this.handleClearAction()}>Clear</button>
 						<button class="ghost-btn terminal-close-btn" title="Close terminal" @click=${() => this.onRequestClose?.()}>✕</button>
 					</div>
 				</div>

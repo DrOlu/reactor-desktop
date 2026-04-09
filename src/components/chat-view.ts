@@ -595,7 +595,7 @@ export class ChatView {
 	private lastDropSignature = "";
 	private lastDropAt = 0;
 	private onStateChange: ((state: RpcSessionState) => void) | null = null;
-	private onOpenTerminal: (() => void) | null = null;
+	private onOpenTerminal: ((command?: string) => void | Promise<void>) | null = null;
 	private onAddProject: (() => void) | null = null;
 	private onOpenSettings: ((sectionId?: string) => void) | null = null;
 	private onOpenPackages: (() => void) | null = null;
@@ -766,7 +766,7 @@ export class ChatView {
 		this.onStateChange = cb;
 	}
 
-	setOnOpenTerminal(cb: () => void): void {
+	setOnOpenTerminal(cb: (command?: string) => void | Promise<void>): void {
 		this.onOpenTerminal = cb;
 	}
 
@@ -1335,12 +1335,13 @@ export class ChatView {
 		try {
 			if (action === "login") {
 				if (DEFAULT_OAUTH_PROVIDER_SET.has(providerKey)) {
-					this.onOpenTerminal?.();
-					this.appendSystemMessage(
-						`To log in to **${providerLabel}**, run \`pi\` in terminal, then run \`/login\` and choose **${providerLabel}** in the OAuth picker.`,
-						{ label: "auth", markdown: true },
-					);
-					this.pushNotice(`Open terminal and run pi → /login to connect ${providerLabel}`, "info");
+					const loginCommand = `pi login ${providerKey}`;
+					if (this.onOpenTerminal) {
+						await this.onOpenTerminal(loginCommand);
+						this.pushNotice(`Opened terminal and started OAuth login helper for ${providerLabel}`, "info");
+						return;
+					}
+					this.pushNotice(`Open terminal and run: ${loginCommand}`, "info");
 					return;
 				}
 				const openedPackageConfig = await this.openProviderSetup(providerKey);
@@ -1803,7 +1804,7 @@ export class ChatView {
 			}
 			case "terminal": {
 				if (this.onOpenTerminal) {
-					this.onOpenTerminal();
+					await this.onOpenTerminal();
 				} else {
 					this.pushNotice("Terminal panel is unavailable", "info");
 				}
