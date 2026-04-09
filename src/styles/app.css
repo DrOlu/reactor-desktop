@@ -5928,7 +5928,7 @@ body.file-split-resizing #file-split-resize-handle::after {
 	align-items: center;
 	justify-content: space-between;
 	gap: 6px;
-	padding: 0 46px 0 8px;
+	padding: 0 74px 0 8px;
 	font-size: 12px;
 	cursor: pointer;
 	min-width: 0;
@@ -5943,10 +5943,6 @@ body.file-split-resizing #file-split-resize-handle::after {
 	text-align: left;
 }
 
-.model-picker-provider-caret {
-	flex-shrink: 0;
-}
-
 .model-picker-provider:hover,
 .model-picker-provider.active {
 	background: color-mix(in srgb, var(--bg-soft) 84%, transparent);
@@ -5959,14 +5955,14 @@ body.file-split-resizing #file-split-resize-handle::after {
 
 .model-picker-provider-auth {
 	position: absolute;
-	right: 6px;
+	right: 18px;
 	top: 50%;
 	transform: translateY(-50%);
 	height: 22px;
 	min-width: 44px;
-	border-radius: 999px;
-	border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
-	background: color-mix(in srgb, var(--bg-soft) 78%, transparent);
+	border-radius: 8px;
+	border: none;
+	background: var(--bg-muted);
 	color: var(--muted);
 	padding: 0 8px;
 	font-size: 10px;
@@ -5975,7 +5971,7 @@ body.file-split-resizing #file-split-resize-handle::after {
 	cursor: pointer;
 	opacity: 0;
 	pointer-events: none;
-	transition: opacity 120ms ease;
+	transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
 }
 
 .model-picker-provider-row:hover .model-picker-provider-auth,
@@ -5986,13 +5982,12 @@ body.file-split-resizing #file-split-resize-handle::after {
 }
 
 .model-picker-provider-auth:hover {
+	background: var(--bg-soft);
 	color: var(--text);
-	border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 
 .model-picker-provider-auth.connected {
-	border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-	color: color-mix(in srgb, var(--text) 82%, var(--accent));
+	color: var(--text);
 }
 
 .model-picker-provider-auth:disabled {

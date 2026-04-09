@@ -6469,7 +6469,6 @@ export class ChatView {
 																}}
 															>
 																<span class="model-picker-provider-label">${group.providerLabel}</span>
-																<span class="model-picker-provider-caret" aria-hidden="true">›</span>
 															</button>
 															<button
 																type="button"
