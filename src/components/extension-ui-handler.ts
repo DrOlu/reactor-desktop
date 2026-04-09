@@ -588,9 +588,9 @@ export class ExtensionUiHandler {
 	}
 
 	private async showDesktopNotification(request: ExtensionUiRequest): Promise<boolean> {
-		const rawTitle = request.title?.trim() "Reactor Desktop";
+		const rawTitle = request.title?.trim() || "Reactor Desktop";
 		const rawBody = request.message?.trim() || "";
-		const title = rawBody ? rawTitle "Reactor Desktop";
+		const title = rawBody ? rawTitle : "Reactor Desktop";
 		const body = rawBody || rawTitle;
 
 		let granted = await this.ensureDesktopNotificationPermission(false);
