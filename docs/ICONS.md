@@ -1,6 +1,6 @@
 # Icon workflow
 
-This document defines how Pi Desktop app icons are maintained and regenerated.
+This document defines how Reactor Desktop app icons are maintained and regenerated.
 
 ## Source of truth
 

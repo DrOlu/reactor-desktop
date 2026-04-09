@@ -1,6 +1,6 @@
 # Package Capability Template (Desktop)
 
-Use this template whenever we add or adapt package/extension behavior in Pi Desktop.
+Use this template whenever we add or adapt package/extension behavior in Reactor Desktop.
 
 ## Goal
 

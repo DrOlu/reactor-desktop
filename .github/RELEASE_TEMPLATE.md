@@ -22,7 +22,7 @@
 
 ## Notes
 
-- If the `pi` CLI is missing, Pi Desktop now shows onboarding with install instructions.
+- If the `pi` CLI is missing, Reactor Desktop now shows onboarding with install instructions.
 - macOS artifacts are currently unsigned/not notarized (Apple Developer signing deferred).
   - If Gatekeeper blocks launch, run:
     - `xattr -cr /Applications/Pi\ Desktop.app`

@@ -9,7 +9,7 @@
   - [x] Validate: `npm run check`, `npm run build:frontend`, `cargo check --manifest-path src-tauri/Cargo.toml`
 
 ## Goal
-Ship Pi Desktop as a **minimal native desktop host for Pi**:
+Ship Reactor Desktop as a **minimal native desktop host for Pi**:
 - strong desktop shell / UX
 - correct multi-session RPC architecture
 - native OS capabilities
@@ -124,7 +124,7 @@ These should be packages/extensions/skills unless there is a very strong reason 
 
 ### Important note
 - [x] Verified: `pi-notify` is real and useful for terminal-hosted Pi
-- [x] Verified: it is **not** the right primitive to rely on directly inside RPC-based Pi Desktop because it writes terminal notification escape sequences / terminal-host-specific output
+- [x] Verified: it is **not** the right primitive to rely on directly inside RPC-based Reactor Desktop because it writes terminal notification escape sequences / terminal-host-specific output
 
 ---
 

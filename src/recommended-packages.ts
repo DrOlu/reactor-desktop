@@ -14,8 +14,8 @@ export interface RecommendedPackageDefinition {
 export const RECOMMENDED_PACKAGES: RecommendedPackageDefinition[] = [
 	{
 		id: "pi-desktop-themes",
-		name: "Pi Desktop Themes",
-		description: "Default Pi Desktop light/dark themes for desktop + TUI (Notion, Catppuccin, GitHub, VSCode Plus).",
+		name: "Reactor Desktop Themes",
+		description: "Default Reactor Desktop light/dark themes for desktop + TUI (Notion, Catppuccin, GitHub, VSCode Plus).",
 		installScopeHint: "global",
 		source: "local:pi-desktop-themes",
 		sourceKind: "local",
@@ -26,8 +26,8 @@ export const RECOMMENDED_PACKAGES: RecommendedPackageDefinition[] = [
 	},
 	{
 		id: "pi-desktop-notify",
-		name: "Pi Desktop Notify",
-		description: "Focus-aware desktop notifications for Pi Desktop and other RPC hosts via ctx.ui.notify().",
+		name: "Reactor Desktop Notify",
+		description: "Focus-aware desktop notifications for Reactor Desktop and other RPC hosts via ctx.ui.notify().",
 		installScopeHint: "global",
 		source: "npm:pi-desktop-notify",
 		sourceKind: "npm",

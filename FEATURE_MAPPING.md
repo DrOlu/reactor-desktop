@@ -1,4 +1,4 @@
-# Pi CLI → Pi Desktop Feature Mapping
+# Pi CLI → Reactor Desktop Feature Mapping
 
 This document maps `pi-mono/packages/coding-agent` capabilities to this Tauri desktop app (`pi-desktop`).
 

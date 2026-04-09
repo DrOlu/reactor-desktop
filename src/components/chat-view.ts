@@ -1,5 +1,5 @@
 /**
- * ChatView - rich RPC chat surface for Pi Desktop
+ * ChatView - rich RPC chat surface for Reactor Desktop
  */
 
 import "@mariozechner/mini-lit/dist/MarkdownBlock.js";

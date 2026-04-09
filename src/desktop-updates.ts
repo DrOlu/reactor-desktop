@@ -39,8 +39,8 @@ export interface DesktopUpdateStatus {
 	note: string | null;
 }
 
-const REPO_OWNER = "gustavonline";
-const REPO_NAME = "pi-desktop";
+const REPO_OWNER = "DrOlu";
+const REPO_NAME = "reactor-desktop";
 const RELEASES_BASE_URL = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases`;
 const RELEASES_LATEST_API_URL = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`;
 

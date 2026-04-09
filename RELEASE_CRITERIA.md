@@ -1,4 +1,4 @@
-# Pi Desktop Release Criteria (V1)
+# Reactor Desktop Release Criteria (V1)
 
 ## Branch model
 - `main`: stable, releasable only.

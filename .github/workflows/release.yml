@@ -23,12 +23,15 @@ jobs:
           - platform: macos-latest
             args: "--bundles app,dmg"
             os_name: "macOS"
+            rust_targets: "aarch64-apple-darwin x86_64-apple-darwin"
           - platform: windows-latest
             args: "--bundles nsis,msi"
             os_name: "Windows"
+            rust_targets: ""
           - platform: ubuntu-22.04
             args: "--bundles appimage,deb"
             os_name: "Linux"
+            rust_targets: ""
 
     runs-on: ${{ matrix.platform }}
 
@@ -44,9 +47,13 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
 
       - name: Install Linux dependencies (Tauri)
         if: matrix.platform == 'ubuntu-22.04'
@@ -60,6 +67,15 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
+
+      # macOS: ensure Xcode CLI tools available (no signing required)
+      - name: Setup macOS environment
+        if: matrix.platform == 'macos-latest'
+        run: |
+          # Ensure we don't try to codesign (no Apple Developer cert)
+          echo "CODESIGN_IDENTITY=-" >> $GITHUB_ENV
+          # Remove any stale keychain entries that could cause issues
+          security list-keychains 2>/dev/null || true
 
       - name: Install dependencies
         run: npm ci
@@ -84,11 +100,15 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS: disable codesigning (no Apple Developer cert needed)
+          APPLE_SIGNING_IDENTITY: "-"
+          # Linux: ensure dbus/display available for AppImage
+          DISPLAY: ":99"
         with:
           tagName: ${{ steps.release_tag.outputs.tag }}
-          releaseName: "Pi Desktop ${{ steps.release_tag.outputs.tag }}"
+          releaseName: "Reactor Desktop ${{ steps.release_tag.outputs.tag }}"
           releaseBody: |
-            Cross-platform Pi Desktop release.
+            Cross-platform Reactor Desktop release by Hyperspace Technologies.
 
             Included platform artifacts are uploaded by GitHub Actions.
             See README and docs for setup and usage.

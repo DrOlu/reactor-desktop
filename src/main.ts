@@ -1,5 +1,5 @@
 /**
- * Pi Desktop - app bootstrap
+ * Reactor Desktop - app bootstrap
  */
 
 import { html, render } from "lit";
@@ -2185,7 +2185,7 @@ async function refreshDesktopUpdateStatus(): Promise<void> {
 		desktopUpdateStatus = await fetchDesktopUpdateStatus();
 		if (desktopUpdateStatus.updateAvailable && shouldNotifyDesktopUpdate()) {
 			chatView?.notify(
-				`A Pi Desktop update is available${desktopUpdateStatus.latestVersion ? ` (v${desktopUpdateStatus.latestVersion})` : ""}. Open Settings → Desktop updates to install it.`,
+				`A Reactor Desktop update is available${desktopUpdateStatus.latestVersion ? ` (v${desktopUpdateStatus.latestVersion})` : ""}. Open Settings → Desktop updates to install it.`,
 				"info",
 			);
 			markDesktopUpdateNotified();
@@ -2806,7 +2806,7 @@ function renderApp(): void {
 						<h1>${cliMissing ? "Install Pi CLI to continue" : "Connection failed"}</h1>
 						${cliMissing
 							? html`
-								<p>Pi Desktop could not find the <code>pi</code> CLI on your machine.</p>
+								<p>Reactor Desktop could not find the <code>pi</code> CLI on your machine.</p>
 								<div class="onboarding-command-block">
 									<div class="onboarding-command-label">Run this in Terminal</div>
 									<code>${CLI_INSTALL_COMMAND}</code>

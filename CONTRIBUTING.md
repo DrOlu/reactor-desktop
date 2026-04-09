@@ -1,4 +1,4 @@
-# Contributing to Pi Desktop
+# Contributing to Reactor Desktop
 
 Thanks for contributing ❤️
 

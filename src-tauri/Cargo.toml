@@ -1,12 +1,12 @@
 [package]
-name = "pi-desktop"
+name = "reactor-desktop"
 version = "0.1.9"
-description = "Pi Desktop - A minimal coding agent desktop app"
-authors = ["Pi Desktop contributors"]
+description = "Reactor Desktop - A minimal coding agent desktop app"
+authors = ["Hyperspace Technologies <reactor@hyperspace.ng>"]
 edition = "2021"
 
 [lib]
-name = "pi_desktop_lib"
+name = "reactor_desktop_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]

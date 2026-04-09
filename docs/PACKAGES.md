@@ -1,25 +1,25 @@
 # Packages, Extensions, and Resource Philosophy
 
-Pi Desktop is designed for an **extension-first** ecosystem.
+Reactor Desktop is designed for an **extension-first** ecosystem.
 
 ## Why packages matter
 
 The desktop app should not hardcode every behavior. Instead:
 
-- host UX lives in Pi Desktop,
+- host UX lives in Reactor Desktop,
 - agent behavior can be layered through packages/extensions.
 
 This enables community-driven capability growth without turning the desktop shell into a monolith.
 
 ### Capability host model
 
-Pi Desktop should expose capabilities that extensions can consume (UI primitives, native shell affordances, RPC bridge integration). In other words: extensions make the app do more, while app-core stays lightweight and maintainable.
+Reactor Desktop should expose capabilities that extensions can consume (UI primitives, native shell affordances, RPC bridge integration). In other words: extensions make the app do more, while app-core stays lightweight and maintainable.
 
 ---
 
-## What Pi Desktop surfaces
+## What Reactor Desktop surfaces
 
-Pi Desktop includes a Packages pane that supports:
+Reactor Desktop includes a Packages pane that supports:
 - extension package install/remove/update flows
 - skills + extensions surfaced as first-class package capabilities
 - curated recommendations (skills + extensions)

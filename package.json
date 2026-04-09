@@ -1,17 +1,21 @@
 {
-	"name": "pi-desktop",
+	"name": "reactor-desktop",
 	"version": "0.1.9",
 	"private": true,
 	"type": "module",
-	"description": "Pi Desktop - A minimalist coding agent desktop app",
+	"description": "Reactor Desktop - A minimalist coding agent desktop app",
 	"license": "MIT",
-	"homepage": "https://github.com/gustavonline/pi-desktop",
+	"author": {
+		"name": "Hyperspace Technologies",
+		"email": "reactor@hyperspace.ng"
+	},
+	"homepage": "https://github.com/DrOlu/reactor-desktop",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/gustavonline/pi-desktop.git"
+		"url": "https://github.com/DrOlu/reactor-desktop.git"
 	},
 	"bugs": {
-		"url": "https://github.com/gustavonline/pi-desktop/issues"
+		"url": "https://github.com/DrOlu/reactor-desktop/issues"
 	},
 	"scripts": {
 		"dev": "vite --port 1420",

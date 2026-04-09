@@ -1,4 +1,4 @@
-# Pi Desktop V1 Roadmap
+# Reactor Desktop V1 Roadmap
 
 ## Vision
 Ship a stable desktop client that feels native, minimal, and polished (Apple/Codex-like UX), while remaining an integration layer on top of `pi --mode rpc` and public CLI commands.

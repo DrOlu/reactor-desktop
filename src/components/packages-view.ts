@@ -2688,7 +2688,7 @@ Execute the required file creation/edits directly, then summarize exactly which 
 				return;
 			}
 			sendNotification({
-				title: "Pi Desktop",
+				title: "Reactor Desktop",
 				body: "Desktop notification smoke test",
 				autoCancel: true,
 				sound: "Ping",
@@ -2757,7 +2757,7 @@ Execute the required file creation/edits directly, then summarize exactly which 
 				source: DESKTOP_THEMES_PACKAGE_SOURCE,
 				location: this.desktopThemesRootPath || "~/.pi/agent/themes",
 				scope: "user",
-				displayName: "Pi Desktop Themes",
+				displayName: "Reactor Desktop Themes",
 				openUrl: this.resolveSourceUrl(DESKTOP_THEMES_PACKAGE_SOURCE),
 			};
 		}
@@ -2964,14 +2964,14 @@ Execute the required file creation/edits directly, then summarize exactly which 
 		if (normalizeRecommendedSource(item.source) === DESKTOP_THEMES_PACKAGE_SOURCE) {
 			if (this.runningCommand || this.runningConfigCommand) return;
 			this.runningCommand = true;
-			this.commandStatus = "Installing Pi Desktop Themes…";
+			this.commandStatus = "Installing Reactor Desktop Themes…";
 			this.render();
 			try {
 				const result = await restoreBundledThemes();
 				await this.refreshBundledThemesStatus();
-				this.commandStatus = `Installed Pi Desktop Themes (${result.created} created, ${result.renamed} renamed).`;
+				this.commandStatus = `Installed Reactor Desktop Themes (${result.created} created, ${result.renamed} renamed).`;
 			} catch (err) {
-				this.commandStatus = `Failed to install Pi Desktop Themes: ${err instanceof Error ? err.message : String(err)}`;
+				this.commandStatus = `Failed to install Reactor Desktop Themes: ${err instanceof Error ? err.message : String(err)}`;
 			} finally {
 				this.runningCommand = false;
 				this.render();
@@ -2986,14 +2986,14 @@ Execute the required file creation/edits directly, then summarize exactly which 
 		if (normalizeRecommendedSource(item.source) === DESKTOP_THEMES_PACKAGE_SOURCE) {
 			if (this.runningCommand || this.runningConfigCommand) return;
 			this.runningCommand = true;
-			this.commandStatus = "Uninstalling Pi Desktop Themes…";
+			this.commandStatus = "Uninstalling Reactor Desktop Themes…";
 			this.render();
 			try {
 				const result = await removeBundledThemes();
 				await this.refreshBundledThemesStatus();
-				this.commandStatus = `Uninstalled Pi Desktop Themes (${result.removed} removed, ${result.removedLegacy} legacy removed).`;
+				this.commandStatus = `Uninstalled Reactor Desktop Themes (${result.removed} removed, ${result.removedLegacy} legacy removed).`;
 			} catch (err) {
-				this.commandStatus = `Failed to uninstall Pi Desktop Themes: ${err instanceof Error ? err.message : String(err)}`;
+				this.commandStatus = `Failed to uninstall Reactor Desktop Themes: ${err instanceof Error ? err.message : String(err)}`;
 			} finally {
 				this.runningCommand = false;
 				this.render();

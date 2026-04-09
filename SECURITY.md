@@ -20,5 +20,5 @@ We will acknowledge receipt and work on a fix as quickly as possible.
 
 ## Security notes
 
-Pi Desktop is a local runtime host and requires filesystem + process permissions to function.
+Reactor Desktop is a local runtime host and requires filesystem + process permissions to function.
 Review `src-tauri/capabilities/default.json` before production/enterprise deployment.
