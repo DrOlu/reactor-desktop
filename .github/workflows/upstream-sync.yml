@@ -15,10 +15,13 @@ on:
         required: false
         type: string
       dry_run:
-        description: "Dry run — merge and patch but do NOT push or release"
+        description: "Dry run — merge and patch but do NOT push or release (true/false)"
         required: false
-        type: boolean
-        default: false
+        type: choice
+        options:
+          - "false"
+          - "true"
+        default: "false"
 
 permissions:
   contents: write
