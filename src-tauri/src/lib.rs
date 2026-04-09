@@ -266,6 +266,127 @@ fn prepend_bin_dir_to_path(cmd: &mut Command, bin_dir: &Path) {
     }
 }
 
+/// On macOS and Linux, GUI apps are launched with a minimal environment that does NOT
+/// include env vars set in shell profiles (.zshrc, .bashrc, .profile, etc.).
+/// This means API keys like ANTHROPIC_API_KEY, OPENAI_API_KEY etc. are invisible to
+/// child processes spawned by the desktop app.
+///
+/// This function sources the user's login shell environment and returns key env vars
+/// (API keys, PATH additions) that the pi child process needs.
+///
+/// Strategy: run `$SHELL -l -c env` to capture the full login-shell environment,
+/// then merge it with the current process environment, preferring shell values for
+/// PATH and API-key-style vars, but keeping existing values that were explicitly set.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn get_login_shell_env() -> HashMap<String, String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+
+    // Run the login shell with -l (login) to source all profile files,
+    // then exec `env` to print all environment variables.
+    let output = Command::new(&shell)
+        .args(["-l", "-c", "env"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+
+    let mut env_map = HashMap::new();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                if let Some((key, value)) = line.split_once('=') {
+                    // Only capture vars we care about:
+                    // - PATH (for node/npm/brew discovery)
+                    // - Any API key (ends with _KEY, _TOKEN, _SECRET, _API_KEY)
+                    // - Known LLM provider keys
+                    // - HOME, USER, SHELL (basic identity vars)
+                    let k = key.trim();
+                    if k == "PATH"
+                        || k == "HOME"
+                        || k == "USER"
+                        || k == "SHELL"
+                        || k == "LANG"
+                        || k == "TERM"
+                        || k.ends_with("_API_KEY")
+                        || k.ends_with("_KEY")
+                        || k.ends_with("_TOKEN")
+                        || k.ends_with("_SECRET")
+                        || k.ends_with("_ENDPOINT")
+                        || k.starts_with("ANTHROPIC_")
+                        || k.starts_with("OPENAI_")
+                        || k.starts_with("GEMINI_")
+                        || k.starts_with("GOOGLE_")
+                        || k.starts_with("MISTRAL_")
+                        || k.starts_with("GROQ_")
+                        || k.starts_with("CEREBRAS_")
+                        || k.starts_with("XAI_")
+                        || k.starts_with("OPENROUTER_")
+                        || k.starts_with("AZURE_")
+                        || k.starts_with("HF_")
+                        || k.starts_with("KIMI_")
+                        || k.starts_with("MINIMAX_")
+                        || k.starts_with("ZAI_")
+                        || k.starts_with("AI_GATEWAY_")
+                        || k.starts_with("PI_")
+                        || k.starts_with("NVM_")
+                        || k.starts_with("VOLTA_")
+                        || k.starts_with("NODE_")
+                        || k.starts_with("NPM_")
+                    {
+                        env_map.insert(k.to_string(), value.to_string());
+                    }
+                }
+            }
+        }
+        _ => {
+            // Login shell failed or unavailable - return empty map,
+            // fall back to current process environment
+        }
+    }
+
+    env_map
+}
+
+#[cfg(target_os = "windows")]
+fn get_login_shell_env() -> HashMap<String, String> {
+    // Windows GUI apps already inherit the full user environment from the session manager.
+    // No shell-sourcing needed.
+    HashMap::new()
+}
+
+/// Merge login shell environment into a Command.
+/// - For PATH: prepend the shell's PATH entries to the existing PATH so new bins are found first
+/// - For API keys and other vars: set them only if NOT already set in current process env
+///   (so explicit user overrides via tauri env config are respected)
+fn apply_login_shell_env(cmd: &mut Command, shell_env: &HashMap<String, String>) {
+    for (key, value) in shell_env {
+        if key == "PATH" {
+            // Merge PATHs: shell PATH entries first, then current process PATH
+            let shell_paths = std::env::split_paths(value).collect::<Vec<_>>();
+            let mut merged_paths = shell_paths;
+            if let Some(existing) = std::env::var_os("PATH") {
+                let existing_paths = std::env::split_paths(&existing).collect::<Vec<_>>();
+                for p in existing_paths {
+                    if !merged_paths.contains(&p) {
+                        merged_paths.push(p);
+                    }
+                }
+            }
+            if let Ok(joined) = std::env::join_paths(&merged_paths) {
+                cmd.env("PATH", joined);
+            }
+        } else {
+            // For other vars: only set if not already present in current process env
+            // This lets explicit env overrides (from options.env or process env) take priority
+            if std::env::var_os(key).is_none() {
+                cmd.env(key, value);
+            }
+        }
+    }
+}
+
 fn discover_npm_path(pi: Option<&PiProcess>) -> Option<PathBuf> {
     let npm = npm_executable();
 
@@ -411,7 +532,14 @@ fn build_command(pi: &PiProcess, options: &RpcStartOptions) -> Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Merge environment variables
+    // macOS/Linux: source login shell environment so API keys and PATH entries
+    // from ~/.zshrc, ~/.bashrc, ~/.profile etc. are available to the pi process.
+    // GUI apps don't inherit shell env vars; this fixes "no models available" crashes
+    // on macOS/Linux when API keys are set in shell profiles rather than system-wide.
+    let shell_env = get_login_shell_env();
+    apply_login_shell_env(&mut cmd, &shell_env);
+
+    // Merge explicit environment variables from options (highest priority - overrides shell env)
     if let Some(ref env) = options.env {
         for (key, value) in env {
             cmd.env(key, value);
@@ -420,6 +548,7 @@ fn build_command(pi: &PiProcess, options: &RpcStartOptions) -> Command {
 
     // If using a script-based pi binary (e.g. npm global install), ensure its bin dir
     // is on PATH so shebangs like `#!/usr/bin/env node` can resolve node in GUI launches.
+    // This runs AFTER apply_login_shell_env so it always wins for PATH.
     if let PiProcess::PathBinary { path } = pi {
         if let Some(parent) = path.parent() {
             prepend_bin_dir_to_path(&mut cmd, parent);
@@ -1273,6 +1402,10 @@ fn build_plain_command(pi: &PiProcess, options: &PiCliCommandOptions) -> Command
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // Apply login shell environment for API keys / PATH (macOS/Linux fix)
+    let shell_env = get_login_shell_env();
+    apply_login_shell_env(&mut cmd, &shell_env);
 
     if let Some(env) = &options.env {
         for (key, value) in env {
