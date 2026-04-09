@@ -163,16 +163,8 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes after reapplying overrides (all files already correct)."
           else
-            git commit -m "chore(sync): reapply Reactor Desktop overrides for $UPSTREAM_TAG
-
-Synced upstream $UPSTREAM_TAG from ${{ env.UPSTREAM_REPO }}.
-Reapplied:
-  - macOS/Linux node path fix (src-tauri/src/lib.rs)
-  - Reactor Desktop branding (tauri.conf.json, Cargo.toml, package.json)
-  - Icon set (sync/icons -> src-tauri/icons)
-  - Visible string substitutions (Pi Desktop -> Reactor Desktop)
-  - Our release.yml and ci.yml workflows
-  - Updated version to $SEMVER in all config files"
+            COMMIT_MSG="chore(sync): reapply Reactor Desktop overrides for ${UPSTREAM_TAG}"
+            git commit -m "${COMMIT_MSG}"
           fi
 
       # ----------------------------------------------------------------
