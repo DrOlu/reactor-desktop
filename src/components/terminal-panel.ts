@@ -428,6 +428,29 @@ export class TerminalPanel {
 		}
 	}
 
+	private isSpawnScopeError(error: unknown): boolean {
+		const message = normalizeText(error).toLowerCase();
+		return message.includes("allow-spawn") || message.includes("configured shell scope") || message.includes("program not allowed");
+	}
+
+	private async executeShellViaExecute(profile: ShellProfile, command: string, streamOutput: boolean): Promise<TerminalExecResult> {
+		const output = await Command.create(profile.name, this.buildShellArgs(profile, command), {
+			cwd: this.cwd || undefined,
+		}).execute();
+		const stdout = normalizeText(output.stdout);
+		const stderr = normalizeText(output.stderr);
+		if (streamOutput) {
+			if (stdout) this.writeStdOut(stdout);
+			if (stderr) this.writeStdErr(stderr);
+		}
+		return {
+			code: output.code,
+			signal: output.signal,
+			stdout,
+			stderr,
+		};
+	}
+
 	private async executeShell(command: string, options: { streamOutput?: boolean } = {}): Promise<TerminalExecResult> {
 		const profile = await this.ensureShellProfile();
 		const streamOutput = options.streamOutput !== false;
@@ -440,6 +463,7 @@ export class TerminalPanel {
 			let stderr = "";
 			let settled = false;
 			let spawnedChild: Child | null = null;
+			let fallbackStarted = false;
 
 			const cleanup = () => {
 				shellCommand.stdout.off("data", onStdout);
@@ -465,6 +489,13 @@ export class TerminalPanel {
 				reject(error instanceof Error ? error : new Error(normalizeText(error)));
 			};
 
+			const attemptExecuteFallback = () => {
+				if (fallbackStarted) return;
+				fallbackStarted = true;
+				this.writeInfo("Spawn unavailable; falling back to execute mode.");
+				void this.executeShellViaExecute(profile, command, streamOutput).then(settleWithResult).catch(settleWithError);
+			};
+
 			const onStdout = (payload: string) => {
 				const text = normalizeText(payload);
 				if (!text) return;
@@ -486,6 +517,10 @@ export class TerminalPanel {
 				});
 			};
 			const onError = (message: string) => {
+				if (!spawnedChild && this.isSpawnScopeError(message)) {
+					attemptExecuteFallback();
+					return;
+				}
 				settleWithError(new Error(message || "Shell command failed"));
 			};
 
@@ -501,6 +536,10 @@ export class TerminalPanel {
 					this.runningChild = child;
 				})
 				.catch((error) => {
+					if (this.isSpawnScopeError(error)) {
+						attemptExecuteFallback();
+						return;
+					}
 					settleWithError(error);
 				});
 		});
