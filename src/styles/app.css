@@ -5928,7 +5928,7 @@ body.file-split-resizing #file-split-resize-handle::after {
 	align-items: center;
 	justify-content: space-between;
 	gap: 6px;
-	padding: 0 74px 0 8px;
+	padding: 0 8px;
 	font-size: 12px;
 	cursor: pointer;
 	min-width: 0;
@@ -5955,7 +5955,7 @@ body.file-split-resizing #file-split-resize-handle::after {
 
 .model-picker-provider-auth {
 	position: absolute;
-	right: 18px;
+	right: 34px;
 	top: 50%;
 	transform: translateY(-50%);
 	height: 22px;
