@@ -27,6 +27,7 @@
 		"shell:default",
 		"shell:allow-open",
 		"shell:allow-kill",
+		"shell:allow-spawn",
 		"fs:default",
 		{
 			"identifier": "fs:allow-home-read-recursive",
