@@ -1,0 +1,211 @@
+name: Upstream Sync
+
+# Checks upstream gustavonline/pi-desktop for new releases daily.
+# When a new upstream tag is found, merges it, reapplies all Reactor Desktop
+# customisations, and publishes a new release.
+
+on:
+  schedule:
+    # Run at 06:00 UTC every day
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      force_tag:
+        description: "Force-sync a specific upstream tag (e.g. v0.1.10). Leave blank to auto-detect."
+        required: false
+        type: string
+      dry_run:
+        description: "Dry run — merge and patch but do NOT push or release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_REPO: "gustavonline/pi-desktop"
+  UPSTREAM_URL: "https://github.com/gustavonline/pi-desktop.git"
+  BOT_NAME: "Hyperspace Technologies"
+  BOT_EMAIL: "reactor@hyperspace.ng"
+
+jobs:
+  check-and-sync:
+    name: Check upstream & sync
+    runs-on: ubuntu-22.04
+
+    steps:
+      # ----------------------------------------------------------------
+      # Checkout our repo with full history so we can merge upstream
+      # ----------------------------------------------------------------
+      - name: Checkout reactor-desktop
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "${{ env.BOT_NAME }}"
+          git config user.email "${{ env.BOT_EMAIL }}"
+
+      # ----------------------------------------------------------------
+      # Determine upstream tag to sync
+      # ----------------------------------------------------------------
+      - name: Resolve upstream tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ -n "${{ github.event.inputs.force_tag }}" ]]; then
+            UPSTREAM_TAG="${{ github.event.inputs.force_tag }}"
+            echo "Using forced tag: $UPSTREAM_TAG"
+          else
+            # Fetch the latest upstream release tag via GitHub API
+            UPSTREAM_TAG=$(curl -s \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/${{ env.UPSTREAM_REPO }}/releases/latest" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin).get('tag_name',''))")
+
+            if [[ -z "$UPSTREAM_TAG" ]]; then
+              echo "Could not fetch upstream latest release tag. Aborting."
+              exit 1
+            fi
+            echo "Latest upstream release: $UPSTREAM_TAG"
+          fi
+
+          TRACKED_TAG=$(cat sync/upstream-version.txt 2>/dev/null || echo "")
+          echo "Currently tracked tag:   $TRACKED_TAG"
+
+          echo "upstream_tag=$UPSTREAM_TAG"  >> "$GITHUB_OUTPUT"
+          echo "tracked_tag=$TRACKED_TAG"    >> "$GITHUB_OUTPUT"
+
+          if [[ "$UPSTREAM_TAG" == "$TRACKED_TAG" ]]; then
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date with upstream $UPSTREAM_TAG. Nothing to do."
+          else
+            echo "needs_sync=true"  >> "$GITHUB_OUTPUT"
+            echo "New upstream tag detected: $UPSTREAM_TAG (we have $TRACKED_TAG)"
+          fi
+
+      # ----------------------------------------------------------------
+      # Merge upstream into our main branch
+      # ----------------------------------------------------------------
+      - name: Add upstream remote
+        if: steps.resolve.outputs.needs_sync == 'true'
+        run: |
+          git remote add upstream "${{ env.UPSTREAM_URL }}" || true
+          git fetch upstream --tags
+
+      - name: Merge upstream tag into main
+        if: steps.resolve.outputs.needs_sync == 'true'
+        id: merge
+        run: |
+          UPSTREAM_TAG="${{ steps.resolve.outputs.upstream_tag }}"
+          SEMVER="${UPSTREAM_TAG#v}"
+
+          echo "Merging upstream $UPSTREAM_TAG into main..."
+          # Allow unrelated histories in case the merge base is not shared
+          git merge "upstream/$UPSTREAM_TAG" \
+            --no-edit \
+            --allow-unrelated-histories \
+            --strategy-option=theirs \
+            -m "chore(sync): merge upstream $UPSTREAM_TAG" \
+            || {
+              # On conflict, prefer our files for files in our ownership list
+              # and take upstream's version for everything else
+              git checkout --ours \
+                sync/ \
+                src-tauri/src/lib.rs \
+                src-tauri/tauri.conf.json \
+                src-tauri/Cargo.toml \
+                src-tauri/src/main.rs \
+                package.json \
+                src/desktop-updates.ts \
+                .github/workflows/release.yml \
+                .github/workflows/ci.yml \
+                README.md \
+                LICENSE \
+                src-tauri/icons \
+                assets/branding/pi-desktop-icon.svg \
+                2>/dev/null || true
+
+              git add -A
+              git commit --no-edit \
+                -m "chore(sync): merge upstream $UPSTREAM_TAG (conflict resolution)"
+            }
+
+          echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
+
+      # ----------------------------------------------------------------
+      # Reapply all Reactor Desktop overrides and string substitutions
+      # ----------------------------------------------------------------
+      - name: Reapply Reactor Desktop overrides
+        if: steps.resolve.outputs.needs_sync == 'true'
+        run: |
+          UPSTREAM_TAG="${{ steps.resolve.outputs.upstream_tag }}"
+          bash sync/reapply-overrides.sh "$UPSTREAM_TAG"
+
+      # ----------------------------------------------------------------
+      # Commit the patched result
+      # ----------------------------------------------------------------
+      - name: Commit overrides
+        if: steps.resolve.outputs.needs_sync == 'true'
+        run: |
+          UPSTREAM_TAG="${{ steps.resolve.outputs.upstream_tag }}"
+          SEMVER="${{ steps.merge.outputs.semver }}"
+
+          git add -A
+          # Only commit if there are staged changes
+          if git diff --cached --quiet; then
+            echo "No changes after reapplying overrides (all files already correct)."
+          else
+            git commit -m "chore(sync): reapply Reactor Desktop overrides for $UPSTREAM_TAG
+
+Synced upstream $UPSTREAM_TAG from ${{ env.UPSTREAM_REPO }}.
+Reapplied:
+  - macOS/Linux node path fix (src-tauri/src/lib.rs)
+  - Reactor Desktop branding (tauri.conf.json, Cargo.toml, package.json)
+  - Icon set (sync/icons -> src-tauri/icons)
+  - Visible string substitutions (Pi Desktop -> Reactor Desktop)
+  - Our release.yml and ci.yml workflows
+  - Updated version to $SEMVER in all config files"
+          fi
+
+      # ----------------------------------------------------------------
+      # Tag the new release and push (unless dry run)
+      # ----------------------------------------------------------------
+      - name: Tag new release
+        if: steps.resolve.outputs.needs_sync == 'true' && github.event.inputs.dry_run != 'true'
+        run: |
+          UPSTREAM_TAG="${{ steps.resolve.outputs.upstream_tag }}"
+          SEMVER="${{ steps.merge.outputs.semver }}"
+
+          # Delete existing tag locally and on remote if present (re-release scenario)
+          git tag -d "$UPSTREAM_TAG" 2>/dev/null || true
+          git push origin ":refs/tags/$UPSTREAM_TAG" 2>/dev/null || true
+
+          # Create annotated tag pointing at the patched commit
+          git tag -a "$UPSTREAM_TAG" \
+            -m "Reactor Desktop $UPSTREAM_TAG — synced from upstream ${{ env.UPSTREAM_REPO }}"
+
+      - name: Push main and tag
+        if: steps.resolve.outputs.needs_sync == 'true' && github.event.inputs.dry_run != 'true'
+        run: |
+          UPSTREAM_TAG="${{ steps.resolve.outputs.upstream_tag }}"
+          git push origin main
+          git push origin "$UPSTREAM_TAG"
+          echo "Pushed main + tag $UPSTREAM_TAG — the Release workflow will now build all platforms."
+
+      - name: Dry-run summary
+        if: steps.resolve.outputs.needs_sync == 'true' && github.event.inputs.dry_run == 'true'
+        run: |
+          echo "=== DRY RUN — no push, no release ==="
+          echo "Would have released: ${{ steps.resolve.outputs.upstream_tag }}"
+          git log --oneline -5
+          git diff HEAD~2 HEAD --stat
+
+      - name: No-op summary
+        if: steps.resolve.outputs.needs_sync == 'false'
+        run: |
+          echo "reactor-desktop is already at upstream ${{ steps.resolve.outputs.upstream_tag }}. No sync needed."

@@ -1,0 +1,57 @@
+{
+	"$schema": "https://raw.githubusercontent.com/nicegui/nicegui/refs/heads/main/nicegui/static/tauri_v2_schema.json",
+	"productName": "Reactor Desktop",
+	"identifier": "ng.hyperspace.reactor-desktop",
+	"version": "0.1.9",
+	"build": {
+		"beforeDevCommand": "npx vite --port 1420",
+		"devUrl": "http://localhost:1420",
+		"beforeBuildCommand": "npm run build:frontend",
+		"frontendDist": "../dist"
+	},
+	"app": {
+		"withGlobalTauri": true,
+		"macOSPrivateApi": true,
+		"windows": [
+			{
+				"title": "Reactor Desktop",
+				"width": 1100,
+				"height": 750,
+				"minWidth": 600,
+				"minHeight": 400,
+				"decorations": false,
+				"transparent": true,
+				"shadow": true,
+				"backgroundColor": "#00000000",
+				"center": true
+			}
+		],
+		"security": {
+			"csp": null
+		}
+	},
+	"bundle": {
+		"active": true,
+		"icon": [
+			"icons/32x32.png",
+			"icons/128x128.png",
+			"icons/128x128@2x.png",
+			"icons/icon.icns",
+			"icons/icon.ico"
+		],
+		"macOS": {
+			"signingIdentity": null,
+			"hardenedRuntime": false
+		},
+		"linux": {
+			"deb": {
+				"depends": []
+			}
+		}
+	},
+	"plugins": {
+		"shell": {
+			"open": true
+		}
+	}
+}
