@@ -987,6 +987,16 @@ function getActiveSessionTab(workspace: WorkspaceState): WorkspaceSessionTab {
 	return workspace.sessionTabs.find((tab) => tab.id === workspace.activeSessionTabId) ?? workspace.sessionTabs[0];
 }
 
+function isSessionTabRuntimeRunning(workspaceId: string, tabId: string): boolean {
+	const runtime = getRuntimeForTab(workspaceId, tabId);
+	if (!runtime) return false;
+	if (runtime.running) return true;
+	if (runtime.phase === "starting" || runtime.phase === "switching_session" || runtime.phase === "creating_session") {
+		return true;
+	}
+	return false;
+}
+
 function clearSessionAttention(tab: WorkspaceSessionTab | null | undefined): boolean {
 	if (!tab) return false;
 	if (!tab.needsAttention && !tab.attentionMessage) return false;
@@ -1099,7 +1109,27 @@ function openOrActivateSessionTab(
 		const onlyTabLooksLikeSeed =
 			Boolean(onlyTab) &&
 			["chat", "new session", ""].includes(((onlyTab?.title || "").trim().toLowerCase()));
-		const reusableTab = allowCreateTab ? null : preferredTab ?? activeTab ?? (onlyTabLooksLikeSeed ? onlyTab : null) ?? workspace.sessionTabs[0] ?? null;
+		const reusableCandidates: WorkspaceSessionTab[] = [];
+		const pushReusableCandidate = (candidate: WorkspaceSessionTab | null | undefined) => {
+			if (!candidate) return;
+			if (reusableCandidates.some((entry) => entry.id === candidate.id)) return;
+			reusableCandidates.push(candidate);
+		};
+		pushReusableCandidate(preferredTab);
+		pushReusableCandidate(onlyTabLooksLikeSeed ? onlyTab : null);
+		for (const candidate of workspace.sessionTabs) {
+			if (candidate.id === activeTab?.id) continue;
+			pushReusableCandidate(candidate);
+		}
+		pushReusableCandidate(activeTab);
+		const reusableTab = allowCreateTab
+			? null
+			: reusableCandidates.find((candidate) => !isSessionTabRuntimeRunning(workspace.id, candidate.id)) ?? null;
+		if (!allowCreateTab && !reusableTab && reusableCandidates.length > 0) {
+			recordDebugTrace(
+				`openOrActivateSessionTab:create-new avoid-running workspace=${workspace.id} target=${sessionPath}`,
+			);
+		}
 		if (reusableTab) {
 			const previousPath = reusableTab.sessionPath;
 			const shouldDiscardPreviousEphemeral =
@@ -1254,7 +1284,7 @@ function createAndActivateEmptySessionTab(
 	ensureWorkspaceContentState(workspace);
 	const forceNewTab = options.forceNewTab ?? false;
 	const activeSessionTab = workspace.sessionTabs.find((entry) => entry.id === workspace.activeSessionTabId) ?? workspace.sessionTabs[0] ?? null;
-	if (activeSessionTab && !forceNewTab) {
+	if (activeSessionTab && !forceNewTab && !isSessionTabRuntimeRunning(workspace.id, activeSessionTab.id)) {
 		if (isEphemeralSessionTab(activeSessionTab) && activeSessionTab.sessionPath && (activeSessionTab.messageCount ?? 0) <= 0) {
 			scheduleDiscardEphemeralSessionPaths([activeSessionTab.sessionPath]);
 		}
@@ -1324,7 +1354,11 @@ function pruneInactiveEphemeralSessionTabs(workspace: WorkspaceState, keepTabIds
 	ensureWorkspaceContentState(workspace);
 	const keep = new Set(keepTabIds);
 	const removedTabs = workspace.sessionTabs.filter(
-		(tab) => isEphemeralSessionTab(tab) && (tab.messageCount ?? 0) <= 0 && !keep.has(tab.id),
+		(tab) =>
+			isEphemeralSessionTab(tab) &&
+			(tab.messageCount ?? 0) <= 0 &&
+			!keep.has(tab.id) &&
+			!isSessionTabRuntimeRunning(workspace.id, tab.id),
 	);
 	if (removedTabs.length === 0) return false;
 
@@ -2960,6 +2994,11 @@ async function initialize(): Promise<void> {
 			sidebar?.setActiveProject(projectId, true);
 		});
 		chatView.setOnPromptSubmitted(() => {
+			const runtime = getActiveRuntime();
+			if (runtime) {
+				markRuntimeRunStarted(runtime.key);
+				setRuntimeRunning(runtime, true);
+			}
 			startSidebarSessionsWarmRefresh();
 		});
 		chatView.setOnRunStateChange((running) => {
