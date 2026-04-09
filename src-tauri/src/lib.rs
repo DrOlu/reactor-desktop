@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -266,94 +266,221 @@ fn prepend_bin_dir_to_path(cmd: &mut Command, bin_dir: &Path) {
     }
 }
 
+/// Cached login-shell environment (captured once per app session).
+/// Using OnceLock so we pay the shell-launch cost at most once.
+static LOGIN_SHELL_ENV: OnceLock<HashMap<String, String>> = OnceLock::new();
+
 /// On macOS and Linux, GUI apps are launched with a minimal environment that does NOT
 /// include env vars set in shell profiles (.zshrc, .bashrc, .profile, etc.).
 /// This means API keys like ANTHROPIC_API_KEY, OPENAI_API_KEY etc. are invisible to
 /// child processes spawned by the desktop app.
 ///
-/// This function sources the user's login shell environment and returns key env vars
-/// (API keys, PATH additions) that the pi child process needs.
-///
-/// Strategy: run `$SHELL -l -c env` to capture the full login-shell environment,
-/// then merge it with the current process environment, preferring shell values for
-/// PATH and API-key-style vars, but keeping existing values that were explicitly set.
+/// Returns a cached map of env vars sourced from the user's login shell.
+/// Captured at most once per app lifetime to avoid repeated shell launches.
+/// Uses a 5-second timeout + fallback hard-coded paths so a hanging shell profile
+/// never blocks the app.
+fn get_login_shell_env() -> &'static HashMap<String, String> {
+    LOGIN_SHELL_ENV.get_or_init(capture_login_shell_env)
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn get_login_shell_env() -> HashMap<String, String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-
-    // Run the login shell with -l (login) to source all profile files,
-    // then exec `env` to print all environment variables.
-    let output = Command::new(&shell)
-        .args(["-l", "-c", "env"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-
+fn capture_login_shell_env() -> HashMap<String, String> {
     let mut env_map = HashMap::new();
 
-    match output {
-        Ok(out) if out.status.success() => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            for line in text.lines() {
-                if let Some((key, value)) = line.split_once('=') {
-                    // Only capture vars we care about:
-                    // - PATH (for node/npm/brew discovery)
-                    // - Any API key (ends with _KEY, _TOKEN, _SECRET, _API_KEY)
-                    // - Known LLM provider keys
-                    // - HOME, USER, SHELL (basic identity vars)
-                    let k = key.trim();
-                    if k == "PATH"
-                        || k == "HOME"
-                        || k == "USER"
-                        || k == "SHELL"
-                        || k == "LANG"
-                        || k == "TERM"
-                        || k.ends_with("_API_KEY")
-                        || k.ends_with("_KEY")
-                        || k.ends_with("_TOKEN")
-                        || k.ends_with("_SECRET")
-                        || k.ends_with("_ENDPOINT")
-                        || k.starts_with("ANTHROPIC_")
-                        || k.starts_with("OPENAI_")
-                        || k.starts_with("GEMINI_")
-                        || k.starts_with("GOOGLE_")
-                        || k.starts_with("MISTRAL_")
-                        || k.starts_with("GROQ_")
-                        || k.starts_with("CEREBRAS_")
-                        || k.starts_with("XAI_")
-                        || k.starts_with("OPENROUTER_")
-                        || k.starts_with("AZURE_")
-                        || k.starts_with("HF_")
-                        || k.starts_with("KIMI_")
-                        || k.starts_with("MINIMAX_")
-                        || k.starts_with("ZAI_")
-                        || k.starts_with("AI_GATEWAY_")
-                        || k.starts_with("PI_")
-                        || k.starts_with("NVM_")
-                        || k.starts_with("VOLTA_")
-                        || k.starts_with("NODE_")
-                        || k.starts_with("NPM_")
-                    {
-                        env_map.insert(k.to_string(), value.to_string());
-                    }
-                }
-            }
-        }
-        _ => {
-            // Login shell failed or unavailable - return empty map,
-            // fall back to current process environment
-        }
+    // --- Strategy 1: run $SHELL -l -c env with a hard timeout ---
+    // zsh/bash login startup can take seconds (nvm, rbenv, pyenv hooks).
+    // We cap it at 5 s; on timeout we fall through to the hardcoded-path strategy.
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+
+    let shell_env = run_with_timeout_secs(&shell, &["-l", "-c", "env"], 5);
+
+    if let Some(output) = shell_env {
+        parse_env_output(&output, &mut env_map);
     }
+
+    // --- Strategy 2: hard-coded common node/npm/brew paths (always applied) ---
+    // Even if the shell env capture succeeded, make sure the most common macOS
+    // node install locations are in PATH so `#!/usr/bin/env node` shebangs resolve.
+    augment_with_common_node_paths(&mut env_map);
 
     env_map
 }
 
 #[cfg(target_os = "windows")]
-fn get_login_shell_env() -> HashMap<String, String> {
-    // Windows GUI apps already inherit the full user environment from the session manager.
-    // No shell-sourcing needed.
+fn capture_login_shell_env() -> HashMap<String, String> {
+    // Windows GUI apps inherit the full user environment from the Windows Session Manager.
     HashMap::new()
+}
+
+/// Run `cmd args...` and return stdout as a String, killing the process after
+/// `timeout_secs` seconds. Returns None if the process times out or fails.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn run_with_timeout_secs(program: &str, args: &[&str], timeout_secs: u64) -> Option<String> {
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    let output = child.wait_with_output().ok()?;
+                    return Some(String::from_utf8_lossy(&output.stdout).into_owned());
+                } else {
+                    return None;
+                }
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Parse `key=value\n` env output into env_map, keeping only vars relevant to
+/// node/npm toolchains and LLM API credentials.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn parse_env_output(output: &str, env_map: &mut HashMap<String, String>) {
+    for line in output.lines() {
+        // env output may have multi-line values; only split on first '='
+        if let Some((key, value)) = line.split_once('=') {
+            let k = key.trim();
+            if is_relevant_env_key(k) {
+                env_map.insert(k.to_string(), value.to_string());
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn is_relevant_env_key(k: &str) -> bool {
+    matches!(k,
+        "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "TERM"
+    ) || k.ends_with("_API_KEY")
+        || k.ends_with("_KEY")
+        || k.ends_with("_TOKEN")
+        || k.ends_with("_SECRET")
+        || k.ends_with("_ENDPOINT")
+        || k.starts_with("ANTHROPIC_")
+        || k.starts_with("OPENAI_")
+        || k.starts_with("GEMINI_")
+        || k.starts_with("GOOGLE_")
+        || k.starts_with("MISTRAL_")
+        || k.starts_with("GROQ_")
+        || k.starts_with("CEREBRAS_")
+        || k.starts_with("XAI_")
+        || k.starts_with("OPENROUTER_")
+        || k.starts_with("AZURE_")
+        || k.starts_with("HF_")
+        || k.starts_with("KIMI_")
+        || k.starts_with("MINIMAX_")
+        || k.starts_with("ZAI_")
+        || k.starts_with("AI_GATEWAY_")
+        || k.starts_with("PI_")
+        || k.starts_with("NVM_")
+        || k.starts_with("VOLTA_")
+        || k.starts_with("NODE_")
+        || k.starts_with("NPM_")
+}
+
+/// Augment (or create) PATH in env_map with well-known node/npm install locations.
+/// This is the safety-net: even if shell env capture fails or times out, the pi
+/// `#!/usr/bin/env node` shebang will still resolve on macOS and Linux.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn augment_with_common_node_paths(env_map: &mut HashMap<String, String>) {
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    // Collect all candidate dirs that actually exist
+    let mut extra_dirs: Vec<PathBuf> = vec![
+        // Homebrew (Apple Silicon)
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/opt/homebrew/sbin"),
+        // Homebrew (Intel)
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/local/sbin"),
+    ];
+
+    if !home.is_empty() {
+        let home_path = PathBuf::from(&home);
+        // nvm: current symlink + most recent versioned dir
+        let nvm_current = home_path.join(".nvm/versions/node/current/bin");
+        extra_dirs.push(nvm_current);
+        let nvm_versions = home_path.join(".nvm/versions/node");
+        if let Ok(entries) = fs::read_dir(&nvm_versions) {
+            let mut versions: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_dir())
+                .collect();
+            versions.sort_by(|a, b| b.cmp(a)); // newest first
+            for v in versions.into_iter().take(3) {
+                extra_dirs.push(v.join("bin"));
+            }
+        }
+        // Volta
+        extra_dirs.push(home_path.join(".volta/bin"));
+        // fnm
+        extra_dirs.push(home_path.join(".local/share/fnm/node-versions"));
+        // n (node version manager)
+        extra_dirs.push(home_path.join("n/bin"));
+        // local bin
+        extra_dirs.push(home_path.join(".local/bin"));
+        // nodenv
+        extra_dirs.push(home_path.join(".nodenv/shims"));
+        // asdf node
+        extra_dirs.push(home_path.join(".asdf/shims"));
+    }
+
+    // Standard system locations
+    extra_dirs.push(PathBuf::from("/usr/local/bin"));
+    extra_dirs.push(PathBuf::from("/usr/bin"));
+
+    // Filter to only dirs that actually exist
+    let valid_extra: Vec<PathBuf> = extra_dirs
+        .into_iter()
+        .filter(|p| p.exists() && p.is_dir())
+        .collect();
+
+    if valid_extra.is_empty() {
+        return;
+    }
+
+    // Build the merged PATH: extra_dirs first, then existing PATH in env_map,
+    // then the current process PATH
+    let existing_shell_path = env_map.get("PATH").cloned().unwrap_or_default();
+    let current_process_path = std::env::var("PATH").unwrap_or_default();
+
+    let mut all_paths: Vec<PathBuf> = valid_extra;
+
+    // Add shell-captured PATH entries
+    for p in std::env::split_paths(&existing_shell_path) {
+        if !all_paths.contains(&p) {
+            all_paths.push(p);
+        }
+    }
+    // Add current process PATH entries
+    for p in std::env::split_paths(&current_process_path) {
+        if !all_paths.contains(&p) {
+            all_paths.push(p);
+        }
+    }
+
+    if let Ok(joined) = std::env::join_paths(&all_paths) {
+        env_map.insert("PATH".to_string(), joined.to_string_lossy().into_owned());
+    }
 }
 
 /// Merge login shell environment into a Command.
@@ -536,8 +663,7 @@ fn build_command(pi: &PiProcess, options: &RpcStartOptions) -> Command {
     // from ~/.zshrc, ~/.bashrc, ~/.profile etc. are available to the pi process.
     // GUI apps don't inherit shell env vars; this fixes "no models available" crashes
     // on macOS/Linux when API keys are set in shell profiles rather than system-wide.
-    let shell_env = get_login_shell_env();
-    apply_login_shell_env(&mut cmd, &shell_env);
+    apply_login_shell_env(&mut cmd, get_login_shell_env());
 
     // Merge explicit environment variables from options (highest priority - overrides shell env)
     if let Some(ref env) = options.env {
@@ -1404,8 +1530,7 @@ fn build_plain_command(pi: &PiProcess, options: &PiCliCommandOptions) -> Command
         .stderr(Stdio::piped());
 
     // Apply login shell environment for API keys / PATH (macOS/Linux fix)
-    let shell_env = get_login_shell_env();
-    apply_login_shell_env(&mut cmd, &shell_env);
+    apply_login_shell_env(&mut cmd, get_login_shell_env());
 
     if let Some(env) = &options.env {
         for (key, value) in env {
@@ -1710,6 +1835,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // Pre-warm the login shell env cache in a background thread so the first
+            // rpc_start() call doesn't pay the shell-launch latency cost.
+            // This runs the $SHELL -l -c env capture (with 5s timeout) in the background
+            // so it's ready by the time the user opens their first project.
+            std::thread::spawn(|| {
+                let _ = get_login_shell_env();
+            });
+
             #[cfg(target_os = "macos")]
             {
                 if let Some(window) = app.get_webview_window("main") {
