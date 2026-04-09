@@ -205,17 +205,45 @@ function runtimeCommandUsageHint(name: string): string | null {
 	if (normalized === "auto-rename" || normalized === "name-ai-config") {
 		return "Args: config, test, init, regen, <name>";
 	}
+	if (normalized === "voice-notify") {
+		return "Args: status, reload, on, off, test <idle|permission|question|error>";
+	}
+	return null;
+}
+
+function runtimeCommandDescriptionOverride(name: string, description: string): string | null {
+	const normalizedName = normalizeText(name).toLowerCase().replace(/^\/+/, "");
+	if (normalizedName === "voice-notify") {
+		return "Voice notifications: open settings UI, status, reload, on/off, test <idle|permission|question|error>";
+	}
+	const normalizedDescription = normalizeText(description);
+	if (/^configure windows smart voice notifications$/i.test(normalizedDescription)) {
+		return "Voice notifications: open settings UI, status, reload, on/off, test <idle|permission|question|error>";
+	}
 	return null;
 }
 
 function withRuntimeCommandUsageHint(name: string, description: string): string {
+	const override = runtimeCommandDescriptionOverride(name, description);
+	if (override) return override;
+	const normalizedDescription = normalizeText(description);
 	const hint = runtimeCommandUsageHint(name);
-	if (!hint) return description;
-	const normalized = normalizeText(description);
-	if (!normalized) return hint;
-	const lower = normalized.toLowerCase();
-	if (lower.includes("config") && lower.includes("test")) return normalized;
-	return `${normalized} · ${hint}`;
+	if (!hint) return normalizedDescription;
+	if (!normalizedDescription) return hint;
+	const lower = normalizedDescription.toLowerCase();
+	const normalizedName = normalizeText(name).toLowerCase().replace(/^\/+/, "");
+	if (normalizedName === "auto-rename" && lower.includes("config") && lower.includes("test")) {
+		return normalizedDescription;
+	}
+	if (
+		normalizedName === "voice-notify" &&
+		lower.includes("status") &&
+		lower.includes("reload") &&
+		lower.includes("test")
+	) {
+		return normalizedDescription;
+	}
+	return `${normalizedDescription} · ${hint}`;
 }
 
 const BUILTIN_SLASH_COMMANDS: Array<{ name: string; description: string }> = [

@@ -28,6 +28,22 @@ interface BuiltinAction {
 	action: () => Promise<void> | void;
 }
 
+function normalizeCommandName(name: string): string {
+	return name.trim().toLowerCase().replace(/^\/+/, "");
+}
+
+function normalizeRuntimeCommandDescription(name: string, description: string): string {
+	const normalizedName = normalizeCommandName(name);
+	const normalizedDescription = description.trim();
+	if (normalizedName === "voice-notify") {
+		return "Voice notifications: open settings UI, status, reload, on/off, test <idle|permission|question|error>";
+	}
+	if (/^configure windows smart voice notifications$/i.test(normalizedDescription)) {
+		return "Voice notifications: open settings UI, status, reload, on/off, test <idle|permission|question|error>";
+	}
+	return normalizedDescription || `Run /${normalizedName}`;
+}
+
 export class CommandPalette {
 	private container: HTMLElement;
 	private isOpen = false;
@@ -92,7 +108,7 @@ export class CommandPalette {
 		const slashCommands: PaletteCommand[] = rpcCommands.map((cmd) => ({
 			id: `${cmd.source}:${cmd.name}`,
 			name: cmd.name,
-			description: cmd.description || `Run /${cmd.name}`,
+			description: normalizeRuntimeCommandDescription(cmd.name, cmd.description || ""),
 			source: cmd.source,
 			commandText: `/${cmd.name}`,
 		}));
