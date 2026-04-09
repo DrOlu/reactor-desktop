@@ -5894,6 +5894,7 @@ body.file-split-resizing #file-split-resize-handle::after {
 	grid-template-columns: minmax(132px, 176px) minmax(188px, 270px);
 	min-width: 340px;
 	max-width: min(92vw, 470px);
+	height: 244px;
 	border-radius: 12px;
 	border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
 	background: color-mix(in srgb, var(--bg-elev) 94%, var(--bg));
@@ -5907,7 +5908,9 @@ body.file-split-resizing #file-split-resize-handle::after {
 	padding: 6px 4px;
 	grid-auto-rows: min-content;
 	align-content: start;
+	height: 100%;
 	overflow-x: hidden;
+	overflow-y: auto;
 	border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
 	background: color-mix(in srgb, var(--bg-soft) 42%, transparent);
 }
@@ -6006,7 +6009,8 @@ body.file-split-resizing #file-split-resize-handle::after {
 	padding: 6px 4px;
 	grid-auto-rows: min-content;
 	align-content: start;
-	max-height: 236px;
+	height: 100%;
+	max-height: none;
 	overflow-y: auto;
 }
 
