@@ -31,9 +31,12 @@ import {
 	parseListModelsCatalog,
 	type ModelOption,
 } from "../models/model-options.js";
+import {
+	buildModelPickerProviderGroups,
+	resolveActiveModelPickerProvider,
+} from "../models/model-picker-provider-groups.js";
 import { resolveModelCandidateFromArg, resolveProviderHintFromModelArg } from "../models/model-selection.js";
 import {
-	DEFAULT_OAUTH_PROVIDER_IDS,
 	displayProviderLabel as displayProviderLabelFromCatalog,
 	isOAuthProviderId as isOAuthProviderIdInCatalog,
 	normalizeAuthProviderArg as normalizeAuthProviderArgValue,
@@ -5994,115 +5997,22 @@ export class ChatView {
 		const thinkingValue = (this.state?.thinkingLevel ?? "off") as ThinkingLevel;
 		const thinkingLabel = formatThinkingDisplayName(thinkingValue);
 
-		const availableByKey = new Map<string, ModelOption>();
-		for (const model of this.availableModels) {
-			availableByKey.set(`${model.provider}::${model.id}`.toLowerCase(), model);
-		}
-
-		const catalogSeed = this.modelCatalog.length > 0 ? this.modelCatalog : this.availableModels;
-		const combinedByKey = new Map<string, ModelOption>();
-		for (const model of catalogSeed) {
-			const key = `${model.provider}::${model.id}`.toLowerCase();
-			if (!combinedByKey.has(key)) combinedByKey.set(key, model);
-		}
-		for (const model of this.availableModels) {
-			const key = `${model.provider}::${model.id}`.toLowerCase();
-			if (!combinedByKey.has(key)) combinedByKey.set(key, model);
-		}
-
-		if (currentProvider && currentModelId) {
-			const currentKey = `${currentProvider}::${currentModelId}`.toLowerCase();
-			if (!combinedByKey.has(currentKey)) {
-				combinedByKey.set(currentKey, {
-					provider: currentProvider,
-					id: currentModelId,
-					label: `${currentProvider}/${currentModelId}`,
-					reasoning: false,
-				});
-			}
-		}
-
-		const groupedByProvider = new Map<
-			string,
-			{ providerKey: string; providerLabel: string; models: Array<ModelOption & { selectable: boolean }> }
-		>();
-		for (const model of combinedByKey.values()) {
-			const providerKey = model.provider;
-			const modelKey = `${model.provider}::${model.id}`.toLowerCase();
-			const selectable = availableByKey.has(modelKey) || (model.provider === currentProvider && model.id === currentModelId);
-			const existing = groupedByProvider.get(providerKey);
-			if (existing) {
-				existing.models.push({ ...model, selectable });
-			} else {
-				groupedByProvider.set(providerKey, {
-					providerKey,
-					providerLabel: this.displayProviderLabel(providerKey),
-					models: [{ ...model, selectable }],
-				});
-			}
-		}
-		for (const provider of this.providerAuthById.keys()) {
-			if (groupedByProvider.has(provider)) continue;
-			groupedByProvider.set(provider, {
-				providerKey: provider,
-				providerLabel: this.displayProviderLabel(provider),
-				models: [],
-			});
-		}
-		for (const provider of this.oauthProviderCatalog.keys()) {
-			if (groupedByProvider.has(provider)) continue;
-			groupedByProvider.set(provider, {
-				providerKey: provider,
-				providerLabel: this.displayProviderLabel(provider),
-				models: [],
-			});
-		}
-		for (const provider of DEFAULT_OAUTH_PROVIDER_IDS) {
-			if (groupedByProvider.has(provider)) continue;
-			groupedByProvider.set(provider, {
-				providerKey: provider,
-				providerLabel: this.displayProviderLabel(provider),
-				models: [],
-			});
-		}
-		for (const forcedLoggedOutProvider of this.providerAuthForcedLoggedOut) {
-			if (groupedByProvider.has(forcedLoggedOutProvider)) continue;
-			groupedByProvider.set(forcedLoggedOutProvider, {
-				providerKey: forcedLoggedOutProvider,
-				providerLabel: this.displayProviderLabel(forcedLoggedOutProvider),
-				models: [],
-			});
-		}
-
-		const providerGroups = Array.from(groupedByProvider.values())
-			.map((group) => {
-				const authKey = this.providerKey(group.providerKey);
-				const hasSelectableModel = group.models.some((model) => model.selectable);
-				const authInfo = this.providerAuthById.get(authKey);
-				const forcedLoggedOut = this.providerAuthForcedLoggedOut.has(authKey);
-				const isOAuthProvider = this.isOAuthProviderId(authKey);
-				const authConfigured = !forcedLoggedOut && (this.providerAuthConfigured.has(authKey) || (!isOAuthProvider && hasSelectableModel));
-				const authSource = forcedLoggedOut
-					? "missing"
-					: (authInfo?.source ?? (!isOAuthProvider && hasSelectableModel ? "runtime" : "missing"));
-				return {
-					...group,
-					authConfigured,
-					authSource,
-					authKind: authInfo?.kind ?? "unknown",
-					isDefaultOAuthProvider: isOAuthProvider,
-					models: [...group.models].sort((a, b) =>
-						formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" }),
-					),
-				};
-			})
-			.sort((a, b) => a.providerLabel.localeCompare(b.providerLabel, undefined, { sensitivity: "base" }));
-
-		const resolvedActiveProvider = providerGroups.some((g) => g.providerKey === this.modelPickerActiveProvider)
-			? this.modelPickerActiveProvider
-			: providerGroups.some((g) => g.providerKey === currentProvider)
-				? currentProvider
-				: (providerGroups[0]?.providerKey ?? "");
+		const providerGroups = buildModelPickerProviderGroups({
+			availableModels: this.availableModels,
+			modelCatalog: this.modelCatalog,
+			currentProvider,
+			currentModelId,
+			providerAuthById: this.providerAuthById,
+			providerAuthConfigured: this.providerAuthConfigured,
+			providerAuthForcedLoggedOut: this.providerAuthForcedLoggedOut,
+			oauthProviderCatalog: this.oauthProviderCatalog,
+			getProviderLabel: (provider) => this.displayProviderLabel(provider),
+		});
+		const resolvedActiveProvider = resolveActiveModelPickerProvider(
+			providerGroups,
+			this.modelPickerActiveProvider,
+			currentProvider,
+		);
 		const activeProviderGroup = providerGroups.find((group) => group.providerKey === resolvedActiveProvider) ?? null;
 
 		return html`
