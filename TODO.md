@@ -1,5 +1,35 @@
 # TODO — V1/V1.1 release cleanup plan
 
+## Session update (2026-04-10) — Terminal architecture reset (#48 auth/login follow-up)
+
+Status: **In progress (stabilization first, architecture decision next)**
+
+### Root-cause notes from investigation
+- [x] Confirmed `@tauri-apps/plugin-shell` is **process I/O**, not a full terminal emulator/PTY host by itself.
+- [x] Confirmed plugin-shell default streamed events are line-delimited; raw mode returns byte payloads and needs explicit decoding.
+- [x] Confirmed our regression came from raw payload shape mismatch in desktop runtime (`number[]`/raw payload rendered as textified numbers).
+- [x] Confirmed dedicated terminal examples (`tauri-terminal`, `Terminaux`) use **portable-pty + xterm.js** architecture, not line-mode shell streaming.
+
+### Stabilization plan (current branch)
+- [x] Hotfix raw byte decoding for interactive mode (`pi`, `pi login`) so TUI escape stream is decoded correctly.
+- [x] Restore safe xterm newline handling and viewport rendering guards (remove diagonal numeric rendering artifacts).
+- [ ] Re-run manual QA matrix for terminal dock:
+  - [ ] plain shell commands (`ls`, `pwd`, `cd`, clear)
+  - [ ] `pi` interactive render + keyboard controls
+  - [ ] `pi login <provider>` bridge => `/login` picker path
+  - [ ] clear/abort behavior (no duplicate prompt)
+  - [ ] resize behavior (no bottom clipping/black strip)
+
+### Next architecture step (after stabilization)
+- [ ] Decide terminal backend direction explicitly:
+  - [ ] **A:** keep `script` bridge (quick, minimal, known limitations)
+  - [ ] **B:** implement native Rust PTY bridge (`portable-pty`) with resize/write/read events (recommended)
+- [ ] If path **B** chosen, create dedicated implementation issue + phased rollout:
+  - [ ] Rust PTY session manager (spawn, write, resize, kill)
+  - [ ] Tauri commands/events for binary-safe stream transport
+  - [ ] xterm integration with deterministic lifecycle per workspace tab
+  - [ ] login/auth flows reused on top of PTY primitive (no one-off hacks)
+
 ## Session update (2026-04-04) — Issue #70
 
 Status: **In progress, near completion**
@@ -221,6 +251,9 @@ These should be packages/extensions/skills unless there is a very strong reason 
   - [x] simplify the Packages pane into a more minimalist list/row layout with less repeated chrome/text
   - [x] remove manual source install bar from the top-level flow; keep install action on package rows
   - [x] diagnostics/load errors where possible
+  - [x] prevent packages-page horizontal overflow from long command/status output
+  - [x] make discover-row `+` action open details modal first (no silent background install)
+  - [x] close extension modal immediately on uninstall action
 - [ ] Add proper per-resource enable/disable UX
   - [ ] do **not** shell users into the interactive `pi config` TUI
   - [ ] prefer direct config/settings-driven desktop UX

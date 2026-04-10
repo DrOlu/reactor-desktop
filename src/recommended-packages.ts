@@ -48,6 +48,30 @@ export const RECOMMENDED_PACKAGES: RecommendedPackageDefinition[] = [
 		installSourceHint: "npm:@byteowlz/pi-auto-rename",
 		aliases: ["@byteowlz/pi-auto-rename", "pi-session-auto-rename"],
 	},
+	{
+		id: "pi-cursor-provider",
+		name: "Cursor Provider",
+		description: "Connect Pi to Cursor-authenticated models through the Cursor local proxy/provider extension.",
+		installScopeHint: "global",
+		source: "npm:pi-cursor-provider",
+		sourceKind: "npm",
+		publisher: "community",
+		resourcesLabel: "1 provider extension",
+		installSourceHint: "npm:pi-cursor-provider",
+		aliases: ["pi-cursor-provider", "cursor-provider", "cursor"],
+	},
+	{
+		id: "pi-kilocode",
+		name: "Kilo Code Provider",
+		description: "Adds Kilo Code as a Pi provider with capability-friendly integration for Desktop.",
+		installScopeHint: "global",
+		source: "npm:pi-kilocode",
+		sourceKind: "npm",
+		publisher: "community",
+		resourcesLabel: "1 provider extension",
+		installSourceHint: "npm:pi-kilocode",
+		aliases: ["pi-kilocode", "kilo", "kilocode"],
+	},
 ];
 
 function normalizeNpmSource(value: string): string {

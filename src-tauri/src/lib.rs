@@ -991,6 +991,43 @@ struct PiAuthStatus {
     configured_providers: Vec<PiAuthProviderStatus>,
 }
 
+fn provider_env_var_map() -> [(&'static str, &'static str); 16] {
+    [
+        ("anthropic", "ANTHROPIC_API_KEY"),
+        ("azure-openai-responses", "AZURE_OPENAI_API_KEY"),
+        ("openai", "OPENAI_API_KEY"),
+        ("google", "GEMINI_API_KEY"),
+        ("mistral", "MISTRAL_API_KEY"),
+        ("groq", "GROQ_API_KEY"),
+        ("cerebras", "CEREBRAS_API_KEY"),
+        ("xai", "XAI_API_KEY"),
+        ("openrouter", "OPENROUTER_API_KEY"),
+        ("vercel-ai-gateway", "AI_GATEWAY_API_KEY"),
+        ("zai", "ZAI_API_KEY"),
+        ("opencode", "OPENCODE_API_KEY"),
+        ("huggingface", "HF_TOKEN"),
+        ("kimi-coding", "KIMI_API_KEY"),
+        ("minimax", "MINIMAX_API_KEY"),
+        ("minimax-cn", "MINIMAX_CN_API_KEY"),
+    ]
+}
+
+fn provider_env_var(provider: &str) -> Option<&'static str> {
+    for (name, env_key) in provider_env_var_map() {
+        if name == provider {
+            return Some(env_key);
+        }
+    }
+    None
+}
+
+fn provider_env_var_is_set(provider: &str) -> bool {
+    provider_env_var(provider)
+        .and_then(|env_key| std::env::var_os(env_key))
+        .map(|value| !value.is_empty())
+        .unwrap_or(false)
+}
+
 /// Inspect PI auth configuration from auth.json + environment variables.
 #[tauri::command]
 async fn get_pi_auth_status() -> Result<PiAuthStatus, String> {
@@ -1035,26 +1072,7 @@ async fn get_pi_auth_status() -> Result<PiAuthStatus, String> {
     }
 
     // Known provider env var mapping from docs/providers.md (core API key providers)
-    let provider_env_map = [
-        ("anthropic", "ANTHROPIC_API_KEY"),
-        ("azure-openai-responses", "AZURE_OPENAI_API_KEY"),
-        ("openai", "OPENAI_API_KEY"),
-        ("google", "GEMINI_API_KEY"),
-        ("mistral", "MISTRAL_API_KEY"),
-        ("groq", "GROQ_API_KEY"),
-        ("cerebras", "CEREBRAS_API_KEY"),
-        ("xai", "XAI_API_KEY"),
-        ("openrouter", "OPENROUTER_API_KEY"),
-        ("vercel-ai-gateway", "AI_GATEWAY_API_KEY"),
-        ("zai", "ZAI_API_KEY"),
-        ("opencode", "OPENCODE_API_KEY"),
-        ("huggingface", "HF_TOKEN"),
-        ("kimi-coding", "KIMI_API_KEY"),
-        ("minimax", "MINIMAX_API_KEY"),
-        ("minimax-cn", "MINIMAX_CN_API_KEY"),
-    ];
-
-    for (provider, env_key) in provider_env_map {
+    for (provider, env_key) in provider_env_var_map() {
         let env_present = std::env::var_os(env_key)
             .map(|v| !v.is_empty())
             .unwrap_or(false);
@@ -1082,6 +1100,388 @@ async fn get_pi_auth_status() -> Result<PiAuthStatus, String> {
         auth_file_exists,
         configured_providers,
     })
+}
+
+#[derive(Debug, Serialize)]
+struct PiProviderAuthClearResult {
+    provider: String,
+    removed: bool,
+    source: String,
+}
+
+/// Remove provider credentials from ~/.pi/agent/auth.json when present.
+#[tauri::command]
+async fn clear_pi_provider_auth(provider: String) -> Result<PiProviderAuthClearResult, String> {
+    let normalized = provider.trim().to_lowercase();
+    if normalized.is_empty() {
+        return Err("Provider cannot be empty".to_string());
+    }
+
+    let agent_dir = get_pi_agent_dir();
+    let auth_file_path = agent_dir.as_ref().map(|dir| dir.join("auth.json"));
+    let mut removed = false;
+
+    if let Some(path) = &auth_file_path {
+        if path.exists() && path.is_file() {
+            let content = fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read auth file: {}", e))?;
+            let mut parsed = serde_json::from_str::<serde_json::Value>(&content)
+                .unwrap_or_else(|_| serde_json::json!({}));
+
+            if !parsed.is_object() {
+                parsed = serde_json::json!({});
+            }
+
+            if let Some(map) = parsed.as_object_mut() {
+                if map.remove(&normalized).is_some() {
+                    removed = true;
+                    let serialized = serde_json::to_string_pretty(&parsed)
+                        .map_err(|e| format!("Failed to serialize auth file: {}", e))?;
+                    fs::write(path, format!("{}\n", serialized))
+                        .map_err(|e| format!("Failed to write auth file: {}", e))?;
+
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+                    }
+                }
+            }
+        }
+    }
+
+    let source = if removed {
+        "auth_file"
+    } else if provider_env_var_is_set(&normalized) {
+        "environment"
+    } else {
+        "missing"
+    }
+    .to_string();
+
+    Ok(PiProviderAuthClearResult {
+        provider: normalized,
+        removed,
+        source,
+    })
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct PiOAuthProviderInfo {
+    id: String,
+    name: String,
+    source: String,
+}
+
+fn builtin_oauth_provider_info() -> Vec<PiOAuthProviderInfo> {
+    vec![
+        PiOAuthProviderInfo {
+            id: "anthropic".to_string(),
+            name: "Anthropic".to_string(),
+            source: "built_in".to_string(),
+        },
+        PiOAuthProviderInfo {
+            id: "github-copilot".to_string(),
+            name: "GitHub Copilot".to_string(),
+            source: "built_in".to_string(),
+        },
+        PiOAuthProviderInfo {
+            id: "google-gemini-cli".to_string(),
+            name: "Google Gemini CLI".to_string(),
+            source: "built_in".to_string(),
+        },
+        PiOAuthProviderInfo {
+            id: "google-antigravity".to_string(),
+            name: "Google Antigravity".to_string(),
+            source: "built_in".to_string(),
+        },
+        PiOAuthProviderInfo {
+            id: "openai-codex".to_string(),
+            name: "OpenAI Codex".to_string(),
+            source: "built_in".to_string(),
+        },
+    ]
+}
+
+fn humanize_provider_id(provider_id: &str) -> String {
+    provider_id
+        .split(|ch: char| ch == '-' || ch == '_' || ch.is_whitespace())
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+fn parse_package_paths_from_pi_list_output(output: &str) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let candidate = PathBuf::from(trimmed);
+        if !candidate.is_absolute() || !candidate.exists() || !candidate.is_dir() {
+            continue;
+        }
+
+        let key = candidate.to_string_lossy().to_string();
+        if seen.insert(key) {
+            paths.push(candidate);
+        }
+    }
+
+    paths
+}
+
+fn package_extension_entry_files(package_root: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = Vec::new();
+
+    let package_json_path = package_root.join("package.json");
+    if package_json_path.is_file() {
+        if let Ok(content) = fs::read_to_string(&package_json_path) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(extensions) = parsed
+                    .get("pi")
+                    .and_then(|pi| pi.get("extensions"))
+                    .and_then(|value| value.as_array())
+                {
+                    for entry in extensions {
+                        let Some(raw) = entry.as_str() else {
+                            continue;
+                        };
+                        let normalized = raw.trim().trim_start_matches("./").trim_start_matches(".\\");
+                        if normalized.is_empty() {
+                            continue;
+                        }
+                        let candidate = package_root.join(normalized);
+                        if candidate.is_file() {
+                            files.push(candidate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if files.is_empty() {
+        for fallback in ["index.ts", "index.js", "src/index.ts", "src/index.js", "src/index.mjs", "index.mjs"] {
+            let candidate = package_root.join(fallback);
+            if candidate.is_file() {
+                files.push(candidate);
+            }
+        }
+    }
+
+    files
+}
+
+fn parse_quoted_string(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut index = 0usize;
+
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    if index >= bytes.len() {
+        return None;
+    }
+
+    let quote = bytes[index];
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    index += 1;
+    let start = index;
+
+    while index < bytes.len() {
+        if bytes[index] == quote {
+            return Some(value[start..index].to_string());
+        }
+        index += 1;
+    }
+
+    None
+}
+
+fn extract_oauth_name_from_segment(segment: &str, provider_id: &str) -> String {
+    let oauth_pos = segment.find("oauth").unwrap_or(0);
+    let oauth_segment = &segment[oauth_pos..];
+
+    if let Some(name_pos) = oauth_segment.find("name") {
+        let tail = &oauth_segment[name_pos + "name".len()..];
+        if let Some(colon_pos) = tail.find(':') {
+            let candidate = &tail[colon_pos + 1..];
+            if let Some(name) = parse_quoted_string(candidate) {
+                let trimmed = name.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+
+    humanize_provider_id(provider_id)
+}
+
+fn extract_oauth_providers_from_source(source: &str) -> Vec<(String, String)> {
+    let mut providers: Vec<(String, String)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let needle = "registerProvider(";
+    let mut cursor = 0usize;
+
+    while cursor < source.len() {
+        let Some(rel) = source[cursor..].find(needle) else {
+            break;
+        };
+        let start = cursor + rel;
+        let mut index = start + needle.len();
+        let bytes = source.as_bytes();
+
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            break;
+        }
+
+        let quote = bytes[index];
+        if quote != b'"' && quote != b'\'' {
+            cursor = index.saturating_add(1);
+            continue;
+        }
+
+        index += 1;
+        let provider_start = index;
+        while index < bytes.len() && bytes[index] != quote {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            break;
+        }
+
+        let provider_id = source[provider_start..index].trim().to_lowercase();
+        if provider_id.is_empty() {
+            cursor = index.saturating_add(1);
+            continue;
+        }
+
+        let segment_start = index;
+        let mut scan_limit = (segment_start + 9000).min(source.len());
+        while scan_limit > segment_start && !source.is_char_boundary(scan_limit) {
+            scan_limit -= 1;
+        }
+        let segment_end = source[segment_start..scan_limit]
+            .find(needle)
+            .map(|next_rel| segment_start + next_rel)
+            .unwrap_or(scan_limit);
+
+        let segment = &source[segment_start..segment_end];
+        if !segment.contains("oauth") {
+            cursor = index.saturating_add(1);
+            continue;
+        }
+
+        if seen.insert(provider_id.clone()) {
+            let provider_name = extract_oauth_name_from_segment(segment, &provider_id);
+            providers.push((provider_id, provider_name));
+        }
+
+        cursor = index.saturating_add(1);
+    }
+
+    providers
+}
+
+fn extract_oauth_providers_from_package(package_root: &Path) -> Vec<PiOAuthProviderInfo> {
+    let mut providers: Vec<PiOAuthProviderInfo> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for file in package_extension_entry_files(package_root) {
+        let Ok(content) = fs::read_to_string(&file) else {
+            continue;
+        };
+        for (id, name) in extract_oauth_providers_from_source(&content) {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            providers.push(PiOAuthProviderInfo {
+                id,
+                name,
+                source: "package".to_string(),
+            });
+        }
+    }
+
+    providers
+}
+
+/// Discover OAuth providers the same way users see in CLI /login:
+/// built-ins + package-registered OAuth providers.
+#[tauri::command]
+async fn get_pi_oauth_providers(app: AppHandle) -> Result<Vec<PiOAuthProviderInfo>, String> {
+    let mut providers = builtin_oauth_provider_info();
+    let mut seen: HashSet<String> = providers.iter().map(|provider| provider.id.clone()).collect();
+
+    let discovery_opts = RpcStartOptions {
+        cli_path: None,
+        cwd: ".".to_string(),
+        provider: None,
+        model: None,
+        env: None,
+    };
+
+    let Ok(pi) = discover_pi(&app, &discovery_opts) else {
+        return Ok(providers);
+    };
+
+    let list_opts = PiCliCommandOptions {
+        args: vec!["list".to_string()],
+        cwd: Some(".".to_string()),
+        env: None,
+        cli_path: None,
+    };
+
+    let output = match build_plain_command(&pi, &list_opts).output() {
+        Ok(output) => output,
+        Err(_) => return Ok(providers),
+    };
+
+    if !output.status.success() {
+        return Ok(providers);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let package_paths = parse_package_paths_from_pi_list_output(&stdout);
+    let mut custom_providers: Vec<PiOAuthProviderInfo> = Vec::new();
+
+    for package_path in package_paths {
+        for provider in extract_oauth_providers_from_package(&package_path) {
+            if !seen.insert(provider.id.clone()) {
+                continue;
+            }
+            custom_providers.push(provider);
+        }
+    }
+
+    custom_providers.sort_by(|a, b| {
+        let name_cmp = a.name.to_lowercase().cmp(&b.name.to_lowercase());
+        if name_cmp != std::cmp::Ordering::Equal {
+            return name_cmp;
+        }
+        a.id.cmp(&b.id)
+    });
+
+    providers.extend(custom_providers);
+    Ok(providers)
 }
 
 /// Settings structure
@@ -1940,6 +2340,8 @@ pub fn run() {
             list_sessions,
             get_session_content,
             get_pi_auth_status,
+            get_pi_oauth_providers,
+            clear_pi_provider_auth,
             save_settings,
             load_settings,
             open_file_dialog,

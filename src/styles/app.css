@@ -1685,7 +1685,8 @@ body.file-split-resizing #file-split-resize-handle::after {
 	flex-direction: column;
 	height: 100%;
 	width: 100%;
-	background: var(--bg);
+	--terminal-panel-bg: color-mix(in srgb, var(--bg-elev) 70%, var(--bg));
+	background: var(--terminal-panel-bg);
 }
 
 .terminal-resize-handle {
@@ -1714,7 +1715,7 @@ body.file-split-resizing #file-split-resize-handle::after {
 	align-items: center;
 	gap: 10px;
 	padding: 0 10px;
-	background: color-mix(in srgb, var(--bg-elev) 70%, var(--bg));
+	background: var(--terminal-panel-bg);
 }
 
 .terminal-panel-title {
@@ -1745,16 +1746,21 @@ body.file-split-resizing #file-split-resize-handle::after {
 .terminal-panel-viewport {
 	flex: 1;
 	min-height: 0;
-	padding: 8px 10px 16px;
+	padding: 0 10px;
+	overflow: hidden;
+	background: var(--terminal-panel-bg);
 	scrollbar-gutter: stable;
 }
 
 .terminal-panel-viewport .xterm {
+	width: 100%;
 	height: 100%;
+	background: var(--terminal-panel-bg);
 }
 
 .terminal-panel-viewport .xterm .xterm-viewport {
 	overflow-y: auto;
+	background: var(--terminal-panel-bg);
 }
 
 .packages-view-root {
@@ -1820,7 +1826,8 @@ body.file-split-resizing #file-split-resize-handle::after {
 .packages-view-body {
 	flex: 1;
 	min-height: 0;
-	overflow: auto;
+	overflow-y: auto;
+	overflow-x: hidden;
 	padding: 22px 22px 18px;
 	display: grid;
 	gap: 16px;
@@ -1863,6 +1870,9 @@ body.file-split-resizing #file-split-resize-handle::after {
 	color: var(--muted);
 	background: color-mix(in srgb, var(--bg-soft) 56%, transparent);
 	border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 
 .packages-banner.success {
@@ -2298,6 +2308,10 @@ body.file-split-resizing #file-split-resize-handle::after {
 .packages-command-log {
 	max-height: 220px;
 	margin: 0;
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 
 .packages-empty {
@@ -5894,6 +5908,7 @@ body.file-split-resizing #file-split-resize-handle::after {
 	grid-template-columns: minmax(132px, 176px) minmax(188px, 270px);
 	min-width: 340px;
 	max-width: min(92vw, 470px);
+	height: 244px;
 	border-radius: 12px;
 	border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
 	background: color-mix(in srgb, var(--bg-elev) 94%, var(--bg));
@@ -5903,16 +5918,25 @@ body.file-split-resizing #file-split-resize-handle::after {
 
 .model-picker-providers {
 	display: grid;
-	gap: 1px;
-	padding: 4px;
+	gap: 4px;
+	padding: 6px 4px;
 	grid-auto-rows: min-content;
 	align-content: start;
+	height: 100%;
+	overflow-x: hidden;
+	overflow-y: auto;
 	border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
 	background: color-mix(in srgb, var(--bg-soft) 42%, transparent);
 }
 
+.model-picker-provider-row {
+	position: relative;
+}
+
 .model-picker-provider {
-	height: 27px;
+	width: 100%;
+	height: 28px;
+	box-sizing: border-box;
 	border: none;
 	border-radius: 8px;
 	background: transparent;
@@ -5920,10 +5944,11 @@ body.file-split-resizing #file-split-resize-handle::after {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	gap: 8px;
+	gap: 6px;
 	padding: 0 8px;
 	font-size: 12px;
 	cursor: pointer;
+	min-width: 0;
 }
 
 .model-picker-provider-label {
@@ -5935,24 +5960,82 @@ body.file-split-resizing #file-split-resize-handle::after {
 	text-align: left;
 }
 
-.model-picker-provider-caret {
-	flex-shrink: 0;
-}
-
 .model-picker-provider:hover,
 .model-picker-provider.active {
 	background: color-mix(in srgb, var(--bg-soft) 84%, transparent);
 	color: var(--text);
 }
 
+.model-picker-provider.unauth {
+	color: color-mix(in srgb, var(--muted) 72%, var(--bg));
+}
+
+.model-picker-provider-auth {
+	position: absolute;
+	right: 3px; /*comment about do not edit   */
+	top: 50%;
+	transform: translateY(-50%);
+	height: 22px;
+	min-width: 44px;
+	border-radius: 8px;
+	border: none;
+	background: var(--bg-muted);
+	color: var(--muted);
+	padding: 0 8px;
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.01em;
+	cursor: pointer;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.model-picker-provider-row:hover .model-picker-provider-auth,
+.model-picker-provider-row:focus-within .model-picker-provider-auth,
+.model-picker-provider-auth.busy {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.model-picker-provider-auth:hover {
+	background: var(--bg-soft);
+	color: var(--text);
+}
+
+.model-picker-provider-auth.connected {
+	color: var(--text);
+}
+
+.model-picker-provider-auth:disabled {
+	cursor: default;
+}
+
+.model-picker-provider-row:hover .model-picker-provider-auth:disabled,
+.model-picker-provider-row:focus-within .model-picker-provider-auth:disabled,
+.model-picker-provider-auth.busy:disabled {
+	opacity: 0.55;
+}
+
 .model-picker-models {
 	display: grid;
-	gap: 1px;
-	padding: 4px;
+	gap: 4px;
+	padding: 6px 4px;
 	grid-auto-rows: min-content;
 	align-content: start;
-	max-height: 224px;
+	height: 100%;
+	max-height: none;
 	overflow-y: auto;
+}
+
+.model-picker-auth-hint {
+	margin: 2px 4px 4px;
+	padding: 6px 8px;
+	border-radius: 8px;
+	font-size: 11px;
+	line-height: 1.35;
+	color: var(--muted-2);
+	background: color-mix(in srgb, var(--bg-soft) 74%, transparent);
 }
 
 .model-picker-model {
@@ -5974,6 +6057,18 @@ body.file-split-resizing #file-split-resize-handle::after {
 .model-picker-model.active {
 	background: color-mix(in srgb, var(--bg-soft) 82%, transparent);
 	color: var(--text);
+}
+
+.model-picker-model.disabled,
+.model-picker-model:disabled {
+	color: color-mix(in srgb, var(--muted) 70%, var(--bg));
+	cursor: not-allowed;
+}
+
+.model-picker-model.disabled:hover,
+.model-picker-model:disabled:hover {
+	background: transparent;
+	color: color-mix(in srgb, var(--muted) 70%, var(--bg));
 }
 
 .model-picker-empty {

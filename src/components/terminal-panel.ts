@@ -2,7 +2,7 @@
  * TerminalPanel - docked terminal experience (xterm surface + local shell execution)
  */
 
-import { Command } from "@tauri-apps/plugin-shell";
+import { Command, type Child } from "@tauri-apps/plugin-shell";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { html, render } from "lit";
@@ -22,6 +22,21 @@ interface TerminalExecResult {
 	stderr: string;
 }
 
+interface TerminalCommandResolution {
+	shellCommand: string;
+	infoText: string | null;
+	interactive: boolean;
+	initialInput: string[];
+	initialInputStartDelayMs: number;
+	initialInputInterChunkDelayMs: number;
+}
+
+interface TerminalCommandCompleteEvent {
+	command: string;
+	interactive: boolean;
+	result: TerminalExecResult | null;
+}
+
 function normalizeText(value: unknown): string {
 	if (typeof value === "string") return value;
 	if (value == null) return "";
@@ -30,6 +45,20 @@ function normalizeText(value: unknown): string {
 	} catch {
 		return String(value);
 	}
+}
+
+function toUint8Array(value: unknown): Uint8Array | null {
+	if (value instanceof Uint8Array) return value;
+	if (Array.isArray(value) && value.every((item) => typeof item === "number")) {
+		return Uint8Array.from(value);
+	}
+	if (value && typeof value === "object") {
+		const candidate = (value as { data?: unknown }).data;
+		if (Array.isArray(candidate) && candidate.every((item) => typeof item === "number")) {
+			return Uint8Array.from(candidate);
+		}
+	}
+	return null;
 }
 
 function shellProfilesForPlatform(): ShellProfile[] {
@@ -77,11 +106,16 @@ function isPrintableKey(event: KeyboardEvent, key: string): boolean {
 	return key.length === 1;
 }
 
+function shellSingleQuote(value: string): string {
+	return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 export class TerminalPanel {
 	private container: HTMLElement;
 	private cwd: string | null = null;
 	private running = false;
 	private onRequestClose: (() => void) | null = null;
+	private onCommandComplete: ((event: TerminalCommandCompleteEvent) => void | Promise<void>) | null = null;
 
 	private xterm: Terminal | null = null;
 	private fitAddon: FitAddon | null = null;
@@ -94,6 +128,11 @@ export class TerminalPanel {
 
 	private shellProfile: ShellProfile | null = null;
 	private resolvingShellProfile: Promise<ShellProfile> | null = null;
+	private runningChild: Child | null = null;
+	private runningInteractive = false;
+	private suppressPromptOnce = false;
+	private queuedCommands: string[] = [];
+	private clipboardEventHandlersInstalled = false;
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -102,6 +141,10 @@ export class TerminalPanel {
 
 	setOnRequestClose(cb: () => void): void {
 		this.onRequestClose = cb;
+	}
+
+	setOnCommandComplete(cb: (event: TerminalCommandCompleteEvent) => void | Promise<void>): void {
+		this.onCommandComplete = cb;
 	}
 
 	setProjectPath(path: string | null): void {
@@ -115,16 +158,34 @@ export class TerminalPanel {
 		this.xterm?.focus();
 	}
 
+	async runCommand(commandText: string): Promise<void> {
+		const command = commandText.trim();
+		if (!command) return;
+		this.ensureTerminal();
+		this.focusInput();
+		if (this.running) {
+			this.queuedCommands.push(command);
+			this.writeInfo(`Queued: ${command}`);
+			return;
+		}
+		this.xterm?.write(`${command}\r\n`);
+		await this.executeCommand(command);
+	}
+
 	private applyTheme(): void {
 		if (!this.xterm) return;
 		const styles = getComputedStyle(document.documentElement);
-		const background = styles.getPropertyValue("--bg").trim() || "#0f1115";
+		const panelRoot = this.container.querySelector<HTMLElement>(".terminal-panel-root");
+		const panelStyles = panelRoot ? getComputedStyle(panelRoot) : styles;
+		const background = panelStyles.getPropertyValue("--terminal-panel-bg").trim() || styles.getPropertyValue("--bg").trim() || "#0f1115";
 		const foreground = styles.getPropertyValue("--text").trim() || "#d7dce2";
 		const muted = styles.getPropertyValue("--muted").trim() || "#95a1b2";
+		const accent = styles.getPropertyValue("--accent").trim() || foreground;
 		this.xterm.options.theme = {
 			background,
 			foreground,
-			cursor: foreground,
+			cursor: accent,
+			cursorAccent: background,
 			selectionBackground: muted,
 		};
 	}
@@ -137,6 +198,8 @@ export class TerminalPanel {
 			this.fitAddon = new FitAddon();
 			this.xterm = new Terminal({
 				cursorBlink: true,
+				cursorStyle: "bar",
+				cursorWidth: 2,
 				convertEol: true,
 				scrollback: 6000,
 				fontSize: 12,
@@ -148,6 +211,7 @@ export class TerminalPanel {
 			this.xterm.open(viewport);
 			this.fitAddon.fit();
 			this.installKeyboardBindings();
+			this.installClipboardEventHandlers(this.container);
 			this.printPrompt();
 		}
 
@@ -159,9 +223,115 @@ export class TerminalPanel {
 		}
 	}
 
+	private isMacPlatform(): boolean {
+		return navigator.platform.toLowerCase().includes("mac");
+	}
+
+	private isCopyShortcut(event: KeyboardEvent): boolean {
+		const key = event.key.toLowerCase();
+		if (this.isMacPlatform()) {
+			return event.metaKey && !event.ctrlKey && !event.altKey && key === "c";
+		}
+		return event.ctrlKey && event.shiftKey && !event.metaKey && key === "c";
+	}
+
+	private isPasteShortcut(event: KeyboardEvent): boolean {
+		const key = event.key.toLowerCase();
+		if (this.isMacPlatform()) {
+			return event.metaKey && !event.ctrlKey && !event.altKey && key === "v";
+		}
+		if (event.ctrlKey && event.shiftKey && !event.metaKey && key === "v") return true;
+		return event.shiftKey && key === "insert";
+	}
+
+	private isSelectAllShortcut(event: KeyboardEvent): boolean {
+		const key = event.key.toLowerCase();
+		if (this.isMacPlatform()) {
+			return event.metaKey && !event.ctrlKey && !event.altKey && key === "a";
+		}
+		return event.ctrlKey && event.shiftKey && !event.metaKey && key === "a";
+	}
+
+	private async copySelectionToClipboard(): Promise<void> {
+		const selection = this.xterm?.getSelection() ?? "";
+		if (!selection) return;
+		try {
+			await navigator.clipboard.writeText(selection);
+		} catch {
+			// Ignore clipboard failures in restricted environments.
+		}
+	}
+
+	private handlePastedText(rawText: string): void {
+		if (!rawText) return;
+		const normalized = rawText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+		if (!normalized) return;
+
+		if (this.running) {
+			if (this.runningInteractive && this.runningChild) {
+				this.writeToRunningChild(normalized.replace(/\n/g, "\r"));
+			}
+			return;
+		}
+
+		const inline = normalized.replace(/\n+/g, " ");
+		if (!inline) return;
+		this.inputBuffer += inline;
+		this.xterm?.write(inline);
+		this.scrollTerminalToBottom();
+	}
+
+	private async pasteFromClipboard(): Promise<void> {
+		try {
+			const text = await navigator.clipboard.readText();
+			this.handlePastedText(text);
+		} catch {
+			// Ignore clipboard failures in restricted environments.
+		}
+	}
+
+	private installClipboardEventHandlers(target: HTMLElement): void {
+		if (this.clipboardEventHandlersInstalled) return;
+		target.addEventListener("paste", (event: ClipboardEvent) => {
+			const text = event.clipboardData?.getData("text") ?? "";
+			if (!text) return;
+			event.preventDefault();
+			this.handlePastedText(text);
+		});
+		target.addEventListener("copy", (event: ClipboardEvent) => {
+			const selection = this.xterm?.getSelection() ?? "";
+			if (!selection) return;
+			event.clipboardData?.setData("text/plain", selection);
+			event.preventDefault();
+		});
+		this.clipboardEventHandlersInstalled = true;
+	}
+
 	private installKeyboardBindings(): void {
 		if (!this.xterm) return;
 		this.xterm.onKey(({ key, domEvent }) => {
+			if (this.isCopyShortcut(domEvent)) {
+				domEvent.preventDefault();
+				void this.copySelectionToClipboard();
+				return;
+			}
+
+			if (this.isPasteShortcut(domEvent)) {
+				if (this.isMacPlatform() && domEvent.metaKey) {
+					void this.pasteFromClipboard();
+					return;
+				}
+				domEvent.preventDefault();
+				void this.pasteFromClipboard();
+				return;
+			}
+
+			if (this.isSelectAllShortcut(domEvent)) {
+				domEvent.preventDefault();
+				this.xterm?.selectAll();
+				return;
+			}
+
 			if (domEvent.ctrlKey && !domEvent.metaKey && domEvent.key.toLowerCase() === "c") {
 				domEvent.preventDefault();
 				if (this.running) {
@@ -176,6 +346,39 @@ export class TerminalPanel {
 
 			if (this.running) {
 				domEvent.preventDefault();
+				if (this.runningInteractive && this.runningChild) {
+					if (domEvent.key === "Enter") {
+						this.writeToRunningChild("\r");
+						return;
+					}
+					if (domEvent.key === "Backspace") {
+						this.writeToRunningChild("\x7f");
+						return;
+					}
+					if (domEvent.key === "ArrowUp") {
+						this.writeToRunningChild("\x1b[A");
+						return;
+					}
+					if (domEvent.key === "ArrowDown") {
+						this.writeToRunningChild("\x1b[B");
+						return;
+					}
+					if (domEvent.key === "ArrowLeft") {
+						this.writeToRunningChild("\x1b[D");
+						return;
+					}
+					if (domEvent.key === "ArrowRight") {
+						this.writeToRunningChild("\x1b[C");
+						return;
+					}
+					if (domEvent.key === "Tab") {
+						this.writeToRunningChild("\t");
+						return;
+					}
+					if (isPrintableKey(domEvent, key)) {
+						this.writeToRunningChild(key);
+					}
+				}
 				return;
 			}
 
@@ -273,6 +476,14 @@ export class TerminalPanel {
 		this.replaceCurrentInput("");
 	}
 
+	private writeToRunningChild(value: string): void {
+		const child = this.runningChild;
+		if (!child || !value) return;
+		void child.write(value).catch(() => {
+			// Ignore transient stdin write failures while process is exiting.
+		});
+	}
+
 	private scrollTerminalToBottom(): void {
 		requestAnimationFrame(() => {
 			this.xterm?.scrollToBottom();
@@ -283,8 +494,7 @@ export class TerminalPanel {
 		if (!this.xterm) return;
 		this.commandHistoryIndex = -1;
 		this.commandHistoryDraft = "";
-		const pathLabel = compactPath(this.cwd);
-		this.xterm.write(`\x1b[34m${pathLabel}\x1b[0m $ `);
+		this.xterm.write("\x1b[34m$\x1b[0m ");
 		this.scrollTerminalToBottom();
 	}
 
@@ -302,6 +512,24 @@ export class TerminalPanel {
 			this.xterm.writeln(`\x1b[31m${line}\x1b[0m`);
 		}
 		this.scrollTerminalToBottom();
+	}
+
+	private writeRawOutput(text: string): void {
+		if (!this.xterm || !text) return;
+		this.xterm.write(text);
+		this.scrollTerminalToBottom();
+	}
+
+	private decodeOutputChunk(payload: unknown, decoder: TextDecoder | null): string {
+		if (typeof payload === "string") return payload;
+		const bytes = toUint8Array(payload);
+		if (bytes) {
+			if (!decoder) {
+				return new TextDecoder().decode(bytes);
+			}
+			return decoder.decode(bytes, { stream: true });
+		}
+		return normalizeText(payload);
 	}
 
 	private writeStdOut(text: string): void {
@@ -349,6 +577,80 @@ export class TerminalPanel {
 		}
 	}
 
+	private getCurrentTerminalDimensions(): { cols: number; rows: number } {
+		const cols = Math.max(60, Math.floor(this.xterm?.cols ?? 120));
+		const rows = Math.max(18, Math.floor(this.xterm?.rows ?? 36));
+		return { cols, rows };
+	}
+
+	private buildPiInteractiveBridgeCommand(dimensions?: { cols: number; rows: number }): string | null {
+		const platform = navigator.platform.toLowerCase();
+		if (platform.includes("win")) return null;
+		const cols = Math.max(60, Math.floor(dimensions?.cols ?? 120));
+		const rows = Math.max(18, Math.floor(dimensions?.rows ?? 36));
+		const boot = `stty cols ${cols} rows ${rows} 2>/dev/null; exec pi`;
+		if (platform.includes("mac")) {
+			return `script -q /dev/null /bin/sh -lc ${shellSingleQuote(boot)}`;
+		}
+		return `script -q -c ${shellSingleQuote(boot)} /dev/null`;
+	}
+
+	private resolveSpecialShellCommand(command: string): TerminalCommandResolution {
+		const trimmed = command.trim();
+		const piCommand = this.buildPiInteractiveBridgeCommand(this.getCurrentTerminalDimensions());
+		if (piCommand) {
+			if (/^pi$/i.test(trimmed)) {
+				return {
+					shellCommand: piCommand,
+					infoText: "Running pi in interactive terminal mode.",
+					interactive: true,
+					initialInput: [],
+					initialInputStartDelayMs: 0,
+					initialInputInterChunkDelayMs: 0,
+				};
+			}
+			const loginMatch = trimmed.match(/^pi\s+login(?:\s+([a-z0-9._-]+))?$/i);
+			if (loginMatch) {
+				const requestedProvider = (loginMatch[1] ?? "").trim().toLowerCase();
+				const infoText = requestedProvider
+					? `Running Pi in interactive mode. Starting /login automatically; then select ${requestedProvider} in the provider picker.`
+					: "Running Pi in interactive mode. Starting /login automatically.";
+				return {
+					shellCommand: piCommand,
+					infoText,
+					interactive: true,
+					initialInput: ["/login\r"],
+					initialInputStartDelayMs: 1000,
+					initialInputInterChunkDelayMs: 0,
+				};
+			}
+
+			const logoutMatch = trimmed.match(/^pi\s+logout(?:\s+([a-z0-9._-]+))?$/i);
+			if (logoutMatch) {
+				const requestedProvider = (logoutMatch[1] ?? "").trim().toLowerCase();
+				const infoText = requestedProvider
+					? `Running Pi in interactive mode. Type /logout and select ${requestedProvider} in the provider picker.`
+					: "Running Pi in interactive mode. Type /logout in the terminal picker.";
+				return {
+					shellCommand: piCommand,
+					infoText,
+					interactive: true,
+					initialInput: [],
+					initialInputStartDelayMs: 0,
+					initialInputInterChunkDelayMs: 0,
+				};
+			}
+		}
+		return {
+			shellCommand: command,
+			infoText: null,
+			interactive: false,
+			initialInput: [],
+			initialInputStartDelayMs: 0,
+			initialInputInterChunkDelayMs: 0,
+		};
+	}
+
 	private async ensureShellProfile(): Promise<ShellProfile> {
 		if (this.shellProfile) return this.shellProfile;
 		if (this.resolvingShellProfile) return this.resolvingShellProfile;
@@ -382,23 +684,194 @@ export class TerminalPanel {
 		}
 	}
 
-	private async executeShell(command: string): Promise<TerminalExecResult> {
-		const profile = await this.ensureShellProfile();
+	private isSpawnScopeError(error: unknown): boolean {
+		const message = normalizeText(error).toLowerCase();
+		return message.includes("allow-spawn") || message.includes("configured shell scope") || message.includes("program not allowed");
+	}
+
+	private async executeShellViaExecute(profile: ShellProfile, command: string, streamOutput: boolean): Promise<TerminalExecResult> {
 		const output = await Command.create(profile.name, this.buildShellArgs(profile, command), {
 			cwd: this.cwd || undefined,
 		}).execute();
+		const stdout = normalizeText(output.stdout);
+		const stderr = normalizeText(output.stderr);
+		if (streamOutput) {
+			if (stdout) this.writeStdOut(stdout);
+			if (stderr) this.writeStdErr(stderr);
+		}
 		return {
 			code: output.code,
 			signal: output.signal,
-			stdout: normalizeText(output.stdout),
-			stderr: normalizeText(output.stderr),
+			stdout,
+			stderr,
 		};
+	}
+
+	private async executeShell(
+		command: string,
+		options: {
+			streamOutput?: boolean;
+			initialInput?: string[];
+			initialInputStartDelayMs?: number;
+			initialInputInterChunkDelayMs?: number;
+			rawOutput?: boolean;
+			allowExecuteFallback?: boolean;
+		} = {},
+	): Promise<TerminalExecResult> {
+		const profile = await this.ensureShellProfile();
+		const streamOutput = options.streamOutput !== false;
+		const initialInput = Array.isArray(options.initialInput) ? options.initialInput : [];
+		const outputRaw = options.rawOutput === true;
+		const allowExecuteFallback = options.allowExecuteFallback ?? !outputRaw;
+		const initialInputStartDelayMs = Math.max(0, Number(options.initialInputStartDelayMs ?? 0));
+		const initialInputInterChunkDelayMs = Math.max(0, Number(options.initialInputInterChunkDelayMs ?? 140));
+		const shellArgs = this.buildShellArgs(profile, command);
+		const shellCommand = outputRaw
+			? Command.create(profile.name, shellArgs, {
+					cwd: this.cwd || undefined,
+					encoding: "raw",
+				})
+			: Command.create(profile.name, shellArgs, {
+					cwd: this.cwd || undefined,
+				});
+
+		return await new Promise<TerminalExecResult>((resolve, reject) => {
+			let stdout = "";
+			let stderr = "";
+			let settled = false;
+			let spawnedChild: Child | null = null;
+			let fallbackStarted = false;
+
+			const cleanup = () => {
+				shellCommand.stdout.off("data", onStdout);
+				shellCommand.stderr.off("data", onStderr);
+				shellCommand.off("close", onClose);
+				shellCommand.off("error", onError);
+				if (this.runningChild && spawnedChild && this.runningChild.pid === spawnedChild.pid) {
+					this.runningChild = null;
+				}
+			};
+
+			const settleWithResult = (result: TerminalExecResult) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(result);
+			};
+
+			const settleWithError = (error: unknown) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(error instanceof Error ? error : new Error(normalizeText(error)));
+			};
+
+			const attemptExecuteFallback = () => {
+				if (fallbackStarted) return;
+				fallbackStarted = true;
+				if (!allowExecuteFallback) {
+					settleWithError(new Error("Spawn unavailable for interactive terminal command. Restart app and verify shell capabilities."));
+					return;
+				}
+				this.writeInfo("Spawn unavailable; falling back to execute mode.");
+				void this.executeShellViaExecute(profile, command, streamOutput).then(settleWithResult).catch(settleWithError);
+			};
+
+			const sendInitialInput = async (child: Child): Promise<void> => {
+				if (initialInput.length === 0) return;
+				if (initialInputStartDelayMs > 0) {
+					await new Promise((resolve) => setTimeout(resolve, initialInputStartDelayMs));
+				}
+				for (let i = 0; i < initialInput.length; i += 1) {
+					const chunk = initialInput[i] ?? "";
+					if (!chunk) continue;
+					try {
+						await child.write(chunk);
+					} catch (err) {
+						this.writeStdErr(err instanceof Error ? err.message : String(err));
+						return;
+					}
+					if (i < initialInput.length - 1 && initialInputInterChunkDelayMs > 0) {
+						await new Promise((resolve) => setTimeout(resolve, initialInputInterChunkDelayMs));
+					}
+				}
+			};
+
+			const stdoutDecoder = outputRaw ? new TextDecoder() : null;
+			const stderrDecoder = outputRaw ? new TextDecoder() : null;
+
+			const onStdout = (payload: unknown) => {
+				const text = outputRaw ? this.decodeOutputChunk(payload, stdoutDecoder) : normalizeText(payload);
+				if (!text) return;
+				stdout += text;
+				if (streamOutput) {
+					if (outputRaw) this.writeRawOutput(text);
+					else this.writeStdOut(text);
+				}
+			};
+			const onStderr = (payload: unknown) => {
+				const text = outputRaw ? this.decodeOutputChunk(payload, stderrDecoder) : normalizeText(payload);
+				if (!text) return;
+				stderr += text;
+				if (streamOutput) {
+					if (outputRaw) this.writeRawOutput(text);
+					else this.writeStdErr(text);
+				}
+			};
+			const onClose = (payload: { code: number | null; signal: number | null }) => {
+				if (outputRaw) {
+					const flushStdout = stdoutDecoder?.decode() ?? "";
+					if (flushStdout) {
+						stdout += flushStdout;
+						if (streamOutput) this.writeRawOutput(flushStdout);
+					}
+					const flushStderr = stderrDecoder?.decode() ?? "";
+					if (flushStderr) {
+						stderr += flushStderr;
+						if (streamOutput) this.writeRawOutput(flushStderr);
+					}
+				}
+				settleWithResult({
+					code: payload.code,
+					signal: payload.signal,
+					stdout,
+					stderr,
+				});
+			};
+			const onError = (message: string) => {
+				if (!spawnedChild && this.isSpawnScopeError(message)) {
+					attemptExecuteFallback();
+					return;
+				}
+				settleWithError(new Error(message || "Shell command failed"));
+			};
+
+			shellCommand.stdout.on("data", onStdout);
+			shellCommand.stderr.on("data", onStderr);
+			shellCommand.on("close", onClose);
+			shellCommand.on("error", onError);
+
+			shellCommand
+				.spawn()
+				.then((child) => {
+					spawnedChild = child;
+					this.runningChild = child;
+					void sendInitialInput(child);
+				})
+				.catch((error) => {
+					if (this.isSpawnScopeError(error)) {
+						attemptExecuteFallback();
+						return;
+					}
+					settleWithError(error);
+				});
+		});
 	}
 
 	private async executeCdCommand(command: string): Promise<void> {
 		const profile = await this.ensureShellProfile();
 		const probeCommand = this.buildCdProbeCommand(profile, command);
-		const result = await this.executeShell(probeCommand);
+		const result = await this.executeShell(probeCommand, { streamOutput: false });
 		if (result.stderr.trim()) {
 			this.writeStdErr(result.stderr.trimEnd());
 		}
@@ -441,15 +914,29 @@ export class TerminalPanel {
 			return;
 		}
 
+		this.fitAddon?.fit();
+		const resolved = this.resolveSpecialShellCommand(command);
+		if (resolved.infoText) {
+			this.writeInfo(resolved.infoText);
+		}
+
 		this.running = true;
+		this.runningInteractive = resolved.interactive;
 		this.render();
+		let completedResult: TerminalExecResult | null = null;
 		try {
 			if (this.isCdCommand(command)) {
 				await this.executeCdCommand(command);
 			} else {
-				const result = await this.executeShell(command);
-				if (result.stdout.length > 0) this.writeStdOut(result.stdout);
-				if (result.stderr.length > 0) this.writeStdErr(result.stderr);
+				const result = await this.executeShell(resolved.shellCommand, {
+					streamOutput: true,
+					initialInput: resolved.initialInput,
+					initialInputStartDelayMs: resolved.initialInputStartDelayMs,
+					initialInputInterChunkDelayMs: resolved.initialInputInterChunkDelayMs,
+					rawOutput: resolved.interactive,
+					allowExecuteFallback: !resolved.interactive,
+				});
+				completedResult = result;
 				if (typeof result.code === "number" && result.code !== 0 && !result.stderr.trim()) {
 					this.writeStdErr(`exit ${result.code}`);
 				}
@@ -458,18 +945,57 @@ export class TerminalPanel {
 			this.writeStdErr(err instanceof Error ? err.message : String(err));
 		} finally {
 			this.running = false;
+			this.runningInteractive = false;
 			this.render();
-			this.printPrompt();
+			const suppressPrompt = this.suppressPromptOnce;
+			this.suppressPromptOnce = false;
+			if (!suppressPrompt) {
+				this.printPrompt();
+			}
+			if (!this.isCdCommand(command) && this.onCommandComplete) {
+				void Promise.resolve(
+					this.onCommandComplete({
+						command,
+						interactive: resolved.interactive,
+						result: completedResult,
+					}),
+				).catch(() => {
+					// Ignore command completion callback failures.
+				});
+			}
+			const next = this.queuedCommands.shift();
+			if (next) {
+				this.xterm?.write(`${next}\r\n`);
+				void this.executeCommand(next);
+			}
 		}
 	}
 
 	private async abortRunningCommand(): Promise<void> {
 		if (!this.running) return;
-		this.writeInfo("Abort is not available for this shell command path yet.");
+		const child = this.runningChild;
+		if (!child) {
+			this.writeInfo("No running child process to abort.");
+			return;
+		}
+		try {
+			await child.kill();
+		} catch (err) {
+			this.writeStdErr(err instanceof Error ? err.message : String(err));
+		}
+	}
+
+	private async handleClearAction(): Promise<void> {
+		if (this.running) {
+			this.suppressPromptOnce = true;
+			await this.abortRunningCommand();
+		}
+		this.clearScreen();
 	}
 
 	private clearScreen(): void {
 		this.inputBuffer = "";
+		this.queuedCommands = [];
 		this.xterm?.write("\x1b[2J\x1b[3J\x1b[H");
 		this.printPrompt();
 		this.scrollTerminalToBottom();
@@ -493,7 +1019,7 @@ export class TerminalPanel {
 					<div class="terminal-panel-title">${headerTitle}</div>
 					<div class="terminal-panel-cwd" title=${this.cwd || ""}>${cwdLabel}</div>
 					<div class="terminal-panel-actions">
-						<button class="ghost-btn" title="Clear terminal" @click=${() => this.clearScreen()}>Clear</button>
+						<button class="ghost-btn" title="Clear terminal" @click=${() => void this.handleClearAction()}>Clear</button>
 						<button class="ghost-btn terminal-close-btn" title="Close terminal" @click=${() => this.onRequestClose?.()}>✕</button>
 					</div>
 				</div>

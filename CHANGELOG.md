@@ -35,7 +35,12 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Save target controls were moved next to the Save action in auto-rename settings (instead of top-of-form) for a cleaner, less noisy flow.
 - Runtime slash descriptions now include clearer extension command guidance (including `/voice-notify` action/arg hints and `/auto-rename` subcommand hints like `config`, `test`, `init`, `regen`), and `/voice-notify` with no args now opens extension settings in Desktop.
 - Package settings now include explicit `/voice-notify` argument guidance (status/reload/on/off/test) directly in the settings card so command usage is visible without leaving Desktop.
+- Model picker now shows provider-level auth state (including unauthenticated providers), greys out providers that still need setup, and exposes inline per-provider Login/Logout actions directly in the flyout.
 - Expanded package capability docs now define explicit command contracts (`/<base>`, `/<base> config`, `/<base> config <args>`), safe default settings behavior, and extension SDK auth compatibility guidance (`getApiKeyAndHeaders` first, legacy fallback optional).
+- Provider auth discovery in Desktop now uses a CLI-aligned OAuth provider catalog (built-ins + package-registered OAuth providers), so model picker and account diagnostics stay consistent with `/login` behavior.
+- Settings → Account was refocused to a WIP account/product direction with lightweight diagnostics, while provider login/setup remains centered in model picker + Packages flows.
+- Packages recommendations now include `pi-cursor-provider` and `pi-kilocode` as first-class recommended provider extensions.
+- Packages discover-row `+` action now opens package details first (modal-driven install flow) instead of starting immediate background install.
 
 ### Fixed
 - Modal/backdrop layers now preserve window corner clipping (rounded dim/blur overlay) so opening dialogs no longer introduces square edge artifacts around the app window.
@@ -72,6 +77,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Auto-rename settings now correctly hydrate saved `model`/`fallbackModel` values from object-form config (`{ provider, id }`) and keep those values visible in model dropdowns (including unavailable-but-saved models).
 - Suppressed internal extension status-key events (for example `oqto_title_changed`) from rendering as floating composer status text, fixing stray session-title overlays above the attach/model row.
 - Git branch picker now includes both local and remote-tracking branches, supports remote-branch checkout as local tracking branches, prevents accidental new-branch creation when a matching remote exists, and adds an inline `Fetch` action for refreshing remotes.
+- Fixed Packages-page horizontal overflow during long install/output status updates by constraining x-overflow and wrapping diagnostics/banner text.
+- Uninstalling an extension from its package modal now closes the modal immediately to avoid stale-context interaction during background removal.
 
 ## [0.1.8] - 2026-03-23
 
