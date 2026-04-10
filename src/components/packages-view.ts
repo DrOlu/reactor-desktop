@@ -6,6 +6,8 @@ import { html, nothing, render, type TemplateResult } from "lit";
 import { normalizeRecommendedSource, RECOMMENDED_PACKAGES, type RecommendedPackageDefinition } from "../recommended-packages.js";
 import { RECOMMENDED_SKILLS, type RecommendedSkillDefinition } from "../recommended-skills.js";
 import { rpcBridge } from "../rpc/bridge.js";
+import { DEFAULT_OAUTH_PROVIDER_IDS } from "../auth/provider-auth.js";
+import { isExtensionConfigIntent } from "../extensions/extension-command-intent.js";
 import { getBundledThemesStatus, isBundledThemeId, removeBundledThemes, restoreBundledThemes } from "../theme/bundled-themes.js";
 
 interface CatalogPackageItem {
@@ -134,7 +136,7 @@ const SMART_NOTIFY_COMMAND_NAMES = new Set(["voice-notify"]);
 const SMART_NOTIFY_PRIMARY_SOURCE = normalizeRecommendedSource("npm:pi-smart-voice-notify");
 const SMART_NOTIFY_LEGACY_SOURCE = normalizeRecommendedSource("npm:pi-desktop-notify");
 const SMART_NOTIFY_INSTALL_SOURCE = "npm:pi-smart-voice-notify";
-const BUILTIN_OAUTH_PROVIDER_IDS = new Set(["anthropic", "github-copilot", "google-gemini-cli", "google-antigravity", "openai-codex"]);
+const BUILTIN_OAUTH_PROVIDER_IDS = new Set<string>(DEFAULT_OAUTH_PROVIDER_IDS);
 const PROVIDER_AUTH_CLEANUP_HINTS = new Map<string, string[]>([
 	["pi-cursor-agent", ["cursor-agent"]],
 	["cursor-agent", ["cursor-agent"]],
@@ -1920,14 +1922,7 @@ export class PackagesView {
 		const normalizedCommand = normalizeCommandNameForMatch(commandName);
 		if (!normalizedCommand) return false;
 
-		const normalizedArgs = args.trim().toLowerCase();
-		const defaultSettingsIntent = normalizedCommand === "voice-notify" && normalizedArgs.length === 0;
-		const configIntent =
-			defaultSettingsIntent ||
-			normalizedCommand.endsWith("config") ||
-			normalizedArgs === "config" ||
-			normalizedArgs.startsWith("config ");
-		if (!configIntent) return false;
+		if (!isExtensionConfigIntent(normalizedCommand, args)) return false;
 
 		await this.refreshPackageConfigCommands();
 

@@ -26,6 +26,7 @@ import { syncDesktopThemeWithPiTheme } from "./theme/pi-theme-bridge.js";
 import { DESKTOP_THEME_CHANGED_EVENT, getResolvedDesktopTheme, initializeDesktopTheme, toggleDesktopTheme } from "./theme/theme-manager.js";
 import { ensureBundledThemesInstalled } from "./theme/bundled-themes.js";
 import { ensureDesktopNotifyBridgeExtensionInstalled } from "./extensions/desktop-notify-bridge-extension.js";
+import { isExtensionConfigIntent, normalizeExtensionCommandName } from "./extensions/extension-command-intent.js";
 import { ensureDesktopSdkCompatExtensionInstalled } from "./extensions/sdk-compat-extension.js";
 import { ensureSmartVoiceNotifyDesktopHostMode } from "./extensions/smart-voice-notify-config.js";
 import "./styles/app.css";
@@ -2947,15 +2948,8 @@ async function initialize(): Promise<void> {
 			void applyWorkspacePane(workspace);
 		});
 		chatView.setOnOpenExtensionConfig(async (commandName, args) => {
-			const normalizedName = commandName.trim().toLowerCase().replace(/^\/+/, "");
-			const normalizedArgs = args.trim().toLowerCase();
-			const defaultSettingsIntent = normalizedName === "voice-notify" && normalizedArgs.length === 0;
-			const configIntent =
-				defaultSettingsIntent ||
-				normalizedName.endsWith("config") ||
-				normalizedArgs === "config" ||
-				normalizedArgs.startsWith("config ");
-			if (!configIntent) return false;
+			const normalizedName = normalizeExtensionCommandName(commandName);
+			if (!isExtensionConfigIntent(normalizedName, args)) return false;
 			openPackagesPane();
 			if (!packagesView) return false;
 			await packagesView.refreshPackages(false);

@@ -38,6 +38,7 @@ import {
 	resolvePreferredModelPickerProvider,
 	resolveProviderHintFromModelArg,
 } from "../models/model-selection.js";
+import { isExtensionConfigIntent, normalizeExtensionCommandName } from "../extensions/extension-command-intent.js";
 import { renderComposerControlsView } from "./chat-view/composer-controls-view.js";
 import {
 	renderComposerSkillDraftPillView,
@@ -1250,15 +1251,8 @@ export class ChatView {
 		args: string,
 	): Promise<void> {
 		if (source === "extension" && this.onOpenExtensionConfig) {
-			const normalizedName = commandName.trim().toLowerCase();
-			const normalizedArgs = args.trim().toLowerCase();
-			const defaultSettingsIntent = normalizedName === "voice-notify" && normalizedArgs.length === 0;
-			const configIntent =
-				defaultSettingsIntent ||
-				normalizedName.endsWith("config") ||
-				normalizedArgs === "config" ||
-				normalizedArgs.startsWith("config ");
-			if (configIntent) {
+			const normalizedName = normalizeExtensionCommandName(commandName);
+			if (isExtensionConfigIntent(normalizedName, args)) {
 				const handled = await this.onOpenExtensionConfig(normalizedName, args);
 				if (handled) return;
 			}
