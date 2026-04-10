@@ -63,7 +63,21 @@ import { loadWelcomeDashboardInventory } from "./chat-view/welcome-dashboard-dat
 import { renderCenteredWelcomeView } from "./chat-view/welcome-dashboard-view.js";
 import { renderAssistantWorkflowView } from "./chat-view/assistant-workflow-view.js";
 import { mapBackendMessages as mapBackendMessagesView } from "./chat-view/backend-message-mapper.js";
+import {
+	createAndCheckoutBranchAction,
+	fetchGitRemotesAction,
+	switchGitBranchAction,
+	switchRemoteTrackingBranchAction,
+} from "./chat-view/git-branch-actions.js";
+import {
+	extractAssistantPartialContent as extractAssistantPartialContentValue,
+	extractImagesFromContent,
+	extractTextContent,
+	extractToolOutputText,
+	mergeStreamingText as mergeStreamingTextValue,
+} from "./chat-view/message-content-utils.js";
 import { renderGitRepoControlView } from "./chat-view/git-repo-control-view.js";
+import { deriveLatestAssistantContextTokens as deriveLatestAssistantContextTokensFromMessages } from "./chat-view/session-stats-utils.js";
 import {
 	renderAssistantMessageRow,
 	renderChangelogMessageRow,
@@ -1609,140 +1623,23 @@ export class ChatView {
 	}
 
 	private extractText(content: unknown): string {
-		if (!content) return "";
-		if (typeof content === "string") return content;
-		if (Array.isArray(content)) {
-			const parts: string[] = [];
-			for (const part of content) {
-				if (typeof part === "string") {
-					parts.push(part);
-					continue;
-				}
-				if (!part || typeof part !== "object") continue;
-				const p = part as Record<string, unknown>;
-				const type = p.type as string | undefined;
-				if (type === "text" && typeof p.text === "string") parts.push(p.text);
-			}
-			return parts.join("\n\n").trim();
-		}
-		if (typeof content === "object") {
-			const c = content as Record<string, unknown>;
-			if (typeof c.text === "string") return c.text;
-		}
-		return "";
-	}
-
-	private stringifyData(value: unknown): string {
-		try {
-			return JSON.stringify(value, null, 2);
-		} catch {
-			return String(value);
-		}
+		return extractTextContent(content);
 	}
 
 	private extractToolOutput(payload: unknown, depth = 0): string {
-		if (depth > 6 || payload === null || typeof payload === "undefined") return "";
-		if (typeof payload === "string") return payload;
-		if (typeof payload === "number" || typeof payload === "boolean") return String(payload);
-		if (Array.isArray(payload)) {
-			const parts = payload
-				.map((item) => this.extractToolOutput(item, depth + 1).trim())
-				.filter(Boolean);
-			return parts.join("\n").trim();
-		}
-		if (typeof payload !== "object") return "";
-
-		const source = payload as Record<string, unknown>;
-		const textFirst = this.extractText(source.content ?? payload).trim();
-		const chunks: string[] = textFirst ? [textFirst] : [];
-		const append = (value: unknown): void => {
-			const text = this.extractToolOutput(value, depth + 1).trim();
-			if (!text) return;
-			if (!chunks.includes(text)) chunks.push(text);
-		};
-
-		for (const key of ["output", "stdout", "stderr", "result", "message", "error", "text", "delta", "reasoning", "thinking"]) {
-			if (key in source) append(source[key]);
-		}
-		if ("content" in source) append(source.content);
-		if ("parts" in source) append(source.parts);
-		if ("messages" in source) append(source.messages);
-
-		if (chunks.length > 0) return chunks.join("\n").trim();
-		return this.stringifyData(source);
+		return extractToolOutputText(payload, depth);
 	}
 
 	private mergeStreamingText(current: string, partial: string | null, deltaCandidate: unknown): string {
-		const delta = typeof deltaCandidate === "string" ? deltaCandidate : "";
-		if (partial !== null) {
-			if (!current) return partial;
-			if (partial === current) return current;
-			if (partial.startsWith(current)) return partial;
-			if (current.startsWith(partial) && delta) return current + delta;
-			if (partial.length > current.length + 24) {
-				const overlap = current.slice(Math.max(0, current.length - 24));
-				if (!overlap || partial.includes(overlap)) return partial;
-			}
-		}
-		if (delta) return current + delta;
-		if (partial !== null) {
-			if (current.endsWith(partial)) return current;
-			return current + partial;
-		}
-		return current;
+		return mergeStreamingTextValue(current, partial, deltaCandidate);
 	}
 
 	private extractImages(content: unknown): PendingImage[] {
-		if (!Array.isArray(content)) return [];
-		const images: PendingImage[] = [];
-		for (const part of content) {
-			if (!part || typeof part !== "object") continue;
-			const p = part as Record<string, unknown>;
-			if (p.type !== "image" || typeof p.data !== "string" || typeof p.mimeType !== "string") continue;
-			images.push({
-				id: uid("img"),
-				name: "image",
-				mimeType: p.mimeType,
-				data: p.data,
-				previewUrl: `data:${p.mimeType};base64,${p.data}`,
-				size: Math.floor((p.data.length * 3) / 4),
-			});
-		}
-		return images;
+		return extractImagesFromContent(content, uid) as PendingImage[];
 	}
 
 	private extractAssistantPartialContent(assistantEvent: Record<string, unknown>, mode: "text" | "thinking"): string | null {
-		const partial = assistantEvent.partial;
-		if (!partial || typeof partial !== "object") return null;
-		const content = (partial as Record<string, unknown>).content;
-		if (!Array.isArray(content)) return null;
-
-		const fromPart = (part: unknown): string | null => {
-			if (!part || typeof part !== "object") return null;
-			const p = part as Record<string, unknown>;
-			const type = typeof p.type === "string" ? p.type : "";
-			const typeLower = type.toLowerCase();
-			if (mode === "text" && typeLower === "text" && typeof p.text === "string") return p.text;
-			if (mode === "thinking" && (typeLower.includes("thinking") || typeLower.includes("reason"))) {
-				if (typeof p.thinking === "string") return p.thinking;
-				if (typeof p.reasoning === "string") return p.reasoning;
-				if (typeof p.text === "string") return p.text;
-			}
-			return null;
-		};
-
-		const contentIndex = assistantEvent.contentIndex;
-		if (typeof contentIndex === "number" && Number.isInteger(contentIndex) && contentIndex >= 0 && contentIndex < content.length) {
-			const indexed = fromPart(content[contentIndex]);
-			if (indexed !== null) return indexed;
-		}
-
-		for (let i = content.length - 1; i >= 0; i -= 1) {
-			const fallback = fromPart(content[i]);
-			if (fallback !== null) return fallback;
-		}
-
-		return null;
+		return extractAssistantPartialContentValue(assistantEvent, mode);
 	}
 
 	private async loadAvailableModels(): Promise<void> {
@@ -1975,83 +1872,7 @@ export class ChatView {
 	}
 
 	private deriveLatestAssistantContextTokens(messages: Array<Record<string, unknown>>): number | null {
-		const estimateMessageTokens = (message: Record<string, unknown>): number => {
-			const role = typeof message.role === "string" ? message.role : "";
-			let chars = 0;
-			const content = (message as Record<string, unknown>).content;
-			if (typeof content === "string") {
-				chars += content.length;
-			} else if (Array.isArray(content)) {
-				for (const part of content) {
-					if (!part || typeof part !== "object") continue;
-					const block = part as Record<string, unknown>;
-					const type = typeof block.type === "string" ? block.type : "";
-					if (type === "text" && typeof block.text === "string") {
-						chars += block.text.length;
-					} else if (type === "thinking" || type === "reasoning") {
-						if (typeof block.thinking === "string") chars += block.thinking.length;
-						else if (typeof block.reasoning === "string") chars += block.reasoning.length;
-						else if (typeof block.text === "string") chars += block.text.length;
-					} else if (type === "toolCall") {
-						const name = typeof block.name === "string" ? block.name : "";
-						const args = JSON.stringify(block.arguments ?? {});
-						chars += name.length + args.length;
-					} else if (type === "image") {
-						chars += 4800;
-					}
-				}
-			}
-			if (role === "bashExecution") {
-				const command = typeof message.command === "string" ? message.command : "";
-				const output = typeof message.output === "string" ? message.output : "";
-				chars += command.length + output.length;
-			}
-			return Math.ceil(chars / 4);
-		};
-
-		for (let i = messages.length - 1; i >= 0; i -= 1) {
-			const message = messages[i];
-			if (!message || typeof message !== "object") continue;
-			const role = typeof message.role === "string" ? message.role : "";
-			if (role !== "assistant") continue;
-			const stopReason = typeof message.stopReason === "string" ? message.stopReason : "";
-			if (stopReason === "aborted" || stopReason === "error") continue;
-
-			const usageTotal = pickNumber(message, [
-				"usage.totalTokens",
-				"usage.total_tokens",
-				"usage.total",
-				"usage.tokens.total",
-				"usage.contextTokens",
-				"usage.context_tokens",
-			]);
-			const usageInput = pickNumber(message, ["usage.input", "usage.inputTokens", "usage.input_tokens"]);
-			const usageOutput = pickNumber(message, ["usage.output", "usage.outputTokens", "usage.output_tokens"]);
-			const usageCacheRead = pickNumber(message, ["usage.cacheRead", "usage.cache_read"]);
-			const usageCacheWrite = pickNumber(message, ["usage.cacheWrite", "usage.cache_write"]);
-			const components = [usageInput, usageOutput, usageCacheRead, usageCacheWrite].filter(
-				(value): value is number => value !== null && Number.isFinite(value) && value >= 0,
-			);
-
-			let usageTokens: number | null = null;
-			if (usageTotal !== null && usageTotal > 0) {
-				usageTokens = usageTotal;
-			} else if (components.length > 0) {
-				const sum = components.reduce((acc, value) => acc + value, 0);
-				if (sum > 0) usageTokens = sum;
-			}
-			if (usageTokens === null) continue;
-
-			let trailingTokens = 0;
-			for (let j = i + 1; j < messages.length; j += 1) {
-				const trailing = messages[j];
-				if (!trailing || typeof trailing !== "object") continue;
-				trailingTokens += estimateMessageTokens(trailing);
-			}
-
-			return usageTokens + trailingTokens;
-		}
-		return null;
+		return deriveLatestAssistantContextTokensFromMessages(messages);
 	}
 
 	private markContextUsageUnknown(): void {
@@ -2467,219 +2288,84 @@ export class ChatView {
 	}
 
 	private async switchRemoteTrackingBranch(entry: GitBranchEntry): Promise<void> {
-		if (this.switchingGitBranch) return;
-		const localBranch = entry.name.trim();
-		const remoteRef = entry.fullName.trim();
-		if (!localBranch || !remoteRef) return;
-		if (this.gitSummary.branches.includes(localBranch)) {
-			await this.switchGitBranch(localBranch);
-			return;
-		}
-
-		this.switchingGitBranch = true;
-		this.render();
-		try {
-			let result = await this.runGit(["switch", "--track", "-c", localBranch, remoteRef]);
-			if (result.exitCode !== 0) {
-				result = await this.runGit(["checkout", "--track", "-b", localBranch, remoteRef]);
-			}
-			if (result.exitCode !== 0) {
-				const message = `${result.stderr}\n${result.stdout}`.toLowerCase();
-				if (message.includes("already exists")) {
-					await this.switchGitBranch(localBranch);
-					return;
-				}
-				let fallback = await this.runGit(["switch", "--track", remoteRef]);
-				if (fallback.exitCode !== 0) {
-					fallback = await this.runGit(["checkout", "--track", remoteRef]);
-				}
-				if (fallback.exitCode === 0) {
-					this.gitMenuOpen = false;
-					this.gitBranchQuery = "";
-					this.pushNotice(`Switched to ${localBranch} (tracking ${remoteRef})`, "success");
-					await this.refreshGitSummary(true);
-					return;
-				}
-				this.pushNotice(result.stderr.trim() || result.stdout.trim() || `Failed to switch branch: ${remoteRef}`, "error");
-				return;
-			}
-			this.gitMenuOpen = false;
-			this.gitBranchQuery = "";
-			this.pushNotice(`Switched to ${localBranch} (tracking ${remoteRef})`, "success");
-			await this.refreshGitSummary(true);
-		} catch (err) {
-			console.error("Failed to switch remote branch:", err);
-			this.pushNotice("Failed to switch remote branch", "error");
-		} finally {
-			this.switchingGitBranch = false;
-			this.render();
-		}
+		await switchRemoteTrackingBranchAction({
+			entry,
+			branches: this.gitSummary.branches,
+			switchGitBranch: this.switchGitBranch.bind(this),
+			isSwitchingGitBranch: () => this.switchingGitBranch,
+			setSwitchingGitBranch: (next) => {
+				this.switchingGitBranch = next;
+			},
+			render: this.render.bind(this),
+			closeGitMenu: () => {
+				this.gitMenuOpen = false;
+				this.gitBranchQuery = "";
+			},
+			pushNotice: this.pushNotice.bind(this),
+			runGit: this.runGit.bind(this),
+			hasGitHeadCommit: this.hasGitHeadCommit.bind(this),
+			switchUnbornHeadBranch: this.switchUnbornHeadBranch.bind(this),
+			refreshGitSummary: this.refreshGitSummary.bind(this),
+		});
 	}
 
 	private async fetchGitRemotes(): Promise<void> {
-		if (!this.gitSummary.isRepo || this.fetchingGitRemotes || this.switchingGitBranch) return;
-		this.fetchingGitRemotes = true;
-		this.render();
-		try {
-			const result = await this.runGit(["fetch", "--all", "--prune"]);
-			if (result.exitCode !== 0) {
-				this.pushNotice(result.stderr.trim() || result.stdout.trim() || "Failed to fetch remotes", "error");
-				return;
-			}
-			this.pushNotice("Fetched remote branches", "success");
-			await this.refreshGitSummary(true);
-		} catch (err) {
-			console.error("Failed to fetch remotes:", err);
-			this.pushNotice("Failed to fetch remotes", "error");
-		} finally {
-			this.fetchingGitRemotes = false;
-			this.render();
-		}
+		await fetchGitRemotesAction({
+			isRepo: this.gitSummary.isRepo,
+			fetchingGitRemotes: this.fetchingGitRemotes,
+			isSwitchingGitBranch: () => this.switchingGitBranch,
+			setFetchingGitRemotes: (next) => {
+				this.fetchingGitRemotes = next;
+			},
+			render: this.render.bind(this),
+			pushNotice: this.pushNotice.bind(this),
+			runGit: this.runGit.bind(this),
+			refreshGitSummary: this.refreshGitSummary.bind(this),
+		});
 	}
 
 	private async switchGitBranch(branch: string): Promise<void> {
-		if (!branch || this.switchingGitBranch) return;
-		const currentBranch = this.gitSummary.branch || "";
-		if (branch === currentBranch) {
-			this.gitMenuOpen = false;
-			this.gitBranchQuery = "";
-			this.render();
-			return;
-		}
-
-		this.switchingGitBranch = true;
-		this.render();
-		try {
-			const hasCommit = await this.hasGitHeadCommit();
-			if (!hasCommit) {
-				const switched = await this.switchUnbornHeadBranch(branch);
-				if (!switched.ok) {
-					this.pushNotice(switched.error || `Failed to switch branch: ${branch}`, "error");
-					return;
-				}
+		await switchGitBranchAction({
+			branch,
+			currentBranch: this.gitSummary.branch || "",
+			isSwitchingGitBranch: () => this.switchingGitBranch,
+			setSwitchingGitBranch: (next) => {
+				this.switchingGitBranch = next;
+			},
+			render: this.render.bind(this),
+			closeGitMenu: () => {
 				this.gitMenuOpen = false;
 				this.gitBranchQuery = "";
-				this.pushNotice(`Switched to ${branch}`, "success");
-				await this.refreshGitSummary(true);
-				return;
-			}
-
-			let result = await this.runGit(["switch", branch]);
-			if (result.exitCode !== 0) {
-				result = await this.runGit(["checkout", branch]);
-			}
-			if (result.exitCode !== 0) {
-				this.pushNotice(result.stderr.trim() || result.stdout.trim() || `Failed to switch branch: ${branch}`, "error");
-				return;
-			}
-			this.gitMenuOpen = false;
-			this.gitBranchQuery = "";
-			this.pushNotice(`Switched to ${branch}`, "success");
-			await this.refreshGitSummary(true);
-		} catch (err) {
-			console.error("Failed to switch branch:", err);
-			this.pushNotice("Failed to switch branch", "error");
-		} finally {
-			this.switchingGitBranch = false;
-			this.render();
-		}
+			},
+			pushNotice: this.pushNotice.bind(this),
+			runGit: this.runGit.bind(this),
+			hasGitHeadCommit: this.hasGitHeadCommit.bind(this),
+			switchUnbornHeadBranch: this.switchUnbornHeadBranch.bind(this),
+			refreshGitSummary: this.refreshGitSummary.bind(this),
+		});
 	}
 
 	private async createAndCheckoutBranch(rawName = ""): Promise<void> {
-		if (this.switchingGitBranch) return;
-
-		let proposed = rawName.trim();
-		if (!proposed) {
-			const prompted = window.prompt("Branch name", this.gitBranchQuery.trim()) ?? "";
-			proposed = prompted.trim();
-		}
-		if (!proposed) {
-			this.pushNotice("Enter a branch name first", "info");
-			return;
-		}
-		const existingBranch = this.resolveGitBranchSelection(proposed);
-		if (existingBranch) {
-			await this.switchGitBranchEntry(existingBranch);
-			return;
-		}
-
-		if (!/^[A-Za-z0-9._\/-]+$/.test(proposed)) {
-			this.pushNotice("Use letters, numbers, ., _, -, / for branch names", "error");
-			return;
-		}
-
-		const refCheck = await this.runGit(["check-ref-format", "--branch", proposed]);
-		if (refCheck.exitCode !== 0) {
-			this.pushNotice(refCheck.stderr.trim() || refCheck.stdout.trim() || "Invalid branch name", "error");
-			return;
-		}
-
-		this.switchingGitBranch = true;
-		this.render();
-		try {
-			const hasCommit = await this.hasGitHeadCommit();
-			if (!hasCommit) {
-				const switched = await this.switchUnbornHeadBranch(proposed);
-				if (!switched.ok) {
-					this.pushNotice(switched.error || "Failed to create branch", "error");
-					return;
-				}
+		await createAndCheckoutBranchAction({
+			rawName,
+			gitBranchQuery: this.gitBranchQuery,
+			resolveGitBranchSelection: this.resolveGitBranchSelection.bind(this),
+			switchGitBranchEntry: this.switchGitBranchEntry.bind(this),
+			isSwitchingGitBranch: () => this.switchingGitBranch,
+			setSwitchingGitBranch: (next) => {
+				this.switchingGitBranch = next;
+			},
+			render: this.render.bind(this),
+			closeGitMenu: () => {
 				this.gitMenuOpen = false;
 				this.gitBranchQuery = "";
-				this.pushNotice(`Created and switched to ${proposed}`, "success");
-				await this.refreshGitSummary(true);
-				return;
-			}
-
-			let result = await this.runGit(["switch", "-c", proposed]);
-			if (result.exitCode !== 0) {
-				result = await this.runGit(["checkout", "-b", proposed]);
-			}
-			if (result.exitCode !== 0) {
-				const message = `${result.stderr}\n${result.stdout}`.toLowerCase();
-				if (message.includes("already exists")) {
-					let switchExisting = await this.runGit(["switch", proposed]);
-					if (switchExisting.exitCode !== 0) {
-						switchExisting = await this.runGit(["checkout", proposed]);
-					}
-					if (switchExisting.exitCode === 0) {
-						this.gitMenuOpen = false;
-						this.gitBranchQuery = "";
-						this.pushNotice(`Switched to ${proposed}`, "success");
-						await this.refreshGitSummary(true);
-						return;
-					}
-				}
-
-				const branchOnly = await this.runGit(["branch", proposed]);
-				if (branchOnly.exitCode === 0) {
-					let switchToCreated = await this.runGit(["switch", proposed]);
-					if (switchToCreated.exitCode !== 0) {
-						switchToCreated = await this.runGit(["checkout", proposed]);
-					}
-					if (switchToCreated.exitCode === 0) {
-						this.gitMenuOpen = false;
-						this.gitBranchQuery = "";
-						this.pushNotice(`Created and switched to ${proposed}`, "success");
-						await this.refreshGitSummary(true);
-						return;
-					}
-				}
-
-				this.pushNotice(result.stderr.trim() || result.stdout.trim() || "Failed to create branch", "error");
-				return;
-			}
-			this.gitMenuOpen = false;
-			this.gitBranchQuery = "";
-			this.pushNotice(`Created and switched to ${proposed}`, "success");
-			await this.refreshGitSummary(true);
-		} catch (err) {
-			console.error("Failed to create branch:", err);
-			this.pushNotice("Failed to create branch", "error");
-		} finally {
-			this.switchingGitBranch = false;
-			this.render();
-		}
+			},
+			pushNotice: this.pushNotice.bind(this),
+			runGit: this.runGit.bind(this),
+			hasGitHeadCommit: this.hasGitHeadCommit.bind(this),
+			switchUnbornHeadBranch: this.switchUnbornHeadBranch.bind(this),
+			refreshGitSummary: this.refreshGitSummary.bind(this),
+		});
 	}
 
 	private renderGitRepoControl(): TemplateResult {
