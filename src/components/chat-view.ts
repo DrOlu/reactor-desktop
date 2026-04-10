@@ -55,7 +55,10 @@ import {
 } from "./chat-view/composer-input-events.js";
 import { renderSlashPaletteView } from "./chat-view/composer-slash-palette-view.js";
 import { renderComposerStatsView } from "./chat-view/composer-stats-view.js";
+import { deriveForkSessionName, buildForkEntryIdByMessageId, resolveForkEntryId } from "./chat-view/history-fork-utils.js";
 import { compactTreeLinePrefix, parseSessionTreeRows } from "./chat-view/history-tree-utils.js";
+import { renderHistoryViewerView } from "./chat-view/history-viewer-view.js";
+import type { ForkOption, HistoryTreeRow, HistoryViewerRole } from "./chat-view/history-viewer-types.js";
 import {
 	displayProviderLabel as displayProviderLabelFromCatalog,
 	isOAuthProviderId as isOAuthProviderIdInCatalog,
@@ -70,7 +73,7 @@ import {
 
 type DeliveryMode = "prompt" | "steer" | "followUp";
 
-type UiRole = "user" | "assistant" | "system" | "custom";
+type UiRole = HistoryViewerRole;
 
 interface PendingImage {
 	id: string;
@@ -126,23 +129,6 @@ interface Notice {
 	id: string;
 	text: string;
 	kind: "info" | "success" | "error";
-}
-
-interface ForkOption {
-	entryId: string;
-	text: string;
-}
-
-interface HistoryTreeRow {
-	entryId: string;
-	depth: number;
-	role: UiRole;
-	entryLabel: string;
-	preview: string;
-	displayText: string;
-	linePrefix: string;
-	onActivePath: boolean;
-	canFork: boolean;
 }
 
 interface SessionStatsSummary {
@@ -465,8 +451,6 @@ export class ChatView {
 	private extensionCompatibilityHintsShown = new Set<string>();
 	private pendingDeliveryMode: DeliveryMode = "prompt";
 	private queuedComposerMessages: QueuedComposerMessage[] = [];
-	private openingForkPicker = false;
-	private forkPickerOpen = false;
 	private forkOptions: ForkOption[] = [];
 	private historyViewerOpen = false;
 	private historyViewerMode: "browse" | "fork" = "browse";
@@ -4656,35 +4640,15 @@ export class ChatView {
 	}
 
 	async openForkPicker(): Promise<void> {
-		if (this.openingForkPicker) return;
-		this.openingForkPicker = true;
-		this.forkPickerOpen = true;
-		this.render();
-		try {
-			this.forkOptions = await rpcBridge.getForkMessages();
-		} catch (err) {
-			console.error("Failed to load fork points:", err);
-			this.pushNotice("Failed to load fork points", "error");
-			this.forkOptions = [];
-		} finally {
-			this.openingForkPicker = false;
-			this.render();
-		}
-	}
-
-	private closeForkPicker(): void {
-		this.forkPickerOpen = false;
-		this.render();
-	}
-
-	private deriveForkSessionName(sourceName: string): string {
-		const base = sourceName.trim() || "session";
-		return `fork-${base}`;
+		this.openHistoryViewerForFork({
+			loading: false,
+			sessionName: this.state?.sessionName ?? null,
+		});
 	}
 
 	private async forkFrom(entryId: string): Promise<void> {
 		const sourceSessionName = this.historyViewerSessionLabel.trim() || this.state?.sessionName?.trim() || "";
-		const forkSessionName = this.deriveForkSessionName(sourceSessionName);
+		const forkSessionName = deriveForkSessionName(sourceSessionName);
 		try {
 			const result = await rpcBridge.fork(entryId);
 			if (!result.cancelled) {
@@ -4699,7 +4663,6 @@ export class ChatView {
 			}
 			await this.refreshFromBackend();
 			this.pushNotice(result.cancelled ? "Fork cancelled" : "Fork ready in editor", "success");
-			this.closeForkPicker();
 			if (this.historyViewerMode === "fork") {
 				this.closeHistoryViewer();
 			}
@@ -4749,38 +4712,6 @@ export class ChatView {
 		this.render();
 	}
 
-	private normalizeForkText(value: string): string {
-		return value.replace(/\s+/g, " ").trim();
-	}
-
-	private hydrateForkTargetsFromOptions(options: ForkOption[]): void {
-		const userMessages = this.messages.filter((msg) => msg.role === "user");
-		const byText = new Map<string, string[]>();
-		for (const option of options) {
-			const key = this.normalizeForkText(option.text);
-			if (!key) continue;
-			const queue = byText.get(key) ?? [];
-			queue.push(option.entryId);
-			byText.set(key, queue);
-		}
-
-		const map = new Map<string, string>();
-		for (const msg of userMessages) {
-			const key = this.normalizeForkText(msg.text);
-			const queue = byText.get(key);
-			if (queue && queue.length > 0) {
-				const entryId = queue.shift();
-				if (entryId) map.set(msg.id, entryId);
-				continue;
-			}
-			if (msg.sessionEntryId) {
-				map.set(msg.id, msg.sessionEntryId);
-			}
-		}
-
-		this.forkEntryIdByMessageId = map;
-	}
-
 	private async loadForkTargetsForHistory(): Promise<void> {
 		if (this.historyViewerMode !== "fork") return;
 		const requestId = ++this.forkTargetsRequestSeq;
@@ -4790,7 +4721,7 @@ export class ChatView {
 			const options = await rpcBridge.getForkMessages();
 			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
 			this.forkOptions = options;
-			this.hydrateForkTargetsFromOptions(options);
+			this.forkEntryIdByMessageId = buildForkEntryIdByMessageId(this.messages, options);
 		} catch (err) {
 			if (requestId !== this.forkTargetsRequestSeq || this.historyViewerMode !== "fork") return;
 			console.error("Failed to load fork points:", err);
@@ -6258,48 +6189,6 @@ export class ChatView {
 		`;
 	}
 
-	private renderForkPicker(): TemplateResult | typeof nothing {
-		if (!this.forkPickerOpen) return nothing;
-		return html`
-			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.closeForkPicker()}>
-				<div class="overlay-card">
-					<div class="overlay-header">
-						<div>Fork from earlier user message</div>
-						<button @click=${() => this.closeForkPicker()}>✕</button>
-					</div>
-					<div class="overlay-body">
-						${this.openingForkPicker
-							? html`<div class="overlay-empty">Loading…</div>`
-							: this.forkOptions.length === 0
-								? html`<div class="overlay-empty">No fork points available.</div>`
-								: this.forkOptions.map(
-									(option) => html`
-										<button class="fork-option" @click=${() => this.forkFrom(option.entryId)}>
-											${truncate(option.text.replace(/\s+/g, " "), 140)}
-										</button>
-									`,
-								)}
-					</div>
-				</div>
-			</div>
-		`;
-	}
-
-	private resolveForkEntryId(messages: UiMessage[], index: number): string | null {
-		const current = messages[index];
-		if (!current) return null;
-		if (current.role === "user") {
-			return this.forkEntryIdByMessageId.get(current.id) ?? current.sessionEntryId ?? null;
-		}
-		for (let i = index; i >= 0; i--) {
-			const candidate = messages[i];
-			if (!candidate || candidate.role !== "user") continue;
-			const entryId = this.forkEntryIdByMessageId.get(candidate.id) ?? candidate.sessionEntryId;
-			if (entryId) return entryId;
-		}
-		return null;
-	}
-
 	private async loadSessionTreeForHistory(): Promise<void> {
 		if (this.historyViewerMode !== "browse" || !this.historyViewerOpen) return;
 		const requestId = ++this.historyTreeRequestSeq;
@@ -6338,158 +6227,32 @@ export class ChatView {
 	}
 
 	private renderHistoryViewer(): TemplateResult | typeof nothing {
-		if (!this.historyViewerOpen) return nothing;
-
-		const forkMode = this.historyViewerMode === "fork";
-		const query = this.historyQuery.trim().toLowerCase();
-		const sourceMessages: UiMessage[] = this.messages;
-		const sessionMessageIdByEntryId = new Map<string, string>();
-		for (const message of this.messages) {
-			if (!message.sessionEntryId) continue;
-			if (sessionMessageIdByEntryId.has(message.sessionEntryId)) continue;
-			sessionMessageIdByEntryId.set(message.sessionEntryId, message.id);
-		}
-
-		const filteredForkOptions: ForkOption[] = forkMode
-			? this.forkOptions.filter((option) => {
-				if (!query) return true;
-				const haystack = option.text.toLowerCase();
-				return haystack.includes(query);
-			})
-			: [];
-		const useTreeRows = !forkMode && this.historyTreeRows.length > 0;
-		const filteredTreeRows: HistoryTreeRow[] = forkMode
-			? []
-			: this.historyTreeRows.filter((row) => {
-				if (this.historyRoleFilter !== "all" && row.role !== this.historyRoleFilter) return false;
-				if (!query) return true;
-				const haystack = `${row.role} ${row.entryLabel} ${row.preview} ${row.displayText} ${row.entryId}`.toLowerCase();
-				return haystack.includes(query);
-			});
-		const filteredBrowseRows: Array<{ msg: UiMessage; sourceIndex: number }> = forkMode || useTreeRows
-			? []
-			: sourceMessages
-				.map((msg, sourceIndex) => ({ msg, sourceIndex }))
-				.filter(({ msg }) => {
-					if (this.historyRoleFilter !== "all" && msg.role !== this.historyRoleFilter) return false;
-					if (!query) return true;
-					const haystack = `${msg.role} ${msg.label || ""} ${this.messagePreview(msg)}`.toLowerCase();
-					return haystack.includes(query);
-				});
-
-		const hasNoRows = forkMode ? filteredForkOptions.length === 0 : useTreeRows ? filteredTreeRows.length === 0 : filteredBrowseRows.length === 0;
-
-		return html`
-			<div class="overlay" @click=${(e: Event) => e.target === e.currentTarget && this.closeHistoryViewer()}>
-				<div class="overlay-card history-card ${forkMode ? "fork-mode" : ""}">
-					<div class="overlay-header">
-						<div>
-							<div>${forkMode ? "Fork from message" : "Session tree"}</div>
-							${forkMode
-								? html`<div class="history-subtitle">${this.historyViewerSessionLabel || "Current session"}</div>`
-								: nothing}
-						</div>
-						<button @click=${() => this.closeHistoryViewer()}>✕</button>
-					</div>
-					<div class="history-controls ${forkMode ? "fork" : ""}">
-						<input
-							type="text"
-							placeholder=${forkMode ? "Search user messages" : "Search tree entries"}
-							.value=${this.historyQuery}
-							@input=${(e: Event) => {
-								this.historyQuery = (e.target as HTMLInputElement).value;
-								this.render();
-							}}
-						/>
-						${forkMode
-							? nothing
-							: html`
-								<select
-									class="settings-select"
-									.value=${this.historyRoleFilter}
-									@change=${(e: Event) => {
-										this.historyRoleFilter = (e.target as HTMLSelectElement).value as UiRole | "all";
-										this.render();
-									}}
-								>
-									<option value="all">all roles</option>
-									<option value="user">user</option>
-									<option value="assistant">assistant</option>
-									<option value="system">system</option>
-									<option value="custom">custom</option>
-								</select>
-							`}
-					</div>
-					<div class="overlay-body history-list ${forkMode ? "fork-history-list" : ""}">
-						${this.historyViewerLoading
-							? html`<div class="overlay-empty">Loading session history…</div>`
-							: hasNoRows
-								? html`<div class="overlay-empty">${forkMode ? "No messages available for forking." : "No session entries match your filters."}</div>`
-								: forkMode
-									? filteredForkOptions.map((option, idx) => {
-											const preview = truncate(option.text.replace(/\s+/g, " ").trim(), 240);
-											return html`
-												<div class="history-item fork-user-row">
-													<div class="history-item-main">
-														<button class="history-jump" @click=${() => void this.forkFrom(option.entryId)} title="Fork from this user message">
-															<div class="history-meta">
-																<span class="history-role role-user">user</span>
-																<span>#${idx + 1}</span>
-															</div>
-															<div class="history-preview">${preview}</div>
-														</button>
-														<button class="history-fork-btn" @click=${() => void this.forkFrom(option.entryId)} title="Fork from this user message">Fork</button>
-													</div>
-												</div>
-											`;
-									  })
-									: useTreeRows
-										? filteredTreeRows.map((row, idx) => {
-												const visibleMessageId = sessionMessageIdByEntryId.get(row.entryId) ?? null;
-												const canJump = Boolean(visibleMessageId);
-												const title = canJump ? "Jump to this entry" : "Entry is outside the active branch";
-												const compactPrefix = compactTreeLinePrefix(row.linePrefix, row.depth);
-												const rowText = row.displayText.trim() || row.preview || "(entry)";
-												const lineText = `${compactPrefix}${row.onActivePath ? "• " : "  "}${truncate(rowText, 320)}`;
-												const lineBody = html`<span class="history-tree-line-mono role-${row.role}">${lineText}</span>`;
-												return html`
-													<div class="history-tree-line-row ${row.onActivePath ? "on-path" : "off-path"}">
-														${canJump && visibleMessageId
-															? html`<button class="history-tree-line ${row.onActivePath ? "on-path" : ""}" @click=${() => this.revealMessage(visibleMessageId)} title=${title}>${lineBody}</button>`
-															: html`<div class="history-tree-line static" title=${title}>${lineBody}</div>`}
-														<div class="history-tree-line-actions">
-															<span class="history-tree-index">#${idx + 1}</span>
-															${row.canFork
-																? html`<button class="history-fork-btn" @click=${() => void this.forkFrom(row.entryId)} title="Fork from this user message">Fork</button>`
-																: nothing}
-														</div>
-													</div>
-												`;
-									  })
-										: filteredBrowseRows.map(({ msg, sourceIndex }, idx: number) => {
-												const forkEntryId = this.resolveForkEntryId(sourceMessages, sourceIndex);
-												const canFork = Boolean(forkEntryId) && (msg.role === "user" || msg.role === "assistant");
-												return html`
-													<div class="history-item">
-														<div class="history-item-main">
-															<button class="history-jump" @click=${() => this.revealMessage(msg.id)}>
-																<div class="history-meta">
-																	<span class="history-role role-${msg.role}">${msg.role}</span>
-																	<span>#${idx + 1}</span>
-																</div>
-																<div class="history-preview">${truncate(this.messagePreview(msg).replace(/\s+/g, " "), 200)}</div>
-															</button>
-															${canFork && forkEntryId
-																? html`<button class="history-fork-btn" @click=${() => void this.forkFrom(forkEntryId)} title=${msg.role === "assistant" ? "Fork from preceding user message" : "Fork from this user message"}>Fork</button>`
-																: nothing}
-														</div>
-													</div>
-												`;
-									  })}
-					</div>
-				</div>
-			</div>
-		`;
+		return renderHistoryViewerView<UiMessage>({
+			historyViewerOpen: this.historyViewerOpen,
+			historyViewerMode: this.historyViewerMode,
+			historyViewerLoading: this.historyViewerLoading,
+			historyViewerSessionLabel: this.historyViewerSessionLabel,
+			historyQuery: this.historyQuery,
+			historyRoleFilter: this.historyRoleFilter,
+			messages: this.messages,
+			historyTreeRows: this.historyTreeRows,
+			forkOptions: this.forkOptions,
+			messagePreview: (message) => this.messagePreview(message),
+			resolveForkEntryId: (messages, index) => resolveForkEntryId(messages, index, this.forkEntryIdByMessageId),
+			onClose: () => this.closeHistoryViewer(),
+			onQueryChange: (value) => {
+				this.historyQuery = value;
+				this.render();
+			},
+			onRoleFilterChange: (role) => {
+				this.historyRoleFilter = role;
+				this.render();
+			},
+			onJumpToMessage: (messageId) => this.revealMessage(messageId),
+			onForkFromEntry: (entryId) => void this.forkFrom(entryId),
+			compactTreeLinePrefix,
+			truncateText: truncate,
+		});
 	}
 
 	private doRender(): void {
@@ -6556,7 +6319,6 @@ export class ChatView {
 					${showWorkingIndicator ? this.renderWorkingIndicatorRow() : nothing}
 				</div>
 				${hasProject ? this.renderComposer() : nothing}
-				${hasProject ? this.renderForkPicker() : nothing}
 				${hasProject ? this.renderHistoryViewer() : nothing}
 				${hasProject ? this.renderJumpToLatest() : nothing}
 				${this.renderNotices()}

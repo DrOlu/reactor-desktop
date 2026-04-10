@@ -1,26 +1,14 @@
-export type HistoryUiRole = "user" | "assistant" | "system" | "custom";
+import type { HistoryTreeRow, HistoryViewerRole } from "./history-viewer-types.js";
 
 interface SessionTreeEntryRecord {
 	id: string;
 	parentId: string | null;
 	type: string;
 	index: number;
-	role: HistoryUiRole;
+	role: HistoryViewerRole;
 	entryLabel: string;
 	preview: string;
 	displayText: string;
-	canFork: boolean;
-}
-
-export interface HistoryTreeRowRecord {
-	entryId: string;
-	depth: number;
-	role: HistoryUiRole;
-	entryLabel: string;
-	preview: string;
-	displayText: string;
-	linePrefix: string;
-	onActivePath: boolean;
 	canFork: boolean;
 }
 
@@ -34,7 +22,7 @@ interface ParseSessionTreeRowsParams {
 	pickNumber: (source: Record<string, unknown>, paths: string[]) => number | null;
 }
 
-function roleFromSessionEntry(roleRaw: string): HistoryUiRole {
+function roleFromSessionEntry(roleRaw: string): HistoryViewerRole {
 	const normalized = roleRaw.trim().toLowerCase();
 	if (normalized === "user") return "user";
 	if (normalized === "assistant") return "assistant";
@@ -57,7 +45,7 @@ function mapSessionTreeEntry(
 
 	const parentRaw = record.parentId;
 	const parentId = typeof parentRaw === "string" && parentRaw.trim().length > 0 ? parentRaw.trim() : null;
-	let role: HistoryUiRole = "system";
+	let role: HistoryViewerRole = "system";
 	let entryLabel = type.replace(/_/g, " ");
 	let preview = "";
 	let displayText = "";
@@ -207,11 +195,11 @@ function resolveCurrentTreeLeafId(
 	entries: SessionTreeEntryRecord[],
 	currentSessionEntryIds: string[],
 ): string | null {
-	for (let i = currentSessionEntryIds.length - 1; i >= 0; i--) {
+	for (let i = currentSessionEntryIds.length - 1; i >= 0; i -= 1) {
 		const entryId = currentSessionEntryIds[i];
 		if (entryId && entriesById.has(entryId)) return entryId;
 	}
-	for (let i = entries.length - 1; i >= 0; i--) {
+	for (let i = entries.length - 1; i >= 0; i -= 1) {
 		const entry = entries[i];
 		if (!entry) continue;
 		if (entriesById.has(entry.id)) return entry.id;
@@ -237,7 +225,7 @@ export function parseSessionTreeRows({
 	truncateText,
 	pickString,
 	pickNumber,
-}: ParseSessionTreeRowsParams): HistoryTreeRowRecord[] {
+}: ParseSessionTreeRowsParams): HistoryTreeRow[] {
 	const rawRecords: Array<{ record: Record<string, unknown>; index: number }> = [];
 	const lines = sessionContent.split(/\r?\n/);
 	for (const line of lines) {
@@ -318,7 +306,7 @@ export function parseSessionTreeRows({
 		cursor = parentId && entriesById.has(parentId) ? parentId : null;
 	}
 
-	const rows: HistoryTreeRowRecord[] = [];
+	const rows: HistoryTreeRow[] = [];
 	const buildPrefix = (ancestorHasNext: boolean[], isLast: boolean, depth: number): string => {
 		const parts: string[] = ancestorHasNext.map((hasNext) => (hasNext ? "│  " : "   "));
 		if (depth > 0) {
