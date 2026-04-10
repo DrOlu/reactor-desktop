@@ -3,12 +3,13 @@
  */
 
 import { html, nothing, render } from "lit";
+import { withRuntimeCommandUsageHint } from "../commands/slash-command-catalog.js";
 import { rpcBridge } from "../rpc/bridge.js";
 
 interface RpcCommand {
 	name: string;
 	description?: string;
-	source: "extension" | "prompt" | "skill";
+	source?: string;
 	location?: string;
 	path?: string;
 }
@@ -17,7 +18,7 @@ interface PaletteCommand {
 	id: string;
 	name: string;
 	description: string;
-	source: "extension" | "prompt" | "skill" | "builtin";
+	source: string | "builtin";
 	commandText?: string;
 	action?: () => Promise<void> | void;
 }
@@ -30,18 +31,6 @@ interface BuiltinAction {
 
 function normalizeCommandName(name: string): string {
 	return name.trim().toLowerCase().replace(/^\/+/, "");
-}
-
-function normalizeRuntimeCommandDescription(name: string, description: string): string {
-	const normalizedName = normalizeCommandName(name);
-	const normalizedDescription = description.trim();
-	if (normalizedName === "voice-notify") {
-		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
-	}
-	if (/^configure windows smart voice notifications$/i.test(normalizedDescription)) {
-		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
-	}
-	return normalizedDescription || `Run /${normalizedName}`;
 }
 
 export class CommandPalette {
@@ -105,13 +94,19 @@ export class CommandPalette {
 			action: action.action,
 		}));
 
-		const slashCommands: PaletteCommand[] = rpcCommands.map((cmd) => ({
-			id: `${cmd.source}:${cmd.name}`,
-			name: cmd.name,
-			description: normalizeRuntimeCommandDescription(cmd.name, cmd.description || ""),
-			source: cmd.source,
-			commandText: `/${cmd.name}`,
-		}));
+		const slashCommands: PaletteCommand[] = [];
+		for (const cmd of rpcCommands) {
+			const name = typeof cmd.name === "string" ? normalizeCommandName(cmd.name) : "";
+			if (!name) continue;
+			const source = typeof cmd.source === "string" && cmd.source.trim().length > 0 ? cmd.source.trim() : "runtime";
+			slashCommands.push({
+				id: `${source}:${name}`,
+				name,
+				description: withRuntimeCommandUsageHint(name, cmd.description || `Run /${name}`),
+				source,
+				commandText: `/${name}`,
+			});
+		}
 
 		this.commands = [...builtinCommands, ...slashCommands];
 	}

@@ -26,6 +26,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Running-state affordances now use synchronized Pi/text animation cadence, including inline Pi indicators on active workflow rows and toned-down bottom-status typography.
 - Polished markdown code blocks toward a cleaner Codex-like appearance (single surface, tightened header/content spacing, smaller copy affordance, less chrome).
 - Composer slash palette now shows CLI-first command groups with runtime-discovered extension/prompt/skill commands, while keeping visual chrome minimal.
+- Extracted shared slash-command catalog/normalization helpers into a dedicated module, and aligned Command Palette + Composer command-description normalization to reduce duplicated command logic.
 - Compaction status rendering was reduced to a minimal workflow-style row with collapsed-by-default details instead of a heavy status card.
 - Auto-rename extension recommendation and desktop config bridge now target `@byteowlz/pi-auto-rename`, with dynamic command-to-package resolution for config-intent slash commands (including `/auto-rename config`) instead of hardcoded package-name routing.
 - Recommended notifications extension now defaults to `pi-smart-voice-notify`, and Packages auto-migrates legacy `pi-desktop-notify` installs by installing the new package and removing the old one.
@@ -60,6 +61,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Fixed repeated streamed thinking duplication by tightening partial-update merge/dedupe behavior in workflow rendering.
 - Assistant message-level copy action is now suppressed for messages that are only a single fenced code block (copy remains on the code block itself).
 - Fixed slash command execution regressions where `/` input could fall through to plain prompt sends; built-in commands now execute deterministically from the composer.
+- Composer slash execution now treats runtime command sources more generically and supports deterministic runtime fallback execution for typed slash commands that may not yet be in the local cached menu, improving CLI-extension command parity.
 - Fixed workflow summary counters to report mixed outcomes correctly (complete + failed + running) instead of over-reporting failures.
 - Removed blinking assistant-body streaming cursor artifact and removed noisy composer status text beneath model controls.
 - Fixed compaction timeline behavior so compaction rows stay anchored at the correct chronological position instead of drifting to the newest row.

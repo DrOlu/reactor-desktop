@@ -14,6 +14,12 @@ import {
 	rpcBridge,
 } from "../rpc/bridge.js";
 import { buildGitBranchIndex, findGitBranchEntryByQuery, type GitBranchEntry } from "../git/branches.js";
+import {
+	BUILTIN_SLASH_COMMANDS,
+	normalizeRuntimeSlashCommandSource,
+	type RuntimeSlashCommandSource,
+	withRuntimeCommandUsageHint,
+} from "../commands/slash-command-catalog.js";
 
 type DeliveryMode = "prompt" | "steer" | "followUp";
 
@@ -166,13 +172,14 @@ interface ComposerSkillDraft {
 	scope: string | null;
 }
 
-type SlashPaletteSection = "CLI" | "Extensions" | "Prompts" | "Skills";
-type SlashCommandSource = "builtin" | "extension" | "prompt" | "skill";
+type SlashPaletteSection = "CLI" | "Extensions" | "Prompts" | "Skills" | "Commands";
+type SlashCommandSource = "builtin" | RuntimeSlashCommandSource;
 
 interface RuntimeSlashCommand {
 	name: string;
 	description: string;
-	source: "extension" | "prompt" | "skill";
+	source: RuntimeSlashCommandSource;
+	rawSource: string;
 }
 
 interface SlashPaletteItem {
@@ -201,76 +208,6 @@ interface CompactionCycleState {
 	details: string[];
 	expanded: boolean;
 }
-
-function runtimeCommandUsageHint(name: string): string | null {
-	const normalized = normalizeText(name).toLowerCase().replace(/^\/+/, "");
-	if (normalized === "auto-rename" || normalized === "name-ai-config") {
-		return "Args: config, test, init, regen, <name>";
-	}
-	if (normalized === "voice-notify") {
-		return "No arg opens extension settings; args: status, reload, on, off, test <idle|permission|question|error>";
-	}
-	return null;
-}
-
-function runtimeCommandDescriptionOverride(name: string, description: string): string | null {
-	const normalizedName = normalizeText(name).toLowerCase().replace(/^\/+/, "");
-	if (normalizedName === "voice-notify") {
-		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
-	}
-	const normalizedDescription = normalizeText(description);
-	if (/^configure windows smart voice notifications$/i.test(normalizedDescription)) {
-		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
-	}
-	return null;
-}
-
-function withRuntimeCommandUsageHint(name: string, description: string): string {
-	const override = runtimeCommandDescriptionOverride(name, description);
-	if (override) return override;
-	const normalizedDescription = normalizeText(description);
-	const hint = runtimeCommandUsageHint(name);
-	if (!hint) return normalizedDescription;
-	if (!normalizedDescription) return hint;
-	const lower = normalizedDescription.toLowerCase();
-	const normalizedName = normalizeText(name).toLowerCase().replace(/^\/+/, "");
-	if (normalizedName === "auto-rename" && lower.includes("config") && lower.includes("test")) {
-		return normalizedDescription;
-	}
-	if (
-		normalizedName === "voice-notify" &&
-		lower.includes("status") &&
-		lower.includes("reload") &&
-		lower.includes("test")
-	) {
-		return normalizedDescription;
-	}
-	return `${normalizedDescription} · ${hint}`;
-}
-
-const BUILTIN_SLASH_COMMANDS: Array<{ name: string; description: string }> = [
-	{ name: "settings", description: "Open Desktop settings" },
-	{ name: "model", description: "No arg opens picker; exact arg sets model, otherwise opens picker near matches" },
-	{ name: "scoped-models", description: "Open Settings scoped-models editor (Ctrl+P model cycle scope)" },
-	{ name: "export", description: "No arg opens save dialog, /export <path> writes HTML directly" },
-	{ name: "import", description: "No arg opens file picker, /import <path> imports a session file" },
-	{ name: "share", description: "Create secret gist and post minimal links to pi.dev + GitHub gist" },
-	{ name: "copy", description: "Copy last assistant message" },
-	{ name: "name", description: "No arg opens inline rename, /name <text> sets name directly" },
-	{ name: "session", description: "Append detailed session info + token stats" },
-	{ name: "changelog", description: "Show latest changelog in collapsible row (/changelog all, /changelog refresh)" },
-	{ name: "hotkeys", description: "Open keyboard shortcuts" },
-	{ name: "terminal", description: "Toggle docked terminal" },
-	{ name: "fork", description: "Open fork flow, /fork <query> pre-fills message search" },
-	{ name: "tree", description: "Open full session tree across branches, /tree <query> pre-fills search" },
-	{ name: "login", description: "No arg opens model picker auth actions; /login <provider> opens provider login guidance/setup" },
-	{ name: "logout", description: "No arg opens model picker auth actions; /logout <provider> clears auth.json credentials" },
-	{ name: "new", description: "Start fresh session tab" },
-	{ name: "compact", description: "Manually compact context, /compact <instructions> optional" },
-	{ name: "resume", description: "Open session browser, /resume <query> pre-fills search" },
-	{ name: "reload", description: "Reload runtime (bridge restart + state/models/commands refresh)" },
-	{ name: "quit", description: "Quit Desktop app" },
-];
 
 const MODEL_PICKER_AUTH_CACHE_MS = 15_000;
 const MODEL_PICKER_CATALOG_CACHE_MS = 60_000;
@@ -1074,8 +1011,8 @@ export class ChatView {
 	}
 
 	private normalizeRuntimeSlashCommand(raw: Record<string, unknown>): RuntimeSlashCommand | null {
-		const source = normalizeText(raw.source).toLowerCase();
-		if (source !== "extension" && source !== "prompt" && source !== "skill") return null;
+		const rawSource = normalizeText(raw.source).toLowerCase();
+		const source = normalizeRuntimeSlashCommandSource(rawSource);
 		const name = normalizeText(raw.name).replace(/^\/+/, "").trim().toLowerCase();
 		if (!name) return null;
 		const description = withRuntimeCommandUsageHint(name, normalizeText(raw.description) || `Run /${name}`);
@@ -1083,6 +1020,7 @@ export class ChatView {
 			name,
 			description,
 			source,
+			rawSource,
 		};
 	}
 
@@ -1098,7 +1036,8 @@ export class ChatView {
 			for (const raw of runtimeCommands as Array<Record<string, unknown>>) {
 				const parsed = this.normalizeRuntimeSlashCommand(raw);
 				if (!parsed) continue;
-				const key = `${parsed.source}:${parsed.name}`;
+				const sourceKey = parsed.source === "other" ? parsed.rawSource || "other" : parsed.source;
+				const key = `${sourceKey}:${parsed.name}`;
 				if (seen.has(key)) continue;
 				seen.add(key);
 				normalized.push(parsed);
@@ -1107,6 +1046,7 @@ export class ChatView {
 				extension: 0,
 				prompt: 1,
 				skill: 2,
+				other: 3,
 			};
 			normalized.sort((a, b) => {
 				const sourceDiff = sourceOrder[a.source] - sourceOrder[b.source];
@@ -1133,8 +1073,10 @@ export class ChatView {
 			case "prompt":
 				return "Prompts";
 			case "skill":
-			default:
 				return "Skills";
+			case "other":
+			default:
+				return "Commands";
 		}
 	}
 
@@ -1151,7 +1093,7 @@ export class ChatView {
 		const runtimeItems: SlashPaletteItem[] = this.slashRuntimeCommands
 			.filter((command) => !builtinNames.has(command.name))
 			.map((command) => ({
-				id: `${command.source}:${command.name}`,
+				id: `${command.rawSource || command.source}:${command.name}`,
 				section: this.slashSectionForSource(command.source),
 				label: `/${command.name}`,
 				hint: command.description,
@@ -1556,7 +1498,15 @@ export class ChatView {
 			return;
 		}
 		if (parsed) {
-			this.pushNotice(`Unknown slash command: /${parsed.commandName}`, "error");
+			const adhocRuntimeItem: SlashPaletteItem = {
+				id: `adhoc:${parsed.commandName}`,
+				section: "Commands",
+				label: `/${parsed.commandName}`,
+				hint: "Run runtime slash command",
+				commandName: parsed.commandName,
+				source: "other",
+			};
+			await this.runSlashCommand(parsed.commandText, adhocRuntimeItem, parsed.args);
 			return;
 		}
 		this.pushNotice("Select a slash command from the menu", "info");
@@ -1587,11 +1537,10 @@ export class ChatView {
 
 	private async executeRuntimeSlashCommand(
 		commandText: string,
-		source: SlashCommandSource,
+		source: Exclude<SlashCommandSource, "builtin">,
 		commandName: string,
 		args: string,
 	): Promise<void> {
-		if (source === "builtin") return;
 		if (source === "extension" && this.onOpenExtensionConfig) {
 			const normalizedName = commandName.trim().toLowerCase();
 			const normalizedArgs = args.trim().toLowerCase();
