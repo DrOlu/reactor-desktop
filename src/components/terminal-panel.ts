@@ -41,6 +41,20 @@ function normalizeText(value: unknown): string {
 	}
 }
 
+function toUint8Array(value: unknown): Uint8Array | null {
+	if (value instanceof Uint8Array) return value;
+	if (Array.isArray(value) && value.every((item) => typeof item === "number")) {
+		return Uint8Array.from(value);
+	}
+	if (value && typeof value === "object") {
+		const candidate = (value as { data?: unknown }).data;
+		if (Array.isArray(candidate) && candidate.every((item) => typeof item === "number")) {
+			return Uint8Array.from(candidate);
+		}
+	}
+	return null;
+}
+
 function shellProfilesForPlatform(): ShellProfile[] {
 	const platform = navigator.platform.toLowerCase();
 	if (platform.includes("win")) {
@@ -168,7 +182,7 @@ export class TerminalPanel {
 			this.fitAddon = new FitAddon();
 			this.xterm = new Terminal({
 				cursorBlink: true,
-				convertEol: false,
+				convertEol: true,
 				scrollback: 6000,
 				fontSize: 12,
 				lineHeight: 1.35,
@@ -382,13 +396,16 @@ export class TerminalPanel {
 		this.scrollTerminalToBottom();
 	}
 
-	private decodeOutputChunk(payload: string | Uint8Array, decoder: TextDecoder | null): string {
+	private decodeOutputChunk(payload: unknown, decoder: TextDecoder | null): string {
 		if (typeof payload === "string") return payload;
-		if (!(payload instanceof Uint8Array)) return normalizeText(payload);
-		if (!decoder) {
-			return new TextDecoder().decode(payload);
+		const bytes = toUint8Array(payload);
+		if (bytes) {
+			if (!decoder) {
+				return new TextDecoder().decode(bytes);
+			}
+			return decoder.decode(bytes, { stream: true });
 		}
-		return decoder.decode(payload, { stream: true });
+		return normalizeText(payload);
 	}
 
 	private writeStdOut(text: string): void {
@@ -634,7 +651,7 @@ export class TerminalPanel {
 			const stdoutDecoder = outputRaw ? new TextDecoder() : null;
 			const stderrDecoder = outputRaw ? new TextDecoder() : null;
 
-			const onStdout = (payload: string | Uint8Array) => {
+			const onStdout = (payload: unknown) => {
 				const text = outputRaw ? this.decodeOutputChunk(payload, stdoutDecoder) : normalizeText(payload);
 				if (!text) return;
 				stdout += text;
@@ -643,7 +660,7 @@ export class TerminalPanel {
 					else this.writeStdOut(text);
 				}
 			};
-			const onStderr = (payload: string | Uint8Array) => {
+			const onStderr = (payload: unknown) => {
 				const text = outputRaw ? this.decodeOutputChunk(payload, stderrDecoder) : normalizeText(payload);
 				if (!text) return;
 				stderr += text;
