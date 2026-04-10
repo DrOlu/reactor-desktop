@@ -26,7 +26,6 @@ import {
 } from "../commands/slash-command-runtime.js";
 import {
 	formatModelDisplayName,
-	formatProviderDisplayName,
 	parseListModelsCatalog,
 	type ModelOption,
 } from "../models/model-options.js";
@@ -67,6 +66,7 @@ import {
 	handleCompactionAndRetryEvent,
 	handleMessageStreamEvent,
 } from "./chat-view/event-stream-handlers.js";
+import { handleRuntimeStatusEvent } from "./chat-view/event-runtime-status-handlers.js";
 import {
 	createAndCheckoutBranchAction,
 	fetchGitRemotesAction,
@@ -81,6 +81,21 @@ import {
 	mergeStreamingText as mergeStreamingTextValue,
 } from "./chat-view/message-content-utils.js";
 import { renderGitRepoControlView } from "./chat-view/git-repo-control-view.js";
+import {
+	createDropSignature,
+	extractFilePathsFromDropPayload as extractFilePathsFromDropPayloadValue,
+	fileNameFromPath as fileNameFromPathValue,
+	isImageFile as isImageFileValue,
+	isImageName as isImageNameValue,
+	mimeFromFileName as mimeFromFileNameValue,
+	toBase64Bytes,
+} from "./chat-view/image-file-utils.js";
+import { mapAvailableModelsFromRpc } from "./chat-view/models-load-utils.js";
+import {
+	computeSessionStatsFallback,
+	computeSessionStatsFromRaw,
+} from "./chat-view/session-stats-refresh.js";
+import { sendMessageFlow } from "./chat-view/send-message-flow.js";
 import { deriveLatestAssistantContextTokens as deriveLatestAssistantContextTokensFromMessages } from "./chat-view/session-stats-utils.js";
 import {
 	renderAssistantMessageRow,
@@ -1685,38 +1700,7 @@ export class ChatView {
 				push?.(`chat:loadModels stale instance=${requestInstanceId} active=${rpcBridge.getInstanceId()}`);
 				return;
 			}
-			const mapped: ModelOption[] = [];
-			const seen = new Set<string>();
-			for (const m of models) {
-				const provider = pickString(m, ["provider", "providerId", "provider_id", "vendor", "source.provider"]) ?? "";
-				const id = pickString(m, ["id", "modelId", "model_id", "model", "target.id", "target.modelId"]) ?? "";
-				if (!provider || !id) continue;
-				const key = `${provider}::${id}`;
-				if (seen.has(key)) continue;
-				seen.add(key);
-				const contextWindow = pickNumber(m, [
-					"contextWindow",
-					"context_window",
-					"maxInputTokens",
-					"max_input_tokens",
-					"limits.contextWindow",
-					"limits.context_window",
-				]);
-				mapped.push({
-					provider,
-					id,
-					contextWindow: typeof contextWindow === "number" ? contextWindow : undefined,
-					reasoning: Boolean((m as Record<string, unknown>).reasoning),
-					label: `${provider}/${id}`,
-				});
-			}
-			mapped.sort((a, b) => {
-				const providerCompare = formatProviderDisplayName(a.provider).localeCompare(formatProviderDisplayName(b.provider), undefined, {
-					sensitivity: "base",
-				});
-				if (providerCompare !== 0) return providerCompare;
-				return formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" });
-			});
+			const mapped = mapAvailableModelsFromRpc(models);
 			this.availableModels = mapped;
 			this.recomputeProviderAuthConfigured();
 			this.lastModelLoadError = null;
@@ -1916,103 +1900,25 @@ export class ChatView {
 		if (this.refreshingSessionStats) return;
 		if (!force && Date.now() - this.sessionStats.updatedAt < 1800) return;
 		this.refreshingSessionStats = true;
+		const stateMessageCount = this.state?.messageCount ?? 0;
+		const statePendingCount = this.state?.pendingMessageCount ?? 0;
 		try {
 			const raw = (await rpcBridge.getSessionStats()) as Record<string, unknown>;
-			const lifetimeTokens = pickNumber(raw, [
-				"totalTokens",
-				"tokens.total",
-				"tokens",
-				"total_tokens",
-				"usage.totalTokens",
-				"usage.tokens",
-				"usage.tokens.total",
-				"session.totalTokens",
-			]);
-			const contextUsageRecord =
-				raw.contextUsage && typeof raw.contextUsage === "object" ? (raw.contextUsage as Record<string, unknown>) : null;
-			const contextUsageHasTokensKey = Boolean(contextUsageRecord && Object.prototype.hasOwnProperty.call(contextUsageRecord, "tokens"));
-			const contextUsageHasPercentKey = Boolean(contextUsageRecord && Object.prototype.hasOwnProperty.call(contextUsageRecord, "percent"));
-			const contextUsageTokensExplicitNull = contextUsageHasTokensKey && contextUsageRecord?.tokens === null;
-			const contextUsagePercentExplicitNull = contextUsageHasPercentKey && contextUsageRecord?.percent === null;
-			const contextTokensFromStats = pickNumber(raw, [
-				"contextTokens",
-				"context_tokens",
-				"context.tokens",
-				"contextUsage.tokens",
-				"usage.contextTokens",
-				"usage.context_tokens",
-				"usage.tokens.context",
-				"session.contextTokens",
-			]);
-			const costUsd = pickNumber(raw, [
-				"costUsd",
-				"estimatedCostUsd",
-				"cost.total",
-				"usage.cost.total",
-				"cost",
-			]);
-			const stateMessageCount = this.state?.messageCount ?? 0;
-			const statePendingCount = this.state?.pendingMessageCount ?? 0;
-			const messageCount =
-				stateMessageCount ||
-				Math.round(
-					pickNumber(raw, ["messageCount", "messages", "totalMessages", "usage.messageCount", "session.messageCount"]) ?? 0,
-				);
-			const pendingCount =
-				statePendingCount || Math.round(pickNumber(raw, ["pendingCount", "pendingMessages", "usage.pendingCount"]) ?? 0);
-			const contextWindow = this.resolveContextWindow(raw);
-			const rawUsageRatio = this.normalizeUsageRatio(
-				pickNumber(raw, [
-					"usageRatio",
-					"usage.ratio",
-					"tokenUsageRatio",
-					"usagePercent",
-					"usage.percent",
-					"contextUsage.percent",
-					"context.percent",
-					"contextUsagePercent",
-					"context_usage.percent",
-					"context_usage_percent",
-				]),
-			);
-			const contextUsageExplicitlyUnknown =
-				(contextUsageTokensExplicitNull || contextUsagePercentExplicitNull) &&
-				contextTokensFromStats === null &&
-				rawUsageRatio === null;
-			const contextTokens = contextTokensFromStats ?? (contextUsageExplicitlyUnknown ? null : this.lastAssistantContextTokens);
-			const usageRatio =
-				rawUsageRatio ??
-				(contextTokens !== null && contextWindow && contextWindow > 0
-					? Math.min(1, Math.max(0, contextTokens / contextWindow))
-					: null);
-			const normalizedContextTokens =
-				contextTokens ??
-				(usageRatio !== null && contextWindow && contextWindow > 0 ? usageRatio * contextWindow : null);
-
-			this.sessionStats = {
-				tokens: normalizedContextTokens,
-				lifetimeTokens,
-				costUsd,
-				messageCount,
-				pendingCount,
-				contextWindow,
-				usageRatio,
-				updatedAt: Date.now(),
-			};
+			this.sessionStats = computeSessionStatsFromRaw({
+				raw,
+				stateMessageCount,
+				statePendingCount,
+				lastAssistantContextTokens: this.lastAssistantContextTokens,
+				resolveContextWindow: (inputRaw) => this.resolveContextWindow(inputRaw),
+				normalizeUsageRatio: (value) => this.normalizeUsageRatio(value),
+			});
 		} catch {
-			const contextWindow = this.resolveContextWindow() ?? this.sessionStats.contextWindow;
-			const usageRatio =
-				this.sessionStats.tokens !== null && contextWindow && contextWindow > 0
-					? Math.min(1, Math.max(0, this.sessionStats.tokens / contextWindow))
-					: this.sessionStats.usageRatio;
-			this.sessionStats = {
-				...this.sessionStats,
-				messageCount: this.state?.messageCount ?? this.sessionStats.messageCount,
-				pendingCount: this.state?.pendingMessageCount ?? this.sessionStats.pendingCount,
-				contextWindow,
-				usageRatio,
-				updatedAt: Date.now(),
-			};
+			this.sessionStats = computeSessionStatsFallback({
+				stateMessageCount,
+				statePendingCount,
+				previous: this.sessionStats,
+				resolveContextWindow: (inputRaw) => this.resolveContextWindow(inputRaw),
+			});
 		} finally {
 			this.refreshingSessionStats = false;
 			this.render();
@@ -2589,120 +2495,89 @@ export class ChatView {
 			return;
 		}
 
-		switch (type) {
-			case "agent_start": {
-				this.pendingDeliveryMode = "steer";
-				this.runHasAssistantText = false;
-				this.runSawToolActivity = false;
-				this.keepWorkflowExpandedUntilAssistantText = true;
-				this.collapsedAutoWorkflowIds.clear();
-				if (this.state) {
-					this.state = { ...this.state, isStreaming: true };
-					this.onStateChange?.(this.state);
-				}
-				this.autoFollowChat = true;
-				this.onRunStateChange?.(true);
-				this.scheduleStreamingUiReconcile(2400);
-				this.render();
-				this.scrollToBottom();
-				break;
-			}
-
-			case "agent_end": {
-				this.cancelStreamingUiReconcile();
-				if (this.state) {
-					this.state = { ...this.state, isStreaming: false };
-					this.onStateChange?.(this.state);
-				}
-				const last = this.messages[this.messages.length - 1];
-				if (last && last.role === "assistant") {
-					last.isStreaming = false;
-					last.isThinkingStreaming = false;
-				}
-				this.retryStatus = "";
-				const runError = this.extractRuntimeErrorMessage(event);
-				if (runError && !(last?.role === "assistant" && last.errorText)) {
-					this.pushRuntimeNotice(`Run failed: ${truncate(runError, 180)}`, "error", 2600);
-				}
-				this.runHasAssistantText = false;
-				this.runSawToolActivity = false;
-				this.keepWorkflowExpandedUntilAssistantText = false;
-				this.onRunStateChange?.(false);
-				rpcBridge
-					.getState()
-					.then((s) => {
-						this.state = s;
-						this.syncComposerQueueFromState(s);
-						this.pendingDeliveryMode = s.isStreaming ? "steer" : "prompt";
-						this.onStateChange?.(s);
-						void this.refreshSessionStats(true);
-						void this.refreshGitSummary(true);
-						this.render();
-					})
-					.catch(() => {
-						/* ignore */
-					});
-				this.render();
-				break;
-			}
-
-			case "error": {
-				const errorMessage = this.extractRuntimeErrorMessage(event) || "Unknown runtime error";
-				const source = pickString(event, ["source", "phase", "stage", "provider", "code"]);
-				if (source === "stderr" || source === "stdout_text") {
-					const line = /^error\b[:\s-]*/i.test(errorMessage) ? errorMessage : `Error: ${errorMessage}`;
-					this.pushRuntimeNotice(truncate(line, 220), "error", 2600);
-				} else {
-					const prefix = source ? `Runtime error (${source})` : "Runtime error";
-					this.pushRuntimeNotice(`${prefix}: ${truncate(errorMessage, 180)}`, "error", 2600);
-				}
-				break;
-			}
-
-			case "extension_error": {
-				const error = this.extractRuntimeErrorMessage(event) || "Unknown extension error";
-				const extensionPath = pickString(event, ["extensionPath", "extension"]);
-				const extensionLabel = this.extensionLabelFromPath(extensionPath);
-				const source = pickString(event, ["event", "source", "callback", "method", "provider"]);
-				const prefix = source ? `Extension error (${extensionLabel}:${source})` : `Extension error (${extensionLabel})`;
-				this.pushRuntimeNotice(`${prefix}: ${truncate(error, 180)}`, "error", 2600);
-				this.maybePushExtensionCompatibilityHint(event, error);
-				break;
-			}
-
-			case "rpc_connected":
-				this.isConnected = true;
-				this.bindingStatusText = this.projectPath ? "Loading session…" : null;
-				if (this.disconnectNoticeTimer) {
+		if (
+			handleRuntimeStatusEvent(type, event, {
+				projectPath: this.projectPath,
+				isLoadingModels: () => this.loadingModels,
+				isRpcConnected: () => rpcBridge.isConnected,
+				getLastMessage: () => this.messages[this.messages.length - 1] ?? null,
+				setConnected: (connected) => {
+					this.isConnected = connected;
+				},
+				setBindingStatusText: (text) => {
+					this.bindingStatusText = text;
+				},
+				clearDisconnectNoticeTimer: () => {
+					if (!this.disconnectNoticeTimer) return;
 					clearTimeout(this.disconnectNoticeTimer);
 					this.disconnectNoticeTimer = null;
-				}
-				this.render();
-				if (this.projectPath) {
-					void this.refreshFromBackend();
-					if (!this.loadingModels) {
-						void this.loadAvailableModels();
-					}
-				}
-				break;
-
-			case "rpc_disconnected":
-				this.isConnected = false;
-				this.cancelStreamingUiReconcile();
-				this.bindingStatusText = this.projectPath ? "Reconnecting session…" : null;
-				this.modelLoadRequestSeq += 1;
-				this.loadingModels = false;
-				if (this.disconnectNoticeTimer) {
-					clearTimeout(this.disconnectNoticeTimer);
-				}
-				this.disconnectNoticeTimer = setTimeout(() => {
-					this.disconnectNoticeTimer = null;
-					if (!rpcBridge.isConnected) {
-						this.pushNotice("Disconnected from pi process", "error");
-						this.render();
-					}
-				}, 900);
-				break;
+				},
+				scheduleDisconnectNoticeTimer: (callback, delayMs) => {
+					this.disconnectNoticeTimer = setTimeout(() => {
+						this.disconnectNoticeTimer = null;
+						callback();
+					}, delayMs);
+				},
+				setLoadingModels: (loading) => {
+					this.loadingModels = loading;
+				},
+				bumpModelLoadRequestSeq: () => {
+					this.modelLoadRequestSeq += 1;
+				},
+				cancelStreamingUiReconcile: this.cancelStreamingUiReconcile.bind(this),
+				scheduleStreamingUiReconcile: this.scheduleStreamingUiReconcile.bind(this),
+				setPendingDeliveryMode: (mode) => {
+					this.pendingDeliveryMode = mode;
+				},
+				setRunFlags: ({ hasAssistantText, sawToolActivity, keepWorkflowExpanded }) => {
+					this.runHasAssistantText = hasAssistantText;
+					this.runSawToolActivity = sawToolActivity;
+					this.keepWorkflowExpandedUntilAssistantText = keepWorkflowExpanded;
+				},
+				clearCollapsedAutoWorkflowIds: () => this.collapsedAutoWorkflowIds.clear(),
+				setStateStreaming: (streaming) => {
+					if (!this.state) return;
+					this.state = { ...this.state, isStreaming: streaming };
+					this.onStateChange?.(this.state);
+				},
+				setAutoFollowChat: (next) => {
+					this.autoFollowChat = next;
+				},
+				onRunStateChange: (running) => {
+					this.onRunStateChange?.(running);
+				},
+				setRetryStatus: (status) => {
+					this.retryStatus = status;
+				},
+				pushRuntimeNotice: this.pushRuntimeNotice.bind(this),
+				pushNotice: this.pushNotice.bind(this),
+				extractRuntimeErrorMessage: this.extractRuntimeErrorMessage.bind(this),
+				truncate,
+				extensionLabelFromPath: this.extensionLabelFromPath.bind(this),
+				maybePushExtensionCompatibilityHint: this.maybePushExtensionCompatibilityHint.bind(this),
+				render: this.render.bind(this),
+				scrollToBottom: this.scrollToBottom.bind(this),
+				refreshFromBackend: this.refreshFromBackend.bind(this),
+				loadAvailableModels: this.loadAvailableModels.bind(this),
+				refreshStateAfterAgentEnd: () => {
+					rpcBridge
+						.getState()
+						.then((state) => {
+							this.state = state;
+							this.syncComposerQueueFromState(state);
+							this.pendingDeliveryMode = state.isStreaming ? "steer" : "prompt";
+							this.onStateChange?.(state);
+							void this.refreshSessionStats(true);
+							void this.refreshGitSummary(true);
+							this.render();
+						})
+						.catch(() => {
+							/* ignore */
+						});
+				},
+			})
+		) {
+			return;
 		}
 	}
 
@@ -2774,50 +2649,27 @@ export class ChatView {
 	}
 
 	private isImageName(name: string): boolean {
-		return /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif)$/i.test(name.toLowerCase());
+		return isImageNameValue(name);
 	}
 
 	private mimeFromFileName(name: string): string {
-		const lower = name.toLowerCase();
-		if (lower.endsWith(".png")) return "image/png";
-		if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
-		if (lower.endsWith(".gif")) return "image/gif";
-		if (lower.endsWith(".webp")) return "image/webp";
-		if (lower.endsWith(".bmp")) return "image/bmp";
-		if (lower.endsWith(".svg")) return "image/svg+xml";
-		if (lower.endsWith(".avif")) return "image/avif";
-		if (lower.endsWith(".heic")) return "image/heic";
-		if (lower.endsWith(".heif")) return "image/heif";
-		return "image/png";
+		return mimeFromFileNameValue(name);
 	}
 
 	private toBase64(bytes: Uint8Array): string {
-		let binary = "";
-		const chunkSize = 0x8000;
-		for (let i = 0; i < bytes.length; i += chunkSize) {
-			const chunk = bytes.subarray(i, i + chunkSize);
-			binary += String.fromCharCode(...chunk);
-		}
-		return btoa(binary);
+		return toBase64Bytes(bytes);
 	}
 
 	private isImageFile(file: File): boolean {
-		if (file.type.startsWith("image/")) return true;
-		return this.isImageName(file.name || "");
+		return isImageFileValue(file);
 	}
 
 	private fileNameFromPath(path: string): string {
-		const normalized = path.replace(/\\/g, "/").trim();
-		const parts = normalized.split("/");
-		return parts[parts.length - 1] || normalized;
+		return fileNameFromPathValue(path);
 	}
 
 	private shouldIgnoreDuplicateDrop(names: string[]): boolean {
-		const signature = names
-			.map((name) => name.trim().toLowerCase())
-			.filter(Boolean)
-			.sort()
-			.join("|");
+		const signature = createDropSignature(names);
 		if (!signature) return false;
 		const now = Date.now();
 		if (this.lastDropSignature === signature && now - this.lastDropAt < 1200) {
@@ -2829,30 +2681,7 @@ export class ChatView {
 	}
 
 	private extractFilePathsFromDropPayload(raw: string): string[] {
-		const lines = raw
-			.split(/\r?\n/)
-			.map((line) => line.trim())
-			.filter((line) => line && !line.startsWith("#"));
-		const paths: string[] = [];
-		for (const line of lines) {
-			if (line.startsWith("file://")) {
-				try {
-					const url = new URL(line);
-					let path = decodeURIComponent(url.pathname || "");
-					if (/^\/[A-Za-z]:\//.test(path)) {
-						path = path.slice(1);
-					}
-					if (path) paths.push(path);
-					continue;
-				} catch {
-					// ignore invalid url
-				}
-			}
-			if (line.startsWith("/") || /^[A-Za-z]:[\\/]/.test(line)) {
-				paths.push(line);
-			}
-		}
-		return paths;
+		return extractFilePathsFromDropPayloadValue(raw);
 	}
 
 	private async prepareImagesFromPaths(paths: string[]): Promise<void> {
@@ -3226,88 +3055,35 @@ export class ChatView {
 	}
 
 	async sendMessage(mode: DeliveryMode = this.pendingDeliveryMode): Promise<void> {
-		if (this.isComposerInteractionLocked()) {
-			this.pushNotice(this.bindingStatusText || "Session is still loading. Try again in a moment.", "info");
-			return;
-		}
-		const promptText = this.inputText.trim();
-		const selectedSkillCommand = this.selectedSkillDraft?.commandText?.trim() ?? "";
-		const text = selectedSkillCommand
-			? (promptText ? `${selectedSkillCommand}\n\n${promptText}` : selectedSkillCommand)
-			: promptText;
-		const images = [...this.pendingImages];
-		if (!selectedSkillCommand && images.length === 0 && this.slashQueryFromInput() !== null) {
-			await this.executeSlashCommandFromComposer();
-			return;
-		}
-		if (!text && images.length === 0) return;
-		if (text) this.rememberComposerHistoryEntry(text);
-
-		let streaming = this.currentIsStreaming();
-		if (streaming) {
-			try {
-				const backendState = await rpcBridge.getState();
-				const backendStreaming = Boolean(backendState.isStreaming);
-				this.state = backendState;
-				this.syncComposerQueueFromState(backendState);
-				this.onStateChange?.(backendState);
-				if (!backendStreaming) {
-					streaming = false;
-					this.clearStreamingUiState();
-					this.render();
-				}
-			} catch {
-				// ignore pre-flight run-state check failures
-			}
-		}
-
-		let actualMode: DeliveryMode = mode;
-		if (!streaming) {
-			actualMode = "prompt";
-		}
-
-		let queuedMessageId: string | null = null;
-		if (actualMode === "followUp") {
-			queuedMessageId = this.enqueueComposerQueueMessage(text, images);
-			this.pushNotice("Queued message", "info");
-		} else {
-			this.pushUserEcho(text, actualMode, images);
-		}
-		this.clearComposer();
-		this.sendingPrompt = true;
-		this.render();
-
-		try {
-			const rpcImages = this.toRpcImages(images);
-			if (actualMode === "prompt") {
-				await rpcBridge.prompt(text, { images: rpcImages });
-			} else if (actualMode === "steer") {
-				await rpcBridge.steer(text, rpcImages);
-			} else {
-				await rpcBridge.followUp(text, rpcImages);
-				void rpcBridge
-					.getState()
-					.then((state) => {
-						this.state = state;
-						this.syncComposerQueueFromState(state);
-						this.onStateChange?.(state);
-						this.render();
-					})
-					.catch(() => {
-						/* ignore */
-					});
-			}
-			this.onPromptSubmitted?.();
-		} catch (err) {
-			if (queuedMessageId) {
-				this.removeComposerQueueMessage(queuedMessageId);
-			}
-			console.error("Failed to send message:", err);
-			this.pushNotice(err instanceof Error ? err.message : "Failed to send message", "error");
-		} finally {
-			this.sendingPrompt = false;
-			this.render();
-		}
+		await sendMessageFlow({
+			mode,
+			bindingStatusText: this.bindingStatusText,
+			isComposerInteractionLocked: this.isComposerInteractionLocked.bind(this),
+			inputText: this.inputText,
+			selectedSkillCommandText: this.selectedSkillDraft?.commandText?.trim() ?? "",
+			pendingImages: [...this.pendingImages],
+			slashQueryFromInput: this.slashQueryFromInput.bind(this),
+			executeSlashCommandFromComposer: this.executeSlashCommandFromComposer.bind(this),
+			rememberComposerHistoryEntry: this.rememberComposerHistoryEntry.bind(this),
+			currentIsStreaming: this.currentIsStreaming.bind(this),
+			applyBackendState: (state) => {
+				this.state = state;
+				this.syncComposerQueueFromState(state);
+				this.onStateChange?.(state);
+			},
+			clearStreamingUiState: this.clearStreamingUiState.bind(this),
+			render: this.render.bind(this),
+			enqueueComposerQueueMessage: this.enqueueComposerQueueMessage.bind(this),
+			pushNotice: this.pushNotice.bind(this),
+			pushUserEcho: this.pushUserEcho.bind(this),
+			clearComposer: this.clearComposer.bind(this),
+			setSendingPrompt: (value) => {
+				this.sendingPrompt = value;
+			},
+			toRpcImages: this.toRpcImages.bind(this),
+			removeComposerQueueMessage: this.removeComposerQueueMessage.bind(this),
+			onPromptSubmitted: this.onPromptSubmitted ?? undefined,
+		});
 	}
 
 	private async copyMessage(msg: UiMessage): Promise<void> {
