@@ -7,7 +7,6 @@ import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
 import { html, nothing, render, type TemplateResult } from "lit";
 import {
 	type PiAuthProviderStatus,
-	type PiOAuthProviderInfo,
 	type RpcImageInput,
 	type RpcSessionState,
 	type ThinkingLevel,
@@ -32,6 +31,19 @@ import {
 	parseListModelsCatalog,
 	type ModelOption,
 } from "../models/model-options.js";
+import { resolveModelCandidateFromArg, resolveProviderHintFromModelArg } from "../models/model-selection.js";
+import {
+	DEFAULT_OAUTH_PROVIDER_IDS,
+	displayProviderLabel as displayProviderLabelFromCatalog,
+	isOAuthProviderId as isOAuthProviderIdInCatalog,
+	normalizeAuthProviderArg as normalizeAuthProviderArgValue,
+	normalizeConfiguredProviderAuth as normalizeConfiguredProviderAuthEntries,
+	normalizeOAuthProviderCatalog as normalizeOAuthProviderCatalogEntries,
+	normalizeProviderKey as normalizeProviderKeyValue,
+	resolveProviderSetupCommand as resolveProviderSetupCommandForProvider,
+	unwrapQuotedValue as unwrapQuotedArgValue,
+	type OAuthProviderCatalogEntry,
+} from "../auth/provider-auth.js";
 
 type DeliveryMode = "prompt" | "steer" | "followUp";
 
@@ -196,23 +208,6 @@ interface CompactionCycleState {
 
 const MODEL_PICKER_AUTH_CACHE_MS = 15_000;
 const MODEL_PICKER_CATALOG_CACHE_MS = 60_000;
-
-// Mirrors built-in OAuth providers from @mariozechner/pi-ai/oauth.
-const DEFAULT_OAUTH_PROVIDER_IDS = [
-	"anthropic",
-	"github-copilot",
-	"google-gemini-cli",
-	"google-antigravity",
-	"openai-codex",
-] as const;
-const DEFAULT_OAUTH_PROVIDER_SET = new Set<string>(DEFAULT_OAUTH_PROVIDER_IDS);
-const DEFAULT_OAUTH_PROVIDER_NAME_BY_ID = new Map<string, string>([
-	["anthropic", "Anthropic"],
-	["github-copilot", "GitHub Copilot"],
-	["google-gemini-cli", "Google Gemini CLI"],
-	["google-antigravity", "Google Antigravity"],
-	["openai-codex", "OpenAI Codex"],
-]);
 
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
@@ -440,7 +435,7 @@ export class ChatView {
 	private providerAuthForcedLoggedOut = new Set<string>();
 	private oauthProviderCatalogLoadedAt = 0;
 	private oauthProviderCatalogLoading = false;
-	private oauthProviderCatalog = new Map<string, { name: string; source: "built_in" | "package" }>();
+	private oauthProviderCatalog = new Map<string, OAuthProviderCatalogEntry>();
 	private lastBackendRefreshError: string | null = null;
 	private lastModelLoadError: string | null = null;
 	private lastBackendSessionFile: string | null = null;
@@ -886,37 +881,23 @@ export class ChatView {
 	}
 
 	private unwrapQuotedArg(value: string): string {
-		const trimmed = value.trim();
-		if (!trimmed) return "";
-		if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-			return trimmed.slice(1, -1).trim();
-		}
-		return trimmed;
+		return unwrapQuotedArgValue(value);
 	}
 
 	private normalizedAuthProviderArg(rawArgs: string): string {
-		const provider = this.unwrapQuotedArg(rawArgs).toLowerCase();
-		if (!provider) return "";
-		if (!/^[a-z0-9._-]+$/.test(provider)) return "";
-		return provider;
+		return normalizeAuthProviderArgValue(rawArgs);
 	}
 
 	private providerKey(provider: string): string {
-		return normalizeText(provider).toLowerCase();
+		return normalizeProviderKeyValue(provider);
 	}
 
 	private isOAuthProviderId(provider: string): boolean {
-		const key = this.providerKey(provider);
-		return DEFAULT_OAUTH_PROVIDER_SET.has(key) || this.oauthProviderCatalog.has(key);
+		return isOAuthProviderIdInCatalog(provider, this.oauthProviderCatalog);
 	}
 
 	private displayProviderLabel(provider: string): string {
-		const key = this.providerKey(provider);
-		const catalogName = this.oauthProviderCatalog.get(key)?.name;
-		if (catalogName) return catalogName;
-		const defaultName = DEFAULT_OAUTH_PROVIDER_NAME_BY_ID.get(key);
-		if (defaultName) return defaultName;
-		return formatProviderDisplayName(key);
+		return displayProviderLabelFromCatalog(provider, this.oauthProviderCatalog);
 	}
 
 	private async loadOAuthProviderCatalog(force = false): Promise<void> {
@@ -926,38 +907,12 @@ export class ChatView {
 		this.oauthProviderCatalogLoading = true;
 		try {
 			const raw = await rpcBridge.getPiOAuthProviders();
-			const next = new Map<string, { name: string; source: "built_in" | "package" }>();
-			const entries = Array.isArray(raw) ? raw : [];
-			for (const entry of entries) {
-				const providerId = this.providerKey(typeof entry?.id === "string" ? entry.id : "");
-				if (!providerId) continue;
-				const nameRaw = typeof entry?.name === "string" ? entry.name.trim() : "";
-				const sourceRaw = entry?.source;
-				next.set(providerId, {
-					name: nameRaw || this.displayProviderLabel(providerId),
-					source: sourceRaw === "package" ? "package" : "built_in",
-				});
-			}
-			for (const providerId of DEFAULT_OAUTH_PROVIDER_IDS) {
-				if (next.has(providerId)) continue;
-				next.set(providerId, {
-					name: DEFAULT_OAUTH_PROVIDER_NAME_BY_ID.get(providerId) ?? formatProviderDisplayName(providerId),
-					source: "built_in",
-				});
-			}
-			this.oauthProviderCatalog = next;
+			this.oauthProviderCatalog = normalizeOAuthProviderCatalogEntries(raw);
 			this.oauthProviderCatalogLoadedAt = Date.now();
 		} catch (err) {
 			console.error("Failed to load OAuth provider catalog:", err);
 			if (this.oauthProviderCatalogLoadedAt === 0) {
-				const defaults = new Map<string, { name: string; source: "built_in" | "package" }>();
-				for (const providerId of DEFAULT_OAUTH_PROVIDER_IDS) {
-					defaults.set(providerId, {
-						name: DEFAULT_OAUTH_PROVIDER_NAME_BY_ID.get(providerId) ?? formatProviderDisplayName(providerId),
-						source: "built_in",
-					});
-				}
-				this.oauthProviderCatalog = defaults;
+				this.oauthProviderCatalog = normalizeOAuthProviderCatalogEntries([]);
 			}
 		} finally {
 			this.oauthProviderCatalogLoading = false;
@@ -981,21 +936,7 @@ export class ChatView {
 		this.loadingProviderAuth = true;
 		try {
 			const raw = await rpcBridge.getPiAuthStatus();
-			const next = new Map<string, Pick<PiAuthProviderStatus, "source" | "kind">>();
-			const providers = Array.isArray(raw?.configured_providers) ? raw.configured_providers : [];
-			for (const entry of providers) {
-				const provider = this.providerKey(typeof entry?.provider === "string" ? entry.provider : "");
-				if (!provider) continue;
-				const source = entry?.source;
-				const kind = entry?.kind;
-				next.set(provider, {
-					source:
-						source === "environment" || source === "auth_file_api_key" || source === "auth_file_oauth"
-							? source
-							: "auth_file_api_key",
-					kind: kind === "api_key" || kind === "oauth" || kind === "unknown" ? kind : "unknown",
-				});
-			}
+			const next = normalizeConfiguredProviderAuthEntries(raw?.configured_providers);
 			this.providerAuthById = next;
 			this.providerAuthLoadedAt = Date.now();
 			for (const provider of next.keys()) {
@@ -1038,29 +979,7 @@ export class ChatView {
 	}
 
 	private resolveProviderSetupCommand(provider: string): string | null {
-		const providerKey = this.providerKey(provider);
-		if (!providerKey) return null;
-		const providerTokens = providerKey.split(/[-_.]+/).filter((token) => token.length > 2);
-		let best: { name: string; score: number } | null = null;
-		for (const command of this.slashRuntimeCommands) {
-			if (command.source !== "extension") continue;
-			const name = normalizeText(command.name).toLowerCase().replace(/^\/+/, "");
-			if (!name) continue;
-			const description = normalizeText(command.description).toLowerCase();
-			const haystack = `${name} ${description}`;
-			const tokenHits = providerTokens.filter((token) => haystack.includes(token)).length;
-			const hasProviderMatch = haystack.includes(providerKey) || tokenHits > 0;
-			if (!hasProviderMatch) continue;
-			let score = 0;
-			if (haystack.includes(providerKey)) score += 8;
-			score += tokenHits * 3;
-			if (/\b(config|setup|settings|auth|login)\b/.test(haystack)) score += 2;
-			if (/config/.test(name)) score += 1;
-			if (!best || score > best.score) {
-				best = { name, score };
-			}
-		}
-		return best?.name ?? null;
+		return resolveProviderSetupCommandForProvider(provider, this.slashRuntimeCommands);
 	}
 
 	private async openProviderSetup(provider: string): Promise<boolean> {
@@ -1340,56 +1259,11 @@ export class ChatView {
 	}
 
 	private resolveProviderHintFromModelArg(rawArg: string): string | null {
-		const arg = rawArg.trim().replace(/^\/+/, "");
-		if (!arg) return null;
-
-		const byDelim = arg.includes("/") ? arg.split("/")[0] : arg.includes("::") ? arg.split("::")[0] : arg;
-		const token = byDelim.trim().toLowerCase();
-		if (!token) return null;
-
-		const providerPool = [...this.availableModels, ...this.modelCatalog];
-		const providers = [...new Set(providerPool.map((model) => model.provider))];
-		const exact = providers.find((provider) => provider.toLowerCase() === token);
-		if (exact) return exact;
-		const partial = providers.find((provider) => provider.toLowerCase().includes(token));
-		if (partial) return partial;
-
-		const fuzzy = providerPool.filter((model) => `${model.provider}/${model.id}`.toLowerCase().includes(token));
-		if (fuzzy.length > 0) {
-			const uniqueProviders = [...new Set(fuzzy.map((model) => model.provider))];
-			if (uniqueProviders.length === 1) return uniqueProviders[0];
-		}
-
-		return null;
+		return resolveProviderHintFromModelArg(rawArg, [...this.availableModels, ...this.modelCatalog]);
 	}
 
 	private resolveModelCandidateFromArg(rawArg: string): ModelOption | null {
-		const arg = rawArg.trim();
-		if (!arg) return null;
-		const normalizedArg = arg.replace(/^\/+/, "").trim();
-		const viaDoubleColon = normalizedArg.split("::");
-		if (viaDoubleColon.length === 2) {
-			const provider = viaDoubleColon[0]?.trim().toLowerCase();
-			const id = viaDoubleColon[1]?.trim().toLowerCase();
-			if (provider && id) {
-				return this.availableModels.find((model) => model.provider.toLowerCase() === provider && model.id.toLowerCase() === id) ?? null;
-			}
-		}
-		const slashIndex = normalizedArg.indexOf("/");
-		if (slashIndex > 0) {
-			const provider = normalizedArg.slice(0, slashIndex).trim().toLowerCase();
-			const id = normalizedArg.slice(slashIndex + 1).trim().toLowerCase();
-			if (provider && id) {
-				const exact = this.availableModels.find((model) => model.provider.toLowerCase() === provider && model.id.toLowerCase() === id);
-				if (exact) return exact;
-			}
-		}
-		const lower = normalizedArg.toLowerCase();
-		const exactById = this.availableModels.find((model) => model.id.toLowerCase() === lower);
-		if (exactById) return exactById;
-		const fuzzy = this.availableModels.filter((model) => `${model.provider}/${model.id}`.toLowerCase().includes(lower));
-		if (fuzzy.length === 1) return fuzzy[0];
-		return null;
+		return resolveModelCandidateFromArg(rawArg, this.availableModels);
 	}
 
 	private getSessionMessageBreakdown(): {
