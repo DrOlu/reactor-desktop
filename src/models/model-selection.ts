@@ -23,6 +23,15 @@ export function resolveProviderHintFromModelArg(rawArg: string, providerPool: Mo
 	return null;
 }
 
+export function resolvePreferredModelPickerProvider(rawPreferredProvider: string, providerPool: ModelOption[]): string {
+	const preferred = rawPreferredProvider.trim().toLowerCase();
+	if (!preferred) return "";
+	const exact = providerPool.find((model) => model.provider.toLowerCase() === preferred)?.provider;
+	if (exact) return exact;
+	const partial = providerPool.find((model) => model.provider.toLowerCase().includes(preferred))?.provider;
+	return partial ?? "";
+}
+
 export function resolveModelCandidateFromArg(rawArg: string, availableModels: ModelOption[]): ModelOption | null {
 	const arg = rawArg.trim();
 	if (!arg) return null;

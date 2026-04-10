@@ -39,7 +39,11 @@ import {
 	resolveModelPickerAuthHint,
 	resolveModelPickerProviderAuthActionState,
 } from "../models/model-picker-auth-ui.js";
-import { resolveModelCandidateFromArg, resolveProviderHintFromModelArg } from "../models/model-selection.js";
+import {
+	resolveModelCandidateFromArg,
+	resolvePreferredModelPickerProvider,
+	resolveProviderHintFromModelArg,
+} from "../models/model-selection.js";
 import {
 	displayProviderLabel as displayProviderLabelFromCatalog,
 	isOAuthProviderId as isOAuthProviderIdInCatalog,
@@ -659,16 +663,7 @@ export class ChatView {
 		this.onRunStateChange = cb;
 	}
 
-	setProjectPath(path: string | null): void {
-		if (this.projectPath === path) return;
-		const previous = this.projectPath;
-		this.projectPath = path;
-		const push = (window as typeof window & {
-			__PI_DESKTOP_PUSH_TRACE__?: (message: string) => void;
-		}).__PI_DESKTOP_PUSH_TRACE__;
-		push?.(`chat:setProjectPath ${previous ?? "-"} -> ${path ?? "-"}`);
-		this.gitMenuOpen = false;
-		this.welcomeProjectMenuOpen = false;
+	private resetSessionUiTransientState(): void {
 		this.modelPickerOpen = false;
 		this.selectedSkillDraft = null;
 		this.slashPaletteOpen = false;
@@ -682,8 +677,27 @@ export class ChatView {
 		this.collapsedAutoWorkflowIds.clear();
 		this.compactionCycle = null;
 		this.compactionInsertIndex = null;
-		this.keepWorkflowExpandedUntilAssistantText = false;
 		this.runningProviderAuthAction = null;
+		this.keepWorkflowExpandedUntilAssistantText = false;
+	}
+
+	private resetRunActivityState(): void {
+		this.runHasAssistantText = false;
+		this.runSawToolActivity = false;
+		this.clearWorkingStatusTimer(true);
+	}
+
+	setProjectPath(path: string | null): void {
+		if (this.projectPath === path) return;
+		const previous = this.projectPath;
+		this.projectPath = path;
+		const push = (window as typeof window & {
+			__PI_DESKTOP_PUSH_TRACE__?: (message: string) => void;
+		}).__PI_DESKTOP_PUSH_TRACE__;
+		push?.(`chat:setProjectPath ${previous ?? "-"} -> ${path ?? "-"}`);
+		this.gitMenuOpen = false;
+		this.welcomeProjectMenuOpen = false;
+		this.resetSessionUiTransientState();
 		this.modelCatalogLoadedAt = 0;
 		if (!path) {
 			this.bindingStatusText = null;
@@ -697,9 +711,7 @@ export class ChatView {
 			this.providerAuthConfigured.clear();
 			this.providerAuthForcedLoggedOut.clear();
 			this.providerAuthLoadedAt = 0;
-			this.runHasAssistantText = false;
-			this.runSawToolActivity = false;
-			this.clearWorkingStatusTimer(true);
+			this.resetRunActivityState();
 			void this.refreshWelcomeDashboard(true);
 		}
 		void this.refreshGitSummary(true);
@@ -716,25 +728,9 @@ export class ChatView {
 		this.lastBackendSessionFile = null;
 		this.lastBackendRefreshError = null;
 		this.pendingDeliveryMode = "prompt";
-		this.modelPickerOpen = false;
-		this.selectedSkillDraft = null;
-		this.slashPaletteOpen = false;
-		this.slashPaletteQuery = "";
-		this.slashPaletteIndex = 0;
-		this.slashCommandsUpdatedAt = 0;
-		this.slashRuntimeCommands = [];
-		this.expandedToolWorkflowIds.clear();
-		this.expandedToolGroupByWorkflowId.clear();
-		this.expandedWorkflowThinkingIds.clear();
-		this.collapsedAutoWorkflowIds.clear();
-		this.compactionCycle = null;
-		this.compactionInsertIndex = null;
-		this.runningProviderAuthAction = null;
+		this.resetSessionUiTransientState();
 		this.providerAuthForcedLoggedOut.clear();
-		this.runHasAssistantText = false;
-		this.runSawToolActivity = false;
-		this.keepWorkflowExpandedUntilAssistantText = false;
-		this.clearWorkingStatusTimer(true);
+		this.resetRunActivityState();
 		this.bindingStatusText = projectPath ? (statusText ?? "Loading session…") : null;
 		this.render();
 	}
@@ -743,19 +739,41 @@ export class ChatView {
 		return this.state;
 	}
 
+	private getComposerTextarea(): HTMLTextAreaElement | null {
+		return this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
+	}
+
+	private syncComposerTextarea(
+		text: string,
+		options: { maxHeight?: number; focus?: boolean; moveCaretToEnd?: boolean } = {},
+	): void {
+		const textarea = this.getComposerTextarea();
+		if (!textarea) return;
+		textarea.value = text;
+		textarea.style.height = "auto";
+		if (typeof options.maxHeight === "number" && options.maxHeight > 0) {
+			textarea.style.height = `${Math.min(textarea.scrollHeight, options.maxHeight)}px`;
+		}
+		if (options.moveCaretToEnd) {
+			const end = text.length;
+			textarea.setSelectionRange(end, end);
+		}
+		if (options.focus) textarea.focus();
+	}
+
+	private syncComposerTextareaDeferred(
+		text: string,
+		options: { maxHeight?: number; focus?: boolean; moveCaretToEnd?: boolean } = {},
+	): void {
+		requestAnimationFrame(() => this.syncComposerTextarea(text, options));
+	}
+
 	setInputText(text: string): void {
 		this.inputText = text;
 		this.resetComposerHistoryNavigation();
 		this.updateSlashPaletteStateFromInput();
 		this.render();
-		requestAnimationFrame(() => {
-			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-			if (!textarea) return;
-			textarea.value = text;
-			textarea.style.height = "auto";
-			textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
-			textarea.focus();
-		});
+		this.syncComposerTextareaDeferred(text, { maxHeight: 200, focus: true });
 	}
 
 	stageComposerCommand(commandText: string): void {
@@ -766,10 +784,7 @@ export class ChatView {
 			this.resetComposerHistoryNavigation();
 			this.updateSlashPaletteStateFromInput();
 			this.render();
-			requestAnimationFrame(() => {
-				const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-				textarea?.focus();
-			});
+			this.syncComposerTextareaDeferred(this.inputText, { focus: true });
 			return;
 		}
 		this.selectedSkillDraft = null;
@@ -777,14 +792,7 @@ export class ChatView {
 		this.resetComposerHistoryNavigation();
 		this.closeSlashPalette();
 		this.render();
-		requestAnimationFrame(() => {
-			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-			if (!textarea) return;
-			textarea.value = commandText;
-			textarea.style.height = "auto";
-			textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
-			textarea.focus();
-		});
+		this.syncComposerTextareaDeferred(commandText, { maxHeight: 200, focus: true });
 	}
 
 	private parseComposerSkillDraftFromCommand(commandText: string): ComposerSkillDraft | null {
@@ -814,10 +822,7 @@ export class ChatView {
 	private removeComposerSkillDraft(): void {
 		this.selectedSkillDraft = null;
 		this.render();
-		requestAnimationFrame(() => {
-			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-			textarea?.focus();
-		});
+		this.syncComposerTextareaDeferred(this.inputText, { focus: true });
 	}
 
 	private slashQueryFromInput(): string | null {
@@ -1264,16 +1269,10 @@ export class ChatView {
 
 	private openModelPicker(options: { preferredProvider?: string } = {}): void {
 		this.ensureModelPickerDataLoaded();
-		const preferred = normalizeText(options.preferredProvider).toLowerCase();
+		const providerPool = [...this.availableModels, ...this.modelCatalog];
+		const preferred = resolvePreferredModelPickerProvider(normalizeText(options.preferredProvider), providerPool);
 		if (preferred) {
-			const providerPool = [...this.availableModels, ...this.modelCatalog];
-			const exact = providerPool.find((model) => model.provider.toLowerCase() === preferred)?.provider;
-			if (exact) {
-				this.modelPickerActiveProvider = exact;
-			} else {
-				const partial = providerPool.find((model) => model.provider.toLowerCase().includes(preferred))?.provider;
-				if (partial) this.modelPickerActiveProvider = partial;
-			}
+			this.modelPickerActiveProvider = preferred;
 		}
 		if (!this.modelPickerActiveProvider) {
 			const currentProvider = normalizeText(this.state?.model?.provider);
@@ -1589,14 +1588,9 @@ export class ChatView {
 		const commandText = `/${item.commandName}${args ? ` ${args}` : ""}`;
 		if (this.inputText === commandText) return;
 		this.inputText = commandText;
-		requestAnimationFrame(() => {
-			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-			if (!textarea) return;
-			textarea.value = commandText;
-			textarea.style.height = "auto";
-			textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
-			const end = commandText.length;
-			textarea.setSelectionRange(end, end);
+		this.syncComposerTextareaDeferred(commandText, {
+			maxHeight: 220,
+			moveCaretToEnd: true,
 		});
 	}
 
@@ -4261,15 +4255,10 @@ export class ChatView {
 		this.inputText = text;
 		this.updateSlashPaletteStateFromInput();
 		this.render();
-		requestAnimationFrame(() => {
-			const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-			if (!textarea) return;
-			textarea.value = text;
-			textarea.style.height = "auto";
-			textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
-			const end = text.length;
-			textarea.setSelectionRange(end, end);
-			textarea.focus();
+		this.syncComposerTextareaDeferred(text, {
+			maxHeight: 220,
+			moveCaretToEnd: true,
+			focus: true,
 		});
 	}
 
@@ -4305,11 +4294,7 @@ export class ChatView {
 		this.resetComposerHistoryNavigation();
 		this.closeSlashPalette();
 		this.render();
-		const textarea = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-		if (textarea) {
-			textarea.value = "";
-			textarea.style.height = "auto";
-		}
+		this.syncComposerTextarea("", { maxHeight: 0 });
 	}
 
 	async sendMessage(mode: DeliveryMode = this.pendingDeliveryMode): Promise<void> {
@@ -7281,7 +7266,6 @@ export class ChatView {
 	}
 
 	focusInput(): void {
-		const ta = this.container.querySelector("#chat-input") as HTMLTextAreaElement | null;
-		ta?.focus();
+		this.getComposerTextarea()?.focus();
 	}
 }
