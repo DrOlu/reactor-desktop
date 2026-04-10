@@ -918,7 +918,7 @@ export class SettingsPanel {
 			this.refreshDesktopStatus(),
 			this.refreshCliStatus(),
 			this.refreshThemeCatalog(),
-			this.refreshAuthStatus(),
+			this.refreshAccountStatus(),
 			this.refreshCompatibilityStatus(),
 			this.refreshScopedModels(),
 		]);
@@ -956,6 +956,10 @@ export class SettingsPanel {
 			this.authLoading = false;
 			this.render();
 		}
+	}
+
+	private async refreshAccountStatus(): Promise<void> {
+		await this.refreshAuthStatus();
 	}
 
 	private async refreshDesktopStatus(): Promise<void> {
@@ -1881,61 +1885,67 @@ export class SettingsPanel {
 		hasProjectContext: boolean,
 		authProviders: PiAuthStatus["configured_providers"],
 	): TemplateResult {
-		if (!runtimeControlsEnabled) {
-			const runtimeMessage = hasProjectContext
-				? "Runtime is still starting for this project. Account diagnostics unlock when runtime is ready."
-				: "Open a project to inspect provider auth and runtime-linked account details.";
-			return html`
-				<div class="settings-view-grid">
-					<section class="settings-group settings-group-full">
-						<div class="settings-section">
-							<div class="settings-section-title">Account</div>
-							<div class="settings-desc">${runtimeMessage}</div>
-						</div>
-					</section>
-				</div>
-			`;
+		const runtimeMessage = hasProjectContext
+			? "Runtime is still starting for this project. Account diagnostics unlock when runtime is ready."
+			: "Open a project to inspect account diagnostics.";
+
+		const uniqueAuthProviders = new Map<string, PiAuthStatus["configured_providers"][number]>();
+		for (const entry of authProviders) {
+			const key = (entry?.provider ?? "").trim().toLowerCase();
+			if (!key) continue;
+			const existing = uniqueAuthProviders.get(key);
+			const score = entry.source === "environment" ? 2 : 1;
+			const existingScore = existing ? (existing.source === "environment" ? 2 : 1) : -1;
+			if (!existing || score >= existingScore) {
+				uniqueAuthProviders.set(key, entry);
+			}
 		}
+		const connectedProviders = Array.from(uniqueAuthProviders.values()).sort((a, b) => a.provider.localeCompare(b.provider));
 
 		return html`
 			<div class="settings-view-grid">
 				<section class="settings-group">
 					<div class="settings-section">
-						<div class="settings-section-title">Account</div>
-						${this.authLoading
-							? html`<div class="settings-desc">Checking account status…</div>`
-							: html`
-								<div class="settings-desc">
-									${authProviders.length > 0 ? `Connected providers: ${authProviders.length}` : "No provider connected yet."}
-								</div>
-								<div class="settings-actions">
-									<button class="ghost-btn" @click=${() => this.refreshAuthStatus()}>Refresh account status</button>
-								</div>
-								${authProviders.length > 0
-									? html`
-										<div class="account-chips">
-											${authProviders.map((p) => html`<span class="account-chip">${p.provider} · ${p.source === "environment" ? "env" : p.kind}</span>`) }
-										</div>
-									`
-									: null}
-								<div class="settings-desc">Tip: run <code>/login</code> in terminal once, then restart desktop.</div>
-								${this.authStatus?.auth_file
-									? html`
-										<details class="settings-advanced">
-											<summary>Advanced account details</summary>
-											<div class="settings-desc">Auth file: <code>${this.authStatus.auth_file}</code></div>
-										</details>
-									`
-									: null}
-							`}
+						<div class="settings-section-title">Account (work in progress)</div>
+						<div class="settings-desc">This section is being redesigned for real account features instead of model/provider login controls.</div>
+						<div class="settings-desc">Planned direction: GitHub/Google sign-in, profile/avatar in the app sidebar, and optional cloud sync for preferences.</div>
+						<div class="settings-desc">Model/provider login/logout is handled from the model picker.</div>
+						<div class="settings-desc">Package install + provider setup flows stay in <strong>Packages</strong>.</div>
 					</div>
 				</section>
 
 				<section class="settings-group">
 					<div class="settings-section">
-						<div class="settings-section-title">Package configuration</div>
-						<div class="settings-desc">Package-specific settings are managed in <strong>Packages</strong> (gear icon on installed packages).</div>
-						<div class="settings-desc">Desktop stays capability-driven: packages can expose config commands, and those run via the normal chat/runtime flow.</div>
+						<div class="settings-section-title">Current account diagnostics</div>
+						${!runtimeControlsEnabled
+							? html`<div class="settings-desc">${runtimeMessage}</div>`
+							: this.authLoading
+								? html`<div class="settings-desc">Checking account diagnostics…</div>`
+								: html`
+									<div class="settings-desc">
+										${connectedProviders.length > 0
+											? `Connected providers detected: ${connectedProviders.length}`
+											: "No provider credentials detected."}
+									</div>
+									<div class="settings-actions">
+										<button class="ghost-btn" @click=${() => this.refreshAccountStatus()}>Refresh diagnostics</button>
+									</div>
+									${connectedProviders.length > 0
+										? html`
+											<div class="account-chips">
+												${connectedProviders.map((provider) => html`<span class="account-chip">${provider.provider} · ${provider.source === "environment" ? "env" : provider.kind}</span>`) }
+											</div>
+										`
+										: null}
+									${this.authStatus?.auth_file
+										? html`
+											<details class="settings-advanced">
+												<summary>Advanced details</summary>
+												<div class="settings-desc">Auth file: <code>${this.authStatus.auth_file}</code></div>
+											</details>
+										`
+										: null}
+								`}
 					</div>
 				</section>
 			</div>

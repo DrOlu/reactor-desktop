@@ -1826,7 +1826,8 @@ body.file-split-resizing #file-split-resize-handle::after {
 .packages-view-body {
 	flex: 1;
 	min-height: 0;
-	overflow: auto;
+	overflow-y: auto;
+	overflow-x: hidden;
 	padding: 22px 22px 18px;
 	display: grid;
 	gap: 16px;
@@ -1869,6 +1870,9 @@ body.file-split-resizing #file-split-resize-handle::after {
 	color: var(--muted);
 	background: color-mix(in srgb, var(--bg-soft) 56%, transparent);
 	border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 
 .packages-banner.success {
@@ -2304,6 +2308,10 @@ body.file-split-resizing #file-split-resize-handle::after {
 .packages-command-log {
 	max-height: 220px;
 	margin: 0;
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 
 .packages-empty {

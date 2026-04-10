@@ -69,6 +69,12 @@ export interface PiProviderAuthClearResult {
 	source: "auth_file" | "environment" | "missing";
 }
 
+export interface PiOAuthProviderInfo {
+	id: string;
+	name: string;
+	source: "built_in" | "package";
+}
+
 export interface CliUpdateStatus {
 	discovery: string;
 	current_version: string | null;
@@ -515,6 +521,10 @@ export class RpcBridge {
 
 	async clearPiProviderAuth(provider: string): Promise<PiProviderAuthClearResult> {
 		return invoke<PiProviderAuthClearResult>("clear_pi_provider_auth", { provider });
+	}
+
+	async getPiOAuthProviders(): Promise<PiOAuthProviderInfo[]> {
+		return invoke<PiOAuthProviderInfo[]>("get_pi_oauth_providers");
 	}
 
 	async getCliUpdateStatus(): Promise<CliUpdateStatus> {
@@ -982,6 +992,10 @@ class ActiveRpcBridgeProxy {
 
 	async clearPiProviderAuth(provider: string): Promise<PiProviderAuthClearResult> {
 		return this.activeBridge.clearPiProviderAuth(provider);
+	}
+
+	async getPiOAuthProviders(): Promise<PiOAuthProviderInfo[]> {
+		return this.activeBridge.getPiOAuthProviders();
 	}
 
 	async getCliUpdateStatus(): Promise<CliUpdateStatus> {

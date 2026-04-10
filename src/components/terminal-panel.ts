@@ -132,6 +132,7 @@ export class TerminalPanel {
 	private runningInteractive = false;
 	private suppressPromptOnce = false;
 	private queuedCommands: string[] = [];
+	private clipboardEventHandlersInstalled = false;
 
 	constructor(container: HTMLElement) {
 		this.container = container;
@@ -210,6 +211,7 @@ export class TerminalPanel {
 			this.xterm.open(viewport);
 			this.fitAddon.fit();
 			this.installKeyboardBindings();
+			this.installClipboardEventHandlers(this.container);
 			this.printPrompt();
 		}
 
@@ -288,6 +290,23 @@ export class TerminalPanel {
 		}
 	}
 
+	private installClipboardEventHandlers(target: HTMLElement): void {
+		if (this.clipboardEventHandlersInstalled) return;
+		target.addEventListener("paste", (event: ClipboardEvent) => {
+			const text = event.clipboardData?.getData("text") ?? "";
+			if (!text) return;
+			event.preventDefault();
+			this.handlePastedText(text);
+		});
+		target.addEventListener("copy", (event: ClipboardEvent) => {
+			const selection = this.xterm?.getSelection() ?? "";
+			if (!selection) return;
+			event.clipboardData?.setData("text/plain", selection);
+			event.preventDefault();
+		});
+		this.clipboardEventHandlersInstalled = true;
+	}
+
 	private installKeyboardBindings(): void {
 		if (!this.xterm) return;
 		this.xterm.onKey(({ key, domEvent }) => {
@@ -298,6 +317,10 @@ export class TerminalPanel {
 			}
 
 			if (this.isPasteShortcut(domEvent)) {
+				if (this.isMacPlatform() && domEvent.metaKey) {
+					void this.pasteFromClipboard();
+					return;
+				}
 				domEvent.preventDefault();
 				void this.pasteFromClipboard();
 				return;
@@ -471,8 +494,7 @@ export class TerminalPanel {
 		if (!this.xterm) return;
 		this.commandHistoryIndex = -1;
 		this.commandHistoryDraft = "";
-		const pathLabel = compactPath(this.cwd);
-		this.xterm.write(`\x1b[34m${pathLabel}\x1b[0m $ `);
+		this.xterm.write("\x1b[34m$\x1b[0m ");
 		this.scrollTerminalToBottom();
 	}
 

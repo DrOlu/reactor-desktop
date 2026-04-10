@@ -7,6 +7,7 @@ import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
 import { html, nothing, render, type TemplateResult } from "lit";
 import {
 	type PiAuthProviderStatus,
+	type PiOAuthProviderInfo,
 	type RpcImageInput,
 	type RpcSessionState,
 	type ThinkingLevel,
@@ -283,6 +284,13 @@ const DEFAULT_OAUTH_PROVIDER_IDS = [
 	"openai-codex",
 ] as const;
 const DEFAULT_OAUTH_PROVIDER_SET = new Set<string>(DEFAULT_OAUTH_PROVIDER_IDS);
+const DEFAULT_OAUTH_PROVIDER_NAME_BY_ID = new Map<string, string>([
+	["anthropic", "Anthropic"],
+	["github-copilot", "GitHub Copilot"],
+	["google-gemini-cli", "Google Gemini CLI"],
+	["google-antigravity", "Google Antigravity"],
+	["openai-codex", "OpenAI Codex"],
+]);
 
 function uid(prefix = "id"): string {
 	return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
@@ -432,9 +440,11 @@ function formatProviderDisplayName(provider: string): string {
 		case "lmstudio":
 			return "LM Studio";
 		case "cursor-agent":
+		case "cursor":
 			return "Cursor";
 		case "kilo":
-			return "Kilo";
+		case "kilocode":
+			return "Kilo Code";
 		default:
 			return normalized
 				.split(/[-_\s]+/)
@@ -622,6 +632,9 @@ export class ChatView {
 	private providerAuthById = new Map<string, Pick<PiAuthProviderStatus, "source" | "kind">>();
 	private providerAuthConfigured = new Set<string>();
 	private providerAuthForcedLoggedOut = new Set<string>();
+	private oauthProviderCatalogLoadedAt = 0;
+	private oauthProviderCatalogLoading = false;
+	private oauthProviderCatalog = new Map<string, { name: string; source: "built_in" | "package" }>();
 	private lastBackendRefreshError: string | null = null;
 	private lastModelLoadError: string | null = null;
 	private lastBackendSessionFile: string | null = null;
@@ -1205,6 +1218,66 @@ export class ChatView {
 		return normalizeText(provider).toLowerCase();
 	}
 
+	private isOAuthProviderId(provider: string): boolean {
+		const key = this.providerKey(provider);
+		return DEFAULT_OAUTH_PROVIDER_SET.has(key) || this.oauthProviderCatalog.has(key);
+	}
+
+	private displayProviderLabel(provider: string): string {
+		const key = this.providerKey(provider);
+		const catalogName = this.oauthProviderCatalog.get(key)?.name;
+		if (catalogName) return catalogName;
+		const defaultName = DEFAULT_OAUTH_PROVIDER_NAME_BY_ID.get(key);
+		if (defaultName) return defaultName;
+		return formatProviderDisplayName(key);
+	}
+
+	private async loadOAuthProviderCatalog(force = false): Promise<void> {
+		if (this.oauthProviderCatalogLoading) return;
+		const stale = Date.now() - this.oauthProviderCatalogLoadedAt > MODEL_PICKER_AUTH_CACHE_MS;
+		if (!force && this.oauthProviderCatalogLoadedAt > 0 && !stale) return;
+		this.oauthProviderCatalogLoading = true;
+		try {
+			const raw = await rpcBridge.getPiOAuthProviders();
+			const next = new Map<string, { name: string; source: "built_in" | "package" }>();
+			const entries = Array.isArray(raw) ? raw : [];
+			for (const entry of entries) {
+				const providerId = this.providerKey(typeof entry?.id === "string" ? entry.id : "");
+				if (!providerId) continue;
+				const nameRaw = typeof entry?.name === "string" ? entry.name.trim() : "";
+				const sourceRaw = entry?.source;
+				next.set(providerId, {
+					name: nameRaw || this.displayProviderLabel(providerId),
+					source: sourceRaw === "package" ? "package" : "built_in",
+				});
+			}
+			for (const providerId of DEFAULT_OAUTH_PROVIDER_IDS) {
+				if (next.has(providerId)) continue;
+				next.set(providerId, {
+					name: DEFAULT_OAUTH_PROVIDER_NAME_BY_ID.get(providerId) ?? formatProviderDisplayName(providerId),
+					source: "built_in",
+				});
+			}
+			this.oauthProviderCatalog = next;
+			this.oauthProviderCatalogLoadedAt = Date.now();
+		} catch (err) {
+			console.error("Failed to load OAuth provider catalog:", err);
+			if (this.oauthProviderCatalogLoadedAt === 0) {
+				const defaults = new Map<string, { name: string; source: "built_in" | "package" }>();
+				for (const providerId of DEFAULT_OAUTH_PROVIDER_IDS) {
+					defaults.set(providerId, {
+						name: DEFAULT_OAUTH_PROVIDER_NAME_BY_ID.get(providerId) ?? formatProviderDisplayName(providerId),
+						source: "built_in",
+					});
+				}
+				this.oauthProviderCatalog = defaults;
+			}
+		} finally {
+			this.oauthProviderCatalogLoading = false;
+			this.render();
+		}
+	}
+
 	private recomputeProviderAuthConfigured(): void {
 		const next = new Set<string>();
 		for (const provider of this.providerAuthById.keys()) {
@@ -1330,11 +1403,14 @@ export class ChatView {
 
 		this.runningProviderAuthAction = { provider: providerKey, action };
 		this.render();
-		const providerLabel = formatProviderDisplayName(providerKey);
+		const providerLabel = this.displayProviderLabel(providerKey);
 
 		try {
 			if (action === "login") {
-				if (DEFAULT_OAUTH_PROVIDER_SET.has(providerKey)) {
+				if (!this.isOAuthProviderId(providerKey)) {
+					await this.loadOAuthProviderCatalog(true);
+				}
+				if (this.isOAuthProviderId(providerKey)) {
 					const loginCommand = `pi login ${providerKey}`;
 					if (this.onOpenTerminal) {
 						await this.onOpenTerminal(loginCommand);
@@ -1386,6 +1462,7 @@ export class ChatView {
 			await Promise.all([
 				this.refreshFromBackend(),
 				this.loadProviderAuthStatus(true),
+				this.loadOAuthProviderCatalog(true),
 				this.loadAvailableModels(),
 				this.loadModelCatalog(true),
 			]);
@@ -1540,6 +1617,9 @@ export class ChatView {
 		}
 		if (!this.loadingProviderAuth) {
 			void this.loadProviderAuthStatus();
+		}
+		if (!this.oauthProviderCatalogLoading) {
+			void this.loadOAuthProviderCatalog();
 		}
 		if (!this.loadingModelCatalog && this.modelCatalog.length === 0) {
 			void this.loadModelCatalog();
@@ -1867,6 +1947,7 @@ export class ChatView {
 						await this.ensureSlashCommandsLoaded(true);
 						await Promise.all([
 							this.loadProviderAuthStatus(true),
+							this.loadOAuthProviderCatalog(true),
 							this.loadModelCatalog(true),
 						]);
 						this.pushNotice("Reloaded runtime state", "success");
@@ -1878,6 +1959,7 @@ export class ChatView {
 				await Promise.all([
 					this.loadAvailableModels(),
 					this.loadProviderAuthStatus(true),
+					this.loadOAuthProviderCatalog(true),
 					this.loadModelCatalog(true),
 				]);
 				this.pushNotice("Reloaded runtime state", "success");
@@ -2014,6 +2096,7 @@ export class ChatView {
 		void this.refreshFromBackend();
 		void this.loadAvailableModels();
 		void this.loadProviderAuthStatus();
+		void this.loadOAuthProviderCatalog();
 		void this.loadModelCatalog();
 	}
 
@@ -2136,6 +2219,9 @@ export class ChatView {
 			if (!this.loadingProviderAuth && this.providerAuthLoadedAt === 0) {
 				void this.loadProviderAuthStatus();
 			}
+			if (!this.oauthProviderCatalogLoading && this.oauthProviderCatalogLoadedAt === 0) {
+				void this.loadOAuthProviderCatalog();
+			}
 			if (!this.loadingModelCatalog && this.modelCatalog.length === 0) {
 				void this.loadModelCatalog();
 			}
@@ -2154,6 +2240,7 @@ export class ChatView {
 		await Promise.all([
 			this.loadAvailableModels(),
 			this.loadProviderAuthStatus(true),
+			this.loadOAuthProviderCatalog(true),
 			this.loadModelCatalog(true),
 		]);
 	}
@@ -6334,7 +6421,7 @@ export class ChatView {
 		const currentModelId = normalizeText(this.state?.model?.id);
 		const currentModelValue = currentProvider && currentModelId ? `${currentProvider}::${currentModelId}` : "";
 		const currentModelDisplay = currentModelId ? formatModelDisplayName(currentModelId) : "Select model";
-		const currentProviderDisplay = currentProvider ? formatProviderDisplayName(currentProvider) : "";
+		const currentProviderDisplay = currentProvider ? this.displayProviderLabel(currentProvider) : "";
 		const currentModelTitle = currentProvider && currentModelId ? `${currentProviderDisplay} / ${currentModelId}` : "Select model";
 		const thinkingValue = (this.state?.thinkingLevel ?? "off") as ThinkingLevel;
 		const thinkingLabel = formatThinkingDisplayName(thinkingValue);
@@ -6381,7 +6468,7 @@ export class ChatView {
 			} else {
 				groupedByProvider.set(providerKey, {
 					providerKey,
-					providerLabel: formatProviderDisplayName(providerKey),
+					providerLabel: this.displayProviderLabel(providerKey),
 					models: [{ ...model, selectable }],
 				});
 			}
@@ -6390,7 +6477,15 @@ export class ChatView {
 			if (groupedByProvider.has(provider)) continue;
 			groupedByProvider.set(provider, {
 				providerKey: provider,
-				providerLabel: formatProviderDisplayName(provider),
+				providerLabel: this.displayProviderLabel(provider),
+				models: [],
+			});
+		}
+		for (const provider of this.oauthProviderCatalog.keys()) {
+			if (groupedByProvider.has(provider)) continue;
+			groupedByProvider.set(provider, {
+				providerKey: provider,
+				providerLabel: this.displayProviderLabel(provider),
 				models: [],
 			});
 		}
@@ -6398,7 +6493,7 @@ export class ChatView {
 			if (groupedByProvider.has(provider)) continue;
 			groupedByProvider.set(provider, {
 				providerKey: provider,
-				providerLabel: formatProviderDisplayName(provider),
+				providerLabel: this.displayProviderLabel(provider),
 				models: [],
 			});
 		}
@@ -6406,7 +6501,7 @@ export class ChatView {
 			if (groupedByProvider.has(forcedLoggedOutProvider)) continue;
 			groupedByProvider.set(forcedLoggedOutProvider, {
 				providerKey: forcedLoggedOutProvider,
-				providerLabel: formatProviderDisplayName(forcedLoggedOutProvider),
+				providerLabel: this.displayProviderLabel(forcedLoggedOutProvider),
 				models: [],
 			});
 		}
@@ -6417,14 +6512,17 @@ export class ChatView {
 				const hasSelectableModel = group.models.some((model) => model.selectable);
 				const authInfo = this.providerAuthById.get(authKey);
 				const forcedLoggedOut = this.providerAuthForcedLoggedOut.has(authKey);
-				const authConfigured = !forcedLoggedOut && (this.providerAuthConfigured.has(authKey) || hasSelectableModel);
-				const authSource = forcedLoggedOut ? "missing" : (authInfo?.source ?? (hasSelectableModel ? "runtime" : "missing"));
+				const isOAuthProvider = this.isOAuthProviderId(authKey);
+				const authConfigured = !forcedLoggedOut && (this.providerAuthConfigured.has(authKey) || (!isOAuthProvider && hasSelectableModel));
+				const authSource = forcedLoggedOut
+					? "missing"
+					: (authInfo?.source ?? (!isOAuthProvider && hasSelectableModel ? "runtime" : "missing"));
 				return {
 					...group,
 					authConfigured,
 					authSource,
 					authKind: authInfo?.kind ?? "unknown",
-					isDefaultOAuthProvider: DEFAULT_OAUTH_PROVIDER_SET.has(authKey),
+					isDefaultOAuthProvider: isOAuthProvider,
 					models: [...group.models].sort((a, b) =>
 						formatModelDisplayName(a.id).localeCompare(formatModelDisplayName(b.id), undefined, { sensitivity: "base" }),
 					),
@@ -6488,6 +6586,9 @@ export class ChatView {
 								}
 								if (!this.loadingProviderAuth) {
 									void this.loadProviderAuthStatus();
+								}
+								if (!this.oauthProviderCatalogLoading) {
+									void this.loadOAuthProviderCatalog();
 								}
 								if (!this.loadingModelCatalog && this.modelCatalog.length === 0) {
 									void this.loadModelCatalog();

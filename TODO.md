@@ -251,6 +251,9 @@ These should be packages/extensions/skills unless there is a very strong reason 
   - [x] simplify the Packages pane into a more minimalist list/row layout with less repeated chrome/text
   - [x] remove manual source install bar from the top-level flow; keep install action on package rows
   - [x] diagnostics/load errors where possible
+  - [x] prevent packages-page horizontal overflow from long command/status output
+  - [x] make discover-row `+` action open details modal first (no silent background install)
+  - [x] close extension modal immediately on uninstall action
 - [ ] Add proper per-resource enable/disable UX
   - [ ] do **not** shell users into the interactive `pi config` TUI
   - [ ] prefer direct config/settings-driven desktop UX

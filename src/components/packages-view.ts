@@ -4154,8 +4154,9 @@ Execute the required file creation/edits directly, then summarize exactly which 
 	}
 
 	private async uninstallExtensionItem(item: ExtensionSurfaceItem): Promise<void> {
+		if (this.runningCommand || this.runningConfigCommand) return;
+		this.closePackagesItemModal();
 		if (normalizeRecommendedSource(item.source) === DESKTOP_THEMES_PACKAGE_SOURCE) {
-			if (this.runningCommand || this.runningConfigCommand) return;
 			this.runningCommand = true;
 			this.commandStatus = "Uninstalling Pi Desktop Themes…";
 			this.render();
@@ -4635,8 +4636,8 @@ Execute the required file creation/edits directly, then summarize exactly which 
 					<button
 						class="packages-row-install add"
 						?disabled=${this.runningCommand}
-						title="Install"
-						@click=${() => void this.installExtensionItem(item)}
+						title="Open"
+						@click=${() => void this.openPackagesItemModal({ kind: "extension", item })}
 					>
 						+
 					</button>
@@ -4657,8 +4658,8 @@ Execute the required file creation/edits directly, then summarize exactly which 
 					<button
 						class="packages-row-install add"
 						?disabled=${this.runningCommand}
-						title="Install"
-						@click=${() => void this.installExtensionItem(item)}
+						title="Open"
+						@click=${() => void this.openPackagesItemModal({ kind: "extension", item })}
 					>
 						+
 					</button>
@@ -4678,8 +4679,8 @@ Execute the required file creation/edits directly, then summarize exactly which 
 					<button
 						class="packages-row-install add"
 						?disabled=${this.runningCommand}
-						title="Install"
-						@click=${() => void this.installExtensionItem(item)}
+						title="Open"
+						@click=${() => void this.openPackagesItemModal({ kind: "extension", item })}
 					>
 						+
 					</button>
