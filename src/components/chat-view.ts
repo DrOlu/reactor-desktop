@@ -35,6 +35,10 @@ import {
 	buildModelPickerProviderGroups,
 	resolveActiveModelPickerProvider,
 } from "../models/model-picker-provider-groups.js";
+import {
+	resolveModelPickerAuthHint,
+	resolveModelPickerProviderAuthActionState,
+} from "../models/model-picker-auth-ui.js";
 import { resolveModelCandidateFromArg, resolveProviderHintFromModelArg } from "../models/model-selection.js";
 import {
 	displayProviderLabel as displayProviderLabelFromCatalog,
@@ -6094,26 +6098,13 @@ export class ChatView {
 											<div class="model-picker-providers">
 												${providerGroups.map((group) => {
 													const authKey = this.providerKey(group.providerKey);
-													const isActionBusy = this.runningProviderAuthAction?.provider === authKey;
-													const canLogout = group.authConfigured && group.authSource !== "environment";
-													const action = canLogout ? ("logout" as const) : ("login" as const);
-													const actionLabel = group.authConfigured
-														? group.authSource === "environment"
-															? "Env"
-															: "Logout"
-														: "Login";
-													const actionDisabled =
-														interactionLocked ||
-														this.settingModel ||
-														isActionBusy ||
-														(group.authConfigured && group.authSource === "environment");
-													const actionTitle = group.authConfigured
-														? group.authSource === "environment"
-															? "Configured from environment variable"
-															: `Logout from ${group.providerLabel}`
-														: group.isDefaultOAuthProvider
-															? `Open terminal login for ${group.providerLabel} (starts /login automatically)`
-															: `Set up ${group.providerLabel}`;
+													const actionState = resolveModelPickerProviderAuthActionState({
+														group,
+														authKey,
+														runningProviderAuthActionKey: this.runningProviderAuthAction?.provider ?? null,
+														interactionLocked,
+														settingModel: this.settingModel,
+													});
 													return html`
 														<div class="model-picker-provider-row ${group.providerKey === resolvedActiveProvider ? "active" : ""} ${group.authConfigured ? "" : "unauth"}">
 															<button
@@ -6140,17 +6131,17 @@ export class ChatView {
 															</button>
 															<button
 																type="button"
-																class="model-picker-provider-auth ${group.authConfigured ? "connected" : ""} ${isActionBusy ? "busy" : ""}"
-																title=${actionTitle}
-																?disabled=${actionDisabled}
+																class="model-picker-provider-auth ${group.authConfigured ? "connected" : ""} ${actionState.isBusy ? "busy" : ""}"
+																title=${actionState.title}
+																?disabled=${actionState.disabled}
 																@click=${(event: MouseEvent) => {
 																	event.preventDefault();
 																	event.stopPropagation();
-																	if (actionDisabled) return;
-																	void this.handleProviderAuthAction(group.providerKey, action);
+																	if (actionState.disabled) return;
+																	void this.handleProviderAuthAction(group.providerKey, actionState.action);
 																}}
 															>
-																${isActionBusy ? "…" : actionLabel}
+																${actionState.isBusy ? "…" : actionState.label}
 															</button>
 														</div>
 													`;
@@ -6162,20 +6153,12 @@ export class ChatView {
 														${activeProviderGroup.models.length === 0
 															? html`
 																<div class="model-picker-auth-hint">
-																	${activeProviderGroup.authConfigured
-																		? activeProviderGroup.isDefaultOAuthProvider
-																			? "Connected, but no models are available right now. Try /reload after login changes."
-																			: "Connected, but no models are loaded for this provider. Install/enable its package in Packages, then run /reload."
-																		: activeProviderGroup.isDefaultOAuthProvider
-																								? "Not connected yet. Click Login to open terminal and start /login automatically."
-																								: "Not connected yet. Use Login to set up this provider."}
+																	${resolveModelPickerAuthHint(activeProviderGroup, false)}
 																</div>
 															`
 															: html`
 																${!activeProviderGroup.authConfigured
-																	? html`<div class="model-picker-auth-hint">${activeProviderGroup.isDefaultOAuthProvider
-																							? "Not connected yet. Click Login to open terminal and start /login automatically."
-																							: "Not connected yet. Use Login to set up this provider."}</div>`
+																	? html`<div class="model-picker-auth-hint">${resolveModelPickerAuthHint(activeProviderGroup, true)}</div>`
 																	: nothing}
 																${activeProviderGroup.models.map((model) => {
 																	const nextValue = `${model.provider}::${model.id}`;
