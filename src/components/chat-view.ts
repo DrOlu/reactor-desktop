@@ -36,14 +36,16 @@ import {
 	resolveActiveModelPickerProvider,
 } from "../models/model-picker-provider-groups.js";
 import {
-	resolveModelPickerAuthHint,
-	resolveModelPickerProviderAuthActionState,
-} from "../models/model-picker-auth-ui.js";
-import {
 	resolveModelCandidateFromArg,
 	resolvePreferredModelPickerProvider,
 	resolveProviderHintFromModelArg,
 } from "../models/model-selection.js";
+import { renderComposerControlsView } from "./chat-view/composer-controls-view.js";
+import {
+	renderComposerSkillDraftPillView,
+	renderPendingImagesView,
+	renderQueuedComposerMessagesView,
+} from "./chat-view/composer-fragments-view.js";
 import {
 	displayProviderLabel as displayProviderLabelFromCatalog,
 	isOAuthProviderId as isOAuthProviderIdInCatalog,
@@ -6002,6 +6004,11 @@ export class ChatView {
 		`;
 	}
 
+	private openComposerFilePicker(): void {
+		const input = this.container.querySelector("#file-picker") as HTMLInputElement | null;
+		input?.click();
+	}
+
 	private renderComposerControls(canSend: boolean, isStreaming: boolean, interactionLocked: boolean): TemplateResult {
 		const currentProvider = normalizeText(this.state?.model?.provider);
 		const currentModelId = normalizeText(this.state?.model?.id);
@@ -6030,248 +6037,54 @@ export class ChatView {
 		);
 		const activeProviderGroup = providerGroups.find((group) => group.providerKey === resolvedActiveProvider) ?? null;
 
-		return html`
-			<div class="composer-controls">
-				<div class="control-group">
-					<button
-						class="composer-icon-btn"
-						title="Attach file"
-						?disabled=${interactionLocked}
-						@click=${() => {
-							if (interactionLocked) return;
-							const input = this.container.querySelector("#file-picker") as HTMLInputElement | null;
-							input?.click();
-						}}
-					>
-						${uiIcon("attach")}
-					</button>
-
-					<div
-						class="model-picker-root"
-						@keydown=${(event: KeyboardEvent) => {
-							if (event.key !== "Escape") return;
-							event.preventDefault();
-							this.closeModelPicker({ focusComposer: true });
-						}}
-						@focusout=${(event: FocusEvent) => {
-							const next = event.relatedTarget as Node | null;
-							const root = event.currentTarget as HTMLElement;
-							if (next && root.contains(next)) return;
-							this.closeModelPicker();
-						}}
-					>
-						<button
-							type="button"
-							class="model-picker-trigger"
-							title=${currentModelTitle}
-							?disabled=${interactionLocked || this.settingModel}
-							@click=${() => {
-								if (interactionLocked || this.settingModel) return;
-								this.toggleModelPicker(resolvedActiveProvider);
-							}}
-						>
-							<span class="model-picker-trigger-label">${currentProviderDisplay ? `${currentModelDisplay} · ${currentProviderDisplay}` : currentModelDisplay}</span>
-							<span class="composer-select-caret">▾</span>
-						</button>
-
-						${this.modelPickerOpen
-							? html`
-								<div class="model-picker-popover" role="listbox" aria-label="Available models">
-									${providerGroups.length === 0
-										? html`<div class="model-picker-empty">${this.loadingModels || this.loadingModelCatalog ? "Loading models…" : "No models available"}</div>`
-										: html`
-											<div class="model-picker-providers">
-												${providerGroups.map((group) => {
-													const authKey = this.providerKey(group.providerKey);
-													const actionState = resolveModelPickerProviderAuthActionState({
-														group,
-														authKey,
-														runningProviderAuthActionKey: this.runningProviderAuthAction?.provider ?? null,
-														interactionLocked,
-														settingModel: this.settingModel,
-													});
-													return html`
-														<div class="model-picker-provider-row ${group.providerKey === resolvedActiveProvider ? "active" : ""} ${group.authConfigured ? "" : "unauth"}">
-															<button
-																type="button"
-																class="model-picker-provider ${group.providerKey === resolvedActiveProvider ? "active" : ""} ${group.authConfigured ? "" : "unauth"}"
-																title=${group.authConfigured ? `${group.providerLabel} connected` : `${group.providerLabel} needs setup`}
-																@mouseenter=${() => this.setModelPickerActiveProvider(group.providerKey)}
-																@focus=${() => this.setModelPickerActiveProvider(group.providerKey)}
-																@click=${() => this.setModelPickerActiveProvider(group.providerKey)}
-															>
-																<span class="model-picker-provider-label">${group.providerLabel}</span>
-															</button>
-															<button
-																type="button"
-																class="model-picker-provider-auth ${group.authConfigured ? "connected" : ""} ${actionState.isBusy ? "busy" : ""}"
-																title=${actionState.title}
-																?disabled=${actionState.disabled}
-																@click=${(event: MouseEvent) => {
-																	event.preventDefault();
-																	event.stopPropagation();
-																	if (actionState.disabled) return;
-																	void this.handleProviderAuthAction(group.providerKey, actionState.action);
-																}}
-															>
-																${actionState.isBusy ? "…" : actionState.label}
-															</button>
-														</div>
-													`;
-												})}
-											</div>
-											<div class="model-picker-models">
-												${activeProviderGroup
-													? html`
-														${activeProviderGroup.models.length === 0
-															? html`
-																<div class="model-picker-auth-hint">
-																	${resolveModelPickerAuthHint(activeProviderGroup, false)}
-																</div>
-															`
-															: html`
-																${!activeProviderGroup.authConfigured
-																	? html`<div class="model-picker-auth-hint">${resolveModelPickerAuthHint(activeProviderGroup, true)}</div>`
-																	: nothing}
-																${activeProviderGroup.models.map((model) => {
-																	const nextValue = `${model.provider}::${model.id}`;
-																	const isActive = model.provider === currentProvider && model.id === currentModelId;
-																	const isDisabled = !model.selectable || !activeProviderGroup.authConfigured;
-																	return html`
-																		<button
-																			type="button"
-																			class="model-picker-model ${isActive ? "active" : ""} ${isDisabled ? "disabled" : ""}"
-																			title=${isDisabled
-																				? `${formatProviderDisplayName(model.provider)} / ${model.id} (setup required)`
-																				: `${formatProviderDisplayName(model.provider)} / ${model.id}`}
-																			?disabled=${interactionLocked || this.settingModel || isDisabled}
-																			@click=${() => {
-																				if (isDisabled) return;
-																				this.closeModelPicker();
-																				if (nextValue === currentModelValue) return;
-																				void this.setModel(model.provider, model.id);
-																			}}
-																		>
-																			<span>${formatModelDisplayName(model.id)}</span>
-																		</button>
-																	`;
-																})}
-															`}
-													`
-													: html`<div class="model-picker-empty">No models</div>`}
-											</div>
-										`}
-								</div>
-							`
-							: nothing}
-					</div>
-
-					<div class="thinking-select-wrap" title="Reasoning effort · Shift+Tab to cycle">
-						<span class="thinking-select-label">${thinkingLabel}</span>
-						<select
-							class="thinking-select-native"
-							.value=${thinkingValue}
-							?disabled=${interactionLocked || this.settingThinking}
-							@change=${(e: Event) => void this.setThinkingLevel((e.target as HTMLSelectElement).value as ThinkingLevel)}
-						>
-							<option value="off">off</option>
-							<option value="minimal">minimal</option>
-							<option value="low">low</option>
-							<option value="medium">medium</option>
-							<option value="high">high</option>
-							<option value="xhigh">xhigh</option>
-						</select>
-						<span class="thinking-select-caret">▾</span>
-					</div>
-				</div>
-
-				<div class="control-group right">
-					${isStreaming
-						? html`
-							<button
-								class="send-btn stop-btn"
-								title="Stop generation"
-								?disabled=${interactionLocked}
-								@click=${() => {
-									if (interactionLocked) return;
-									void this.abortCurrentRun();
-								}}
-							>
-								${uiIcon("stop")}
-							</button>
-						`
-						: this.sendingPrompt
-							? html`
-								<button class="send-btn pending-send" title="Sending" disabled>
-									${uiIcon("spinner")}
-								</button>
-							`
-							: html`
-								<button
-									class="send-btn primary-send"
-									?disabled=${interactionLocked || !canSend}
-									title="Send (Enter) · Queue while streaming (Alt+Enter)"
-									@click=${() => {
-										if (interactionLocked) return;
-										void this.sendMessage("prompt");
-									}}
-								>
-									${uiIcon("send")}
-								</button>
-							`}
-				</div>
-			</div>
-		`;
+		return renderComposerControlsView({
+			canSend,
+			isStreaming,
+			interactionLocked,
+			sendingPrompt: this.sendingPrompt,
+			settingModel: this.settingModel,
+			settingThinking: this.settingThinking,
+			thinkingValue,
+			thinkingLabel,
+			currentProvider,
+			currentModelId,
+			currentModelValue,
+			currentModelTitle,
+			currentModelDisplay,
+			currentProviderDisplay,
+			modelPickerOpen: this.modelPickerOpen,
+			loadingModels: this.loadingModels,
+			loadingModelCatalog: this.loadingModelCatalog,
+			providerGroups,
+			activeProviderGroup,
+			resolvedActiveProvider,
+			runningProviderAuthActionProvider: this.runningProviderAuthAction?.provider ?? null,
+			attachIcon: uiIcon("attach"),
+			stopIcon: uiIcon("stop"),
+			spinnerIcon: uiIcon("spinner"),
+			sendIcon: uiIcon("send"),
+			onAttachFile: () => this.openComposerFilePicker(),
+			onCloseModelPicker: (options) => this.closeModelPicker(options),
+			onToggleModelPicker: (preferredProvider) => this.toggleModelPicker(preferredProvider),
+			onSetModelPickerActiveProvider: (provider) => this.setModelPickerActiveProvider(provider),
+			onProviderAuthAction: (provider, action) => this.handleProviderAuthAction(provider, action),
+			onSelectModel: (provider, modelId) => this.setModel(provider, modelId),
+			onSetThinkingLevel: (value) => this.setThinkingLevel(value),
+			onAbort: () => this.abortCurrentRun(),
+			onSend: () => this.sendMessage("prompt"),
+		});
 	}
 
 	private renderQueuedComposerMessages(): TemplateResult | typeof nothing {
-		if (this.queuedComposerMessages.length === 0) return nothing;
-		const recent = this.queuedComposerMessages.slice(-2);
-		return html`
-			<div class="composer-queued-row" aria-live="polite">
-				${recent.map(
-					(entry) => html`
-						<div class="composer-queued-pill" title=${entry.text}>
-							<span class="composer-queued-label">Queued</span>
-							<span class="composer-queued-text">${truncate(entry.text.replace(/\s+/g, " "), 72)}</span>
-							${entry.imageCount > 0 ? html`<span class="composer-queued-meta">+${entry.imageCount} image${entry.imageCount === 1 ? "" : "s"}</span>` : nothing}
-						</div>
-					`,
-				)}
-			</div>
-		`;
+		return renderQueuedComposerMessagesView(this.queuedComposerMessages, truncate);
 	}
 
 	private renderPendingImages(): TemplateResult | typeof nothing {
-		if (this.pendingImages.length === 0) return nothing;
-		return html`
-			<div class="composer-attachments">
-				${this.pendingImages.map(
-					(img) => html`
-						<div class="composer-attachment">
-							<img src=${img.previewUrl} alt=${img.name} />
-							<div class="composer-attachment-meta">
-								<div>${truncate(img.name, 18)}</div>
-								<div>${Math.max(1, Math.round(img.size / 1024))} KB</div>
-							</div>
-							<button @click=${() => this.removePendingImage(img.id)}>✕</button>
-						</div>
-					`,
-				)}
-			</div>
-		`;
+		return renderPendingImagesView(this.pendingImages, truncate, (id) => this.removePendingImage(id));
 	}
 
 	private renderComposerSkillDraftPill(): TemplateResult | typeof nothing {
-		const draft = this.selectedSkillDraft;
-		if (!draft) return nothing;
-		return html`
-			<div class="composer-skill-draft-pill inline">
-				<span class="composer-skill-draft-icon" aria-hidden="true">${skillGlyphIcon()}</span>
-				<span class="composer-skill-draft-name">${draft.name}</span>
-				<button class="composer-skill-draft-remove" title="Remove skill" @click=${() => this.removeComposerSkillDraft()}>✕</button>
-			</div>
-		`;
+		return renderComposerSkillDraftPillView(this.selectedSkillDraft, skillGlyphIcon(), () => this.removeComposerSkillDraft());
 	}
 
 	private ensureActiveSlashItemVisible(): void {
