@@ -1,3 +1,5 @@
+import { withExtensionCommandUsageHint } from "../extensions/extension-command-hints.js";
+
 export interface BuiltinSlashCommandDefinition {
 	name: string;
 	description: string;
@@ -13,50 +15,8 @@ export function normalizeSlashCommandName(name: string): string {
 	return normalizeText(name).replace(/^\/+/, "").toLowerCase();
 }
 
-function runtimeCommandUsageHint(name: string): string | null {
-	const normalized = normalizeSlashCommandName(name);
-	if (normalized === "auto-rename" || normalized === "name-ai-config") {
-		return "Args: config, test, init, regen, <name>";
-	}
-	if (normalized === "voice-notify") {
-		return "No arg opens extension settings; args: status, reload, on, off, test <idle|permission|question|error>";
-	}
-	return null;
-}
-
-function runtimeCommandDescriptionOverride(name: string, description: string): string | null {
-	const normalizedName = normalizeSlashCommandName(name);
-	const normalizedDescription = normalizeText(description);
-	if (normalizedName === "voice-notify") {
-		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
-	}
-	if (/^configure windows smart voice notifications$/i.test(normalizedDescription)) {
-		return "Voice notifications: no arg opens extension settings, or use status/reload/on/off/test";
-	}
-	return null;
-}
-
 export function withRuntimeCommandUsageHint(name: string, description: string): string {
-	const override = runtimeCommandDescriptionOverride(name, description);
-	if (override) return override;
-	const normalizedDescription = normalizeText(description);
-	const hint = runtimeCommandUsageHint(name);
-	if (!hint) return normalizedDescription;
-	if (!normalizedDescription) return hint;
-	const lower = normalizedDescription.toLowerCase();
-	const normalizedName = normalizeSlashCommandName(name);
-	if (normalizedName === "auto-rename" && lower.includes("config") && lower.includes("test")) {
-		return normalizedDescription;
-	}
-	if (
-		normalizedName === "voice-notify" &&
-		lower.includes("status") &&
-		lower.includes("reload") &&
-		lower.includes("test")
-	) {
-		return normalizedDescription;
-	}
-	return `${normalizedDescription} · ${hint}`;
+	return withExtensionCommandUsageHint(name, normalizeText(description));
 }
 
 export function normalizeRuntimeSlashCommandSource(rawSource: string): RuntimeSlashCommandSource {

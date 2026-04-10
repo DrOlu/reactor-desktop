@@ -106,6 +106,21 @@ export function normalizeOAuthProviderCatalog(rawEntries: unknown): Map<string, 
 	return next;
 }
 
+export function collectBuiltInOAuthProviderIds(rawEntries: unknown): Set<string> {
+	const ids = new Set<string>(DEFAULT_OAUTH_PROVIDER_IDS);
+	const entries = Array.isArray(rawEntries) ? rawEntries : [];
+	for (const entry of entries) {
+		if (!entry || typeof entry !== "object") continue;
+		const record = entry as Record<string, unknown>;
+		const providerId = normalizeProviderKey(record.id);
+		if (!providerId) continue;
+		if (record.source === "built_in") {
+			ids.add(providerId);
+		}
+	}
+	return ids;
+}
+
 export function normalizeConfiguredProviderAuth(
 	rawProviders: unknown,
 ): Map<string, Pick<PiAuthProviderStatus, "source" | "kind">> {
