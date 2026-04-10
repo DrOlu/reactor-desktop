@@ -22,6 +22,15 @@ interface TerminalExecResult {
 	stderr: string;
 }
 
+interface TerminalCommandResolution {
+	shellCommand: string;
+	infoText: string | null;
+	interactive: boolean;
+	initialInput: string[];
+	initialInputStartDelayMs: number;
+	initialInputInterChunkDelayMs: number;
+}
+
 function normalizeText(value: unknown): string {
 	if (typeof value === "string") return value;
 	if (value == null) return "";
@@ -81,14 +90,6 @@ function shellSingleQuote(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-const BUILTIN_OAUTH_PROVIDER_ORDER = [
-	"anthropic",
-	"github-copilot",
-	"google-gemini-cli",
-	"google-antigravity",
-	"openai-codex",
-] as const;
-
 export class TerminalPanel {
 	private container: HTMLElement;
 	private cwd: string | null = null;
@@ -108,6 +109,7 @@ export class TerminalPanel {
 	private resolvingShellProfile: Promise<ShellProfile> | null = null;
 	private runningChild: Child | null = null;
 	private runningInteractive = false;
+	private suppressPromptOnce = false;
 	private queuedCommands: string[] = [];
 
 	constructor(container: HTMLElement) {
@@ -166,7 +168,7 @@ export class TerminalPanel {
 			this.fitAddon = new FitAddon();
 			this.xterm = new Terminal({
 				cursorBlink: true,
-				convertEol: true,
+				convertEol: false,
 				scrollback: 6000,
 				fontSize: 12,
 				lineHeight: 1.35,
@@ -374,6 +376,21 @@ export class TerminalPanel {
 		this.scrollTerminalToBottom();
 	}
 
+	private writeRawOutput(text: string): void {
+		if (!this.xterm || !text) return;
+		this.xterm.write(text);
+		this.scrollTerminalToBottom();
+	}
+
+	private decodeOutputChunk(payload: string | Uint8Array, decoder: TextDecoder | null): string {
+		if (typeof payload === "string") return payload;
+		if (!(payload instanceof Uint8Array)) return normalizeText(payload);
+		if (!decoder) {
+			return new TextDecoder().decode(payload);
+		}
+		return decoder.decode(payload, { stream: true });
+	}
+
 	private writeStdOut(text: string): void {
 		if (!this.xterm) return;
 		if (!text) return;
@@ -428,12 +445,7 @@ export class TerminalPanel {
 		return `script -q -c ${shellSingleQuote("pi")} /dev/null`;
 	}
 
-	private resolveSpecialShellCommand(command: string): {
-		shellCommand: string;
-		infoText: string | null;
-		interactive: boolean;
-		initialInput: string[];
-	} {
+	private resolveSpecialShellCommand(command: string): TerminalCommandResolution {
 		const trimmed = command.trim();
 		const piCommand = this.buildPiInteractiveBridgeCommand();
 		if (piCommand) {
@@ -443,26 +455,23 @@ export class TerminalPanel {
 					infoText: "Running pi in interactive terminal mode.",
 					interactive: true,
 					initialInput: [],
+					initialInputStartDelayMs: 0,
+					initialInputInterChunkDelayMs: 0,
 				};
 			}
 			const loginMatch = trimmed.match(/^pi\s+login(?:\s+([a-z0-9._-]+))?$/i);
 			if (loginMatch) {
 				const requestedProvider = (loginMatch[1] ?? "").trim().toLowerCase();
 				const infoText = requestedProvider
-					? `Running Pi OAuth helper. Select ${requestedProvider} in the /login provider picker.`
+					? `Running Pi OAuth helper. Use /login and select ${requestedProvider} in the provider picker.`
 					: "Running Pi OAuth helper. Use /login in the terminal picker.";
-				const initialInput: string[] = ["/login\n"];
-				const providerIndex = BUILTIN_OAUTH_PROVIDER_ORDER.indexOf(requestedProvider as (typeof BUILTIN_OAUTH_PROVIDER_ORDER)[number]);
-				if (providerIndex >= 0) {
-					const down = "\x1b[B".repeat(providerIndex);
-					if (down) initialInput.push(down);
-					initialInput.push("\n");
-				}
 				return {
 					shellCommand: piCommand,
 					infoText,
 					interactive: true,
-					initialInput,
+					initialInput: ["/login\n"],
+					initialInputStartDelayMs: 1000,
+					initialInputInterChunkDelayMs: 220,
 				};
 			}
 		}
@@ -471,6 +480,8 @@ export class TerminalPanel {
 			infoText: null,
 			interactive: false,
 			initialInput: [],
+			initialInputStartDelayMs: 0,
+			initialInputInterChunkDelayMs: 0,
 		};
 	}
 
@@ -532,14 +543,31 @@ export class TerminalPanel {
 
 	private async executeShell(
 		command: string,
-		options: { streamOutput?: boolean; initialInput?: string[] } = {},
+		options: {
+			streamOutput?: boolean;
+			initialInput?: string[];
+			initialInputStartDelayMs?: number;
+			initialInputInterChunkDelayMs?: number;
+			rawOutput?: boolean;
+			allowExecuteFallback?: boolean;
+		} = {},
 	): Promise<TerminalExecResult> {
 		const profile = await this.ensureShellProfile();
 		const streamOutput = options.streamOutput !== false;
 		const initialInput = Array.isArray(options.initialInput) ? options.initialInput : [];
-		const shellCommand = Command.create(profile.name, this.buildShellArgs(profile, command), {
-			cwd: this.cwd || undefined,
-		});
+		const outputRaw = options.rawOutput === true;
+		const allowExecuteFallback = options.allowExecuteFallback ?? !outputRaw;
+		const initialInputStartDelayMs = Math.max(0, Number(options.initialInputStartDelayMs ?? 0));
+		const initialInputInterChunkDelayMs = Math.max(0, Number(options.initialInputInterChunkDelayMs ?? 140));
+		const shellArgs = this.buildShellArgs(profile, command);
+		const shellCommand = outputRaw
+			? Command.create(profile.name, shellArgs, {
+					cwd: this.cwd || undefined,
+					encoding: "raw",
+				})
+			: Command.create(profile.name, shellArgs, {
+					cwd: this.cwd || undefined,
+				});
 
 		return await new Promise<TerminalExecResult>((resolve, reject) => {
 			let stdout = "";
@@ -575,12 +603,19 @@ export class TerminalPanel {
 			const attemptExecuteFallback = () => {
 				if (fallbackStarted) return;
 				fallbackStarted = true;
+				if (!allowExecuteFallback) {
+					settleWithError(new Error("Spawn unavailable for interactive terminal command. Restart app and verify shell capabilities."));
+					return;
+				}
 				this.writeInfo("Spawn unavailable; falling back to execute mode.");
 				void this.executeShellViaExecute(profile, command, streamOutput).then(settleWithResult).catch(settleWithError);
 			};
 
 			const sendInitialInput = async (child: Child): Promise<void> => {
 				if (initialInput.length === 0) return;
+				if (initialInputStartDelayMs > 0) {
+					await new Promise((resolve) => setTimeout(resolve, initialInputStartDelayMs));
+				}
 				for (let i = 0; i < initialInput.length; i += 1) {
 					const chunk = initialInput[i] ?? "";
 					if (!chunk) continue;
@@ -590,25 +625,46 @@ export class TerminalPanel {
 						this.writeStdErr(err instanceof Error ? err.message : String(err));
 						return;
 					}
-					if (i < initialInput.length - 1) {
-						await new Promise((resolve) => setTimeout(resolve, 140));
+					if (i < initialInput.length - 1 && initialInputInterChunkDelayMs > 0) {
+						await new Promise((resolve) => setTimeout(resolve, initialInputInterChunkDelayMs));
 					}
 				}
 			};
 
-			const onStdout = (payload: string) => {
-				const text = normalizeText(payload);
+			const stdoutDecoder = outputRaw ? new TextDecoder() : null;
+			const stderrDecoder = outputRaw ? new TextDecoder() : null;
+
+			const onStdout = (payload: string | Uint8Array) => {
+				const text = outputRaw ? this.decodeOutputChunk(payload, stdoutDecoder) : normalizeText(payload);
 				if (!text) return;
 				stdout += text;
-				if (streamOutput) this.writeStdOut(text);
+				if (streamOutput) {
+					if (outputRaw) this.writeRawOutput(text);
+					else this.writeStdOut(text);
+				}
 			};
-			const onStderr = (payload: string) => {
-				const text = normalizeText(payload);
+			const onStderr = (payload: string | Uint8Array) => {
+				const text = outputRaw ? this.decodeOutputChunk(payload, stderrDecoder) : normalizeText(payload);
 				if (!text) return;
 				stderr += text;
-				if (streamOutput) this.writeStdErr(text);
+				if (streamOutput) {
+					if (outputRaw) this.writeRawOutput(text);
+					else this.writeStdErr(text);
+				}
 			};
 			const onClose = (payload: { code: number | null; signal: number | null }) => {
+				if (outputRaw) {
+					const flushStdout = stdoutDecoder?.decode() ?? "";
+					if (flushStdout) {
+						stdout += flushStdout;
+						if (streamOutput) this.writeRawOutput(flushStdout);
+					}
+					const flushStderr = stderrDecoder?.decode() ?? "";
+					if (flushStderr) {
+						stderr += flushStderr;
+						if (streamOutput) this.writeRawOutput(flushStderr);
+					}
+				}
 				settleWithResult({
 					code: payload.code,
 					signal: payload.signal,
@@ -707,6 +763,10 @@ export class TerminalPanel {
 				const result = await this.executeShell(resolved.shellCommand, {
 					streamOutput: true,
 					initialInput: resolved.initialInput,
+					initialInputStartDelayMs: resolved.initialInputStartDelayMs,
+					initialInputInterChunkDelayMs: resolved.initialInputInterChunkDelayMs,
+					rawOutput: resolved.interactive,
+					allowExecuteFallback: !resolved.interactive,
 				});
 				if (typeof result.code === "number" && result.code !== 0 && !result.stderr.trim()) {
 					this.writeStdErr(`exit ${result.code}`);
@@ -718,7 +778,11 @@ export class TerminalPanel {
 			this.running = false;
 			this.runningInteractive = false;
 			this.render();
-			this.printPrompt();
+			const suppressPrompt = this.suppressPromptOnce;
+			this.suppressPromptOnce = false;
+			if (!suppressPrompt) {
+				this.printPrompt();
+			}
 			const next = this.queuedCommands.shift();
 			if (next) {
 				this.xterm?.write(`${next}\r\n`);
@@ -743,6 +807,7 @@ export class TerminalPanel {
 
 	private async handleClearAction(): Promise<void> {
 		if (this.running) {
+			this.suppressPromptOnce = true;
 			await this.abortRunningCommand();
 		}
 		this.clearScreen();
