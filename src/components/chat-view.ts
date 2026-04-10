@@ -62,6 +62,7 @@ import type { ForkOption, HistoryTreeRow, HistoryViewerRole } from "./chat-view/
 import { loadWelcomeDashboardInventory } from "./chat-view/welcome-dashboard-data.js";
 import { renderCenteredWelcomeView } from "./chat-view/welcome-dashboard-view.js";
 import { renderAssistantWorkflowView } from "./chat-view/assistant-workflow-view.js";
+import { renderGitRepoControlView } from "./chat-view/git-repo-control-view.js";
 import {
 	renderAssistantMessageRow,
 	renderChangelogMessageRow,
@@ -69,6 +70,10 @@ import {
 	renderMessageTimelineRows,
 	renderSystemMessageRow,
 } from "./chat-view/message-timeline-view.js";
+import {
+	executeBuiltinSlashCommand as executeBuiltinSlashCommandView,
+	formatSessionInfoBlock as formatSessionInfoBlockView,
+} from "./chat-view/slash-builtin-command.js";
 import {
 	collectAssistantWorkflow,
 	isStandaloneCodeBlockMarkdown,
@@ -1281,286 +1286,56 @@ export class ChatView {
 		return resolveModelCandidateFromArg(rawArg, this.availableModels);
 	}
 
-	private getSessionMessageBreakdown(): {
-		user: number;
-		assistant: number;
-		toolCalls: number;
-		toolResults: number;
-	} {
-		let user = 0;
-		let assistant = 0;
-		let toolCalls = 0;
-		let toolResults = 0;
-		for (const message of this.messages) {
-			if (message.role === "user") {
-				user += 1;
-				continue;
-			}
-			if (message.role !== "assistant") continue;
-			assistant += 1;
-			toolCalls += message.toolCalls.length;
-			toolResults += message.toolCalls.filter((call) => typeof call.result === "string" && call.result.trim().length > 0).length;
-		}
-		return { user, assistant, toolCalls, toolResults };
-	}
-
-	private formatSessionInfoBlock(): string {
-		const lines: string[] = [];
-		const sessionName = normalizeText(this.state?.sessionName);
-		const sessionFile = normalizeText(this.state?.sessionFile);
-		const sessionId = normalizeText(this.state?.sessionId);
-		const modelProvider = normalizeText(this.state?.model?.provider);
-		const modelId = normalizeText(this.state?.model?.id);
-		const modelLabel = modelProvider && modelId ? `${modelProvider}/${modelId}` : "—";
-		const { user, assistant, toolCalls, toolResults } = this.getSessionMessageBreakdown();
-		const totalMessages = this.state?.messageCount ?? this.sessionStats.messageCount;
-		const pendingMessages = this.state?.pendingMessageCount ?? this.sessionStats.pendingCount;
-
-		lines.push("Session info");
-		lines.push("");
-		lines.push(`Name: ${sessionName || "(unnamed)"}`);
-		lines.push(`File: ${sessionFile || "In-memory"}`);
-		lines.push(`ID: ${sessionId || "—"}`);
-		lines.push(`Model: ${modelLabel}`);
-		lines.push(`Thinking: ${this.state?.thinkingLevel ?? "—"}`);
-		lines.push("");
-		lines.push("Messages");
-		lines.push(`User: ${user}`);
-		lines.push(`Assistant: ${assistant}`);
-		lines.push(`Tool calls: ${toolCalls}`);
-		lines.push(`Tool results: ${toolResults}`);
-		lines.push(`Total: ${Math.max(0, totalMessages)}`);
-		lines.push(`Pending: ${Math.max(0, pendingMessages)}`);
-		lines.push("");
-		lines.push("Tokens");
-		lines.push(
-			`Context: ${this.sessionStats.tokens !== null ? Math.round(this.sessionStats.tokens).toLocaleString() : "—"}`,
-		);
-		lines.push(
-			`Context window: ${this.sessionStats.contextWindow !== null ? Math.round(this.sessionStats.contextWindow).toLocaleString() : "—"}`,
-		);
-		lines.push(`Usage: ${this.sessionStats.usageRatio !== null ? `${(this.sessionStats.usageRatio * 100).toFixed(1)}%` : "—"}`);
-		lines.push(
-			`Session tokens total: ${this.sessionStats.lifetimeTokens !== null ? Math.round(this.sessionStats.lifetimeTokens).toLocaleString() : "—"}`,
-		);
-		lines.push(`Cost: ${this.sessionStats.costUsd !== null ? formatUsd(this.sessionStats.costUsd) : "—"}`);
-		return lines.join("\n");
-	}
-
 	private async executeBuiltinSlashCommand(commandName: string, args: string): Promise<void> {
-		switch (commandName) {
-			case "settings": {
-				if (!this.onOpenSettings) {
-					this.pushNotice("Settings panel is unavailable", "error");
-					return;
-				}
-				this.onOpenSettings();
-				return;
-			}
-			case "model": {
-				const rawArg = args.trim();
-				if (!rawArg) {
-					this.openModelPicker();
-					return;
-				}
-				if (this.availableModels.length === 0) {
-					await this.loadAvailableModels();
-				}
-				const candidate = this.resolveModelCandidateFromArg(rawArg);
-				if (!candidate) {
-					const providerHint = this.resolveProviderHintFromModelArg(rawArg) ?? undefined;
-					this.openModelPicker({ preferredProvider: providerHint });
-					return;
-				}
-				await this.setModel(candidate.provider, candidate.id);
-				return;
-			}
-			case "scoped-models": {
-				if (this.onOpenSettings) {
-					this.onOpenSettings("general");
-				} else {
-					this.pushNotice("Settings panel is unavailable", "error");
-				}
-				return;
-			}
-			case "export": {
-				let outputPath = this.unwrapQuotedArg(args);
-				if (!outputPath) {
-					outputPath = (await this.pickSessionExportPathFromDialog()) || "";
-				}
-				if (!outputPath) {
-					this.pushNotice("Export cancelled", "info");
-					return;
-				}
-				const result = await rpcBridge.exportHtml(outputPath);
-				this.pushNotice(`Exported session to ${truncate(result.path, 70)}`, "success");
-				return;
-			}
-			case "import": {
-				let target = this.unwrapQuotedArg(args);
-				if (!target) {
-					target = (await this.pickSessionImportPathFromDialog()) || "";
-				}
-				if (!target) {
-					this.pushNotice("Import cancelled", "info");
-					return;
-				}
-				const result = await rpcBridge.switchSession(target);
-				if (!result.cancelled) {
-					await this.refreshFromBackend();
-					this.pushNotice(`Session imported from ${truncate(target, 56)}`, "success");
-				} else {
-					this.pushNotice("Import cancelled", "info");
-				}
-				return;
-			}
-			case "share": {
-				await this.shareAsGist();
-				return;
-			}
-			case "copy": {
-				await this.copyLastMessage();
-				return;
-			}
-			case "name": {
-				const nextName = args.trim();
-				if (!nextName) {
-					if (this.onBeginRenameCurrentSession) {
-						const handled = await this.onBeginRenameCurrentSession();
-						if (handled) return;
-					}
-					await this.renameSession();
-					return;
-				}
-				await this.renameSessionTo(nextName);
-				return;
-			}
-			case "session": {
-				await this.refreshSessionStats(true);
-				this.appendSystemMessage(this.formatSessionInfoBlock(), { label: "session" });
-				return;
-			}
-			case "changelog": {
-				const tokens = args
-					.split(/\s+/)
-					.map((token) => token.trim().toLowerCase())
-					.filter(Boolean);
-				const forceRefresh = tokens.includes("refresh");
-				const showAll = tokens.includes("all") || tokens.includes("full");
-				const markdownFull = await this.loadPiAgentChangelogMarkdown(forceRefresh);
-				const markdown = showAll ? markdownFull : this.extractLatestChangelogSections(markdownFull, 2);
-				this.appendSystemMessage(markdown, {
-					label: "changelog",
-					markdown: true,
-					collapsibleTitle: showAll ? "Changelog · all" : "Changelog · latest",
-					collapsedByDefault: true,
-				});
-				return;
-			}
-			case "hotkeys": {
-				if (this.onOpenShortcuts) {
-					this.onOpenShortcuts();
-				} else {
-					this.pushNotice("Keyboard shortcuts panel is unavailable", "info");
-				}
-				return;
-			}
-			case "terminal": {
-				if (this.onOpenTerminal) {
-					await this.onOpenTerminal();
-				} else {
-					this.pushNotice("Terminal panel is unavailable", "info");
-				}
-				return;
-			}
-			case "fork": {
-				this.openHistoryViewerForFork({
-					loading: false,
-					sessionName: this.state?.sessionName ?? null,
-					query: args.trim() || undefined,
-				});
-				return;
-			}
-			case "tree": {
-				this.openHistoryViewer({ query: args.trim() || undefined });
-				return;
-			}
-			case "login": {
-				const provider = this.normalizedAuthProviderArg(args);
-				if (!provider) {
-					this.openModelPicker();
-					return;
-				}
-				await this.handleProviderAuthAction(provider, "login");
-				return;
-			}
-			case "logout": {
-				const provider = this.normalizedAuthProviderArg(args);
-				if (!provider) {
-					this.openModelPicker();
-					return;
-				}
-				await this.handleProviderAuthAction(provider, "logout");
-				return;
-			}
-			case "new": {
-				if (this.onCreateFreshSession) {
-					const handled = await this.onCreateFreshSession();
-					if (handled) return;
-				}
-				await this.newSession();
-				return;
-			}
-			case "compact": {
-				await this.compactNow(args.trim() || undefined);
-				return;
-			}
-			case "resume": {
-				if (this.onOpenSessionBrowser) {
-					this.onOpenSessionBrowser(args.trim() || undefined);
-				} else {
-					this.pushNotice("Session browser is unavailable", "info");
-				}
-				return;
-			}
-			case "reload": {
-				if (this.onReloadRuntime) {
-					const handled = await this.onReloadRuntime();
-					if (handled) {
-						await this.ensureSlashCommandsLoaded(true);
-						await Promise.all([
-							this.loadProviderAuthStatus(true),
-							this.loadOAuthProviderCatalog(true),
-							this.loadModelCatalog(true),
-						]);
-						this.pushNotice("Reloaded runtime state", "success");
-						return;
-					}
-				}
-				await this.ensureSlashCommandsLoaded(true);
-				await this.refreshFromBackend();
-				await Promise.all([
-					this.loadAvailableModels(),
-					this.loadProviderAuthStatus(true),
-					this.loadOAuthProviderCatalog(true),
-					this.loadModelCatalog(true),
-				]);
-				this.pushNotice("Reloaded runtime state", "success");
-				return;
-			}
-			case "quit": {
-				if (this.onQuitApp) {
-					this.onQuitApp();
-				} else {
-					this.pushNotice("Quit is unavailable in this context", "info");
-				}
-				return;
-			}
-			default: {
-				this.pushNotice(`Unknown slash command: /${commandName}`, "error");
-				return;
-			}
-		}
+		await executeBuiltinSlashCommandView({
+			commandName,
+			args,
+			availableModelsCount: this.availableModels.length,
+			onOpenSettings: this.onOpenSettings,
+			pushNotice: this.pushNotice.bind(this),
+			truncate,
+			openModelPicker: this.openModelPicker.bind(this),
+			loadAvailableModels: this.loadAvailableModels.bind(this),
+			resolveModelCandidateFromArg: this.resolveModelCandidateFromArg.bind(this),
+			resolveProviderHintFromModelArg: this.resolveProviderHintFromModelArg.bind(this),
+			setModel: this.setModel.bind(this),
+			unwrapQuotedArg: this.unwrapQuotedArg.bind(this),
+			pickSessionExportPathFromDialog: this.pickSessionExportPathFromDialog.bind(this),
+			pickSessionImportPathFromDialog: this.pickSessionImportPathFromDialog.bind(this),
+			refreshFromBackend: this.refreshFromBackend.bind(this),
+			shareAsGist: this.shareAsGist.bind(this),
+			copyLastMessage: this.copyLastMessage.bind(this),
+			onBeginRenameCurrentSession: this.onBeginRenameCurrentSession,
+			renameSession: this.renameSession.bind(this),
+			renameSessionTo: this.renameSessionTo.bind(this),
+			refreshSessionStats: this.refreshSessionStats.bind(this),
+			buildSessionInfoBlock: () =>
+				formatSessionInfoBlockView({
+					state: this.state,
+					sessionStats: this.sessionStats,
+					messages: this.messages,
+				}),
+			appendSystemMessage: this.appendSystemMessage.bind(this),
+			loadPiAgentChangelogMarkdown: this.loadPiAgentChangelogMarkdown.bind(this),
+			extractLatestChangelogSections: this.extractLatestChangelogSections.bind(this),
+			onOpenShortcuts: this.onOpenShortcuts,
+			onOpenTerminal: this.onOpenTerminal,
+			sessionName: this.state?.sessionName ?? null,
+			openHistoryViewerForFork: this.openHistoryViewerForFork.bind(this),
+			openHistoryViewer: this.openHistoryViewer.bind(this),
+			normalizedAuthProviderArg: this.normalizedAuthProviderArg.bind(this),
+			handleProviderAuthAction: this.handleProviderAuthAction.bind(this),
+			onCreateFreshSession: this.onCreateFreshSession,
+			newSession: this.newSession.bind(this),
+			compactNow: this.compactNow.bind(this),
+			onOpenSessionBrowser: this.onOpenSessionBrowser,
+			onReloadRuntime: this.onReloadRuntime,
+			ensureSlashCommandsLoaded: this.ensureSlashCommandsLoaded.bind(this),
+			loadProviderAuthStatus: this.loadProviderAuthStatus.bind(this),
+			loadOAuthProviderCatalog: this.loadOAuthProviderCatalog.bind(this),
+			loadModelCatalog: this.loadModelCatalog.bind(this),
+			onQuitApp: this.onQuitApp,
+		});
 	}
 
 	private previewSlashPaletteItem(item: SlashPaletteItem): void {
@@ -3066,128 +2841,30 @@ export class ChatView {
 	}
 
 	private renderGitRepoControl(): TemplateResult {
-		if (!this.gitSummary.isRepo) {
-			return html`
-				<button class="composer-repo-btn" ?disabled=${this.creatingGitRepo || this.refreshingGitSummary} @click=${() => void this.createGitRepository()}>
-					${uiIcon("git")}
-					<span>${this.creatingGitRepo ? "Creating git repository…" : "Create git repository"}</span>
-				</button>
-			`;
-		}
-
-		const currentBranch = this.gitSummary.branch || "detached";
-		const query = this.gitBranchQuery.trim().toLowerCase();
-		const branchEntries = this.gitSummary.branchEntries.filter((entry) => {
-			if (!query) return true;
-			const haystack = `${entry.name} ${entry.fullName} ${entry.remote ?? ""} ${entry.scope}`.toLowerCase();
-			return haystack.includes(query);
+		return renderGitRepoControlView({
+			summary: this.gitSummary,
+			creatingGitRepo: this.creatingGitRepo,
+			refreshingGitSummary: this.refreshingGitSummary,
+			switchingGitBranch: this.switchingGitBranch,
+			fetchingGitRemotes: this.fetchingGitRemotes,
+			gitMenuOpen: this.gitMenuOpen,
+			gitBranchQuery: this.gitBranchQuery,
+			resolveGitBranchSelection: this.resolveGitBranchSelection.bind(this),
+			gitIcon: () => uiIcon("git"),
+			onCreateRepo: this.createGitRepository.bind(this),
+			onToggleMenu: () => {
+				this.gitMenuOpen = !this.gitMenuOpen;
+				if (!this.gitMenuOpen) this.gitBranchQuery = "";
+				this.render();
+			},
+			onSetBranchQuery: (value) => {
+				this.gitBranchQuery = value;
+				this.render();
+			},
+			onCreateAndCheckoutBranch: this.createAndCheckoutBranch.bind(this),
+			onFetchRemotes: this.fetchGitRemotes.bind(this),
+			onSwitchGitBranchEntry: this.switchGitBranchEntry.bind(this),
 		});
-		const filesLabel = this.gitSummary.dirtyFiles === 1 ? "file" : "files";
-		const matchingEntry = this.gitBranchQuery.trim().length > 0 ? this.resolveGitBranchSelection(this.gitBranchQuery) : null;
-		const branchActionLabel = matchingEntry
-			? matchingEntry.scope === "remote"
-				? `Checkout ${matchingEntry.fullName}`
-				: `Switch to ${matchingEntry.name}`
-			: "Create and checkout new branch…";
-
-		return html`
-			<div class="git-branch-wrap">
-				<button
-					class="git-branch-pill ${this.gitMenuOpen ? "open" : ""}"
-					title="Switch branch"
-					?disabled=${this.switchingGitBranch || this.refreshingGitSummary || this.fetchingGitRemotes}
-					@click=${(e: Event) => {
-						e.stopPropagation();
-						this.gitMenuOpen = !this.gitMenuOpen;
-						if (!this.gitMenuOpen) this.gitBranchQuery = "";
-						this.render();
-					}}
-				>
-					${uiIcon("git")}
-					<span class="git-branch-pill-name">${currentBranch}</span>
-					<span class="git-branch-pill-caret">▾</span>
-				</button>
-
-				${this.gitMenuOpen
-					? html`
-						<div class="git-branch-menu" @click=${(e: Event) => e.stopPropagation()}>
-							<label class="git-branch-search">
-								<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"></circle><path d="M10.2 10.2l3 3"></path></svg>
-								<input
-									type="text"
-									placeholder="Search branches or type a new name"
-									.value=${this.gitBranchQuery}
-									@input=${(e: Event) => {
-										this.gitBranchQuery = (e.target as HTMLInputElement).value;
-										this.render();
-									}}
-									@keydown=${(e: KeyboardEvent) => {
-										if (e.key === "Enter") {
-											e.preventDefault();
-											void this.createAndCheckoutBranch(this.gitBranchQuery);
-										}
-									}}
-								/>
-							</label>
-							<div class="git-branch-menu-head">
-								<div class="git-branch-menu-title">Branches</div>
-								<button
-									class="git-branch-fetch"
-									?disabled=${this.fetchingGitRemotes || this.switchingGitBranch}
-									@click=${() => void this.fetchGitRemotes()}
-								>
-									${this.fetchingGitRemotes ? "Fetching…" : "Fetch"}
-								</button>
-							</div>
-							<div class="git-branch-list">
-								${branchEntries.length === 0
-									? html`<div class="git-branch-empty">No branches found.</div>`
-									: branchEntries.map((entry) => {
-											const active = entry.scope === "local" && entry.name === currentBranch;
-											const disabled = active || this.switchingGitBranch || this.fetchingGitRemotes;
-											const label = entry.scope === "remote" ? entry.fullName : entry.name;
-											return html`
-												<button
-													class="git-branch-item ${active ? "active" : ""}"
-													?disabled=${disabled}
-													@click=${() => void this.switchGitBranchEntry(entry)}
-												>
-													<div class="git-branch-item-top">
-														<span class="git-branch-item-icon">${uiIcon("git")}</span>
-														<span class="git-branch-item-name">${label}</span>
-														<span class="git-branch-item-trailing">
-															${entry.scope === "remote" ? html`<span class="git-branch-item-badge">remote</span>` : nothing}
-															${active ? html`<span class="git-branch-item-check">✓</span>` : nothing}
-														</span>
-													</div>
-													${entry.scope === "remote"
-														? html`<div class="git-branch-item-meta">Checkout tracking branch from ${entry.fullName}</div>`
-														: active && this.gitSummary.dirtyFiles > 0
-															? html`
-																<div class="git-branch-item-meta">
-																	Uncommitted: ${this.gitSummary.dirtyFiles.toLocaleString()} ${filesLabel}
-																	<span class="git-delta plus">+${this.gitSummary.additions.toLocaleString()}</span>
-																	<span class="git-delta minus">-${this.gitSummary.deletions.toLocaleString()}</span>
-																</div>
-															`
-															: nothing}
-												</button>
-											`;
-										})}
-							</div>
-							<button
-								class="git-branch-create"
-								?disabled=${this.switchingGitBranch || this.fetchingGitRemotes}
-								@click=${() => void this.createAndCheckoutBranch(this.gitBranchQuery)}
-							>
-								<span class="git-branch-create-plus">${matchingEntry ? "↩" : "＋"}</span>
-								<span>${branchActionLabel}</span>
-							</button>
-						</div>
-					`
-					: nothing}
-			</div>
-		`;
 	}
 
 	private extractRuntimeErrorMessage(event: Record<string, unknown> | null | undefined): string {
