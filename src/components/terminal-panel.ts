@@ -31,6 +31,12 @@ interface TerminalCommandResolution {
 	initialInputInterChunkDelayMs: number;
 }
 
+interface TerminalCommandCompleteEvent {
+	command: string;
+	interactive: boolean;
+	result: TerminalExecResult | null;
+}
+
 function normalizeText(value: unknown): string {
 	if (typeof value === "string") return value;
 	if (value == null) return "";
@@ -109,6 +115,7 @@ export class TerminalPanel {
 	private cwd: string | null = null;
 	private running = false;
 	private onRequestClose: (() => void) | null = null;
+	private onCommandComplete: ((event: TerminalCommandCompleteEvent) => void | Promise<void>) | null = null;
 
 	private xterm: Terminal | null = null;
 	private fitAddon: FitAddon | null = null;
@@ -133,6 +140,10 @@ export class TerminalPanel {
 
 	setOnRequestClose(cb: () => void): void {
 		this.onRequestClose = cb;
+	}
+
+	setOnCommandComplete(cb: (event: TerminalCommandCompleteEvent) => void | Promise<void>): void {
+		this.onCommandComplete = cb;
 	}
 
 	setProjectPath(path: string | null): void {
@@ -186,6 +197,8 @@ export class TerminalPanel {
 			this.fitAddon = new FitAddon();
 			this.xterm = new Terminal({
 				cursorBlink: true,
+				cursorStyle: "bar",
+				cursorWidth: 2,
 				convertEol: true,
 				scrollback: 6000,
 				fontSize: 12,
@@ -208,9 +221,94 @@ export class TerminalPanel {
 		}
 	}
 
+	private isMacPlatform(): boolean {
+		return navigator.platform.toLowerCase().includes("mac");
+	}
+
+	private isCopyShortcut(event: KeyboardEvent): boolean {
+		const key = event.key.toLowerCase();
+		if (this.isMacPlatform()) {
+			return event.metaKey && !event.ctrlKey && !event.altKey && key === "c";
+		}
+		return event.ctrlKey && event.shiftKey && !event.metaKey && key === "c";
+	}
+
+	private isPasteShortcut(event: KeyboardEvent): boolean {
+		const key = event.key.toLowerCase();
+		if (this.isMacPlatform()) {
+			return event.metaKey && !event.ctrlKey && !event.altKey && key === "v";
+		}
+		if (event.ctrlKey && event.shiftKey && !event.metaKey && key === "v") return true;
+		return event.shiftKey && key === "insert";
+	}
+
+	private isSelectAllShortcut(event: KeyboardEvent): boolean {
+		const key = event.key.toLowerCase();
+		if (this.isMacPlatform()) {
+			return event.metaKey && !event.ctrlKey && !event.altKey && key === "a";
+		}
+		return event.ctrlKey && event.shiftKey && !event.metaKey && key === "a";
+	}
+
+	private async copySelectionToClipboard(): Promise<void> {
+		const selection = this.xterm?.getSelection() ?? "";
+		if (!selection) return;
+		try {
+			await navigator.clipboard.writeText(selection);
+		} catch {
+			// Ignore clipboard failures in restricted environments.
+		}
+	}
+
+	private handlePastedText(rawText: string): void {
+		if (!rawText) return;
+		const normalized = rawText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+		if (!normalized) return;
+
+		if (this.running) {
+			if (this.runningInteractive && this.runningChild) {
+				this.writeToRunningChild(normalized.replace(/\n/g, "\r"));
+			}
+			return;
+		}
+
+		const inline = normalized.replace(/\n+/g, " ");
+		if (!inline) return;
+		this.inputBuffer += inline;
+		this.xterm?.write(inline);
+		this.scrollTerminalToBottom();
+	}
+
+	private async pasteFromClipboard(): Promise<void> {
+		try {
+			const text = await navigator.clipboard.readText();
+			this.handlePastedText(text);
+		} catch {
+			// Ignore clipboard failures in restricted environments.
+		}
+	}
+
 	private installKeyboardBindings(): void {
 		if (!this.xterm) return;
 		this.xterm.onKey(({ key, domEvent }) => {
+			if (this.isCopyShortcut(domEvent)) {
+				domEvent.preventDefault();
+				void this.copySelectionToClipboard();
+				return;
+			}
+
+			if (this.isPasteShortcut(domEvent)) {
+				domEvent.preventDefault();
+				void this.pasteFromClipboard();
+				return;
+			}
+
+			if (this.isSelectAllShortcut(domEvent)) {
+				domEvent.preventDefault();
+				this.xterm?.selectAll();
+				return;
+			}
+
 			if (domEvent.ctrlKey && !domEvent.metaKey && domEvent.key.toLowerCase() === "c") {
 				domEvent.preventDefault();
 				if (this.running) {
@@ -803,6 +901,7 @@ export class TerminalPanel {
 		this.running = true;
 		this.runningInteractive = resolved.interactive;
 		this.render();
+		let completedResult: TerminalExecResult | null = null;
 		try {
 			if (this.isCdCommand(command)) {
 				await this.executeCdCommand(command);
@@ -815,6 +914,7 @@ export class TerminalPanel {
 					rawOutput: resolved.interactive,
 					allowExecuteFallback: !resolved.interactive,
 				});
+				completedResult = result;
 				if (typeof result.code === "number" && result.code !== 0 && !result.stderr.trim()) {
 					this.writeStdErr(`exit ${result.code}`);
 				}
@@ -829,6 +929,17 @@ export class TerminalPanel {
 			this.suppressPromptOnce = false;
 			if (!suppressPrompt) {
 				this.printPrompt();
+			}
+			if (!this.isCdCommand(command) && this.onCommandComplete) {
+				void Promise.resolve(
+					this.onCommandComplete({
+						command,
+						interactive: resolved.interactive,
+						result: completedResult,
+					}),
+				).catch(() => {
+					// Ignore command completion callback failures.
+				});
 			}
 			const next = this.queuedCommands.shift();
 			if (next) {

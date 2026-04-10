@@ -146,6 +146,7 @@ let projectSwitchTask: Promise<void> = Promise.resolve();
 let projectSwitchVersion = 0;
 let workspacePaneApplyVersion = 0;
 let settingsPaneRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+let terminalCommandRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 class StaleProjectTaskError extends Error {
 	constructor() {
@@ -1631,6 +1632,33 @@ function scheduleSidebarSessionsRefresh(delayMs = 180): void {
 	sidebarSessionsRefreshTimer = setTimeout(() => {
 		sidebarSessionsRefreshTimer = null;
 		sidebar?.refreshActiveProjectSessions();
+	}, delayMs);
+}
+
+function scheduleTerminalCommandRefresh(delayMs = 260): void {
+	if (terminalCommandRefreshTimer) {
+		clearTimeout(terminalCommandRefreshTimer);
+	}
+	terminalCommandRefreshTimer = setTimeout(() => {
+		terminalCommandRefreshTimer = null;
+		void (async () => {
+			try {
+				await chatView?.refreshModels();
+			} catch {
+				// ignore refresh model failures from terminal-triggered updates
+			}
+			try {
+				await chatView?.refreshFromBackend();
+			} catch {
+				// ignore refresh failures from terminal-triggered updates
+			}
+			if (packagesView) {
+				void packagesView.refreshPackages(false).catch(() => {
+					// ignore package refresh failures here
+				});
+			}
+			scheduleSidebarSessionsRefresh(0);
+		})();
 	}, delayMs);
 }
 
@@ -3912,6 +3940,12 @@ function renderApp(): void {
 		setupTerminalDockResize(terminalPane);
 		terminalPanel = new TerminalPanel(terminalPane);
 		terminalPanel.setProjectPath(null);
+		terminalPanel.setOnCommandComplete(({ command, result }) => {
+			const normalized = command.trim().toLowerCase();
+			if (!/^pi(?:\s|$)/.test(normalized)) return;
+			if (result && typeof result.code === "number" && result.code !== 0) return;
+			scheduleTerminalCommandRefresh();
+		});
 		terminalPanel.setOnRequestClose(() => {
 			const workspace = getActiveWorkspace();
 			if (!workspace) return;
