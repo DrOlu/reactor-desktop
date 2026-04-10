@@ -62,6 +62,13 @@ import type { ForkOption, HistoryTreeRow, HistoryViewerRole } from "./chat-view/
 import { loadWelcomeDashboardInventory } from "./chat-view/welcome-dashboard-data.js";
 import { renderCenteredWelcomeView } from "./chat-view/welcome-dashboard-view.js";
 import {
+	collectAssistantWorkflow,
+	isStandaloneCodeBlockMarkdown,
+	normalizeThinkingText,
+	resolveWorkflowExpansionState,
+	summarizeToolCall,
+} from "./chat-view/workflow-utils.js";
+import {
 	displayProviderLabel as displayProviderLabelFromCatalog,
 	isOAuthProviderId as isOAuthProviderIdInCatalog,
 	normalizeAuthProviderArg as normalizeAuthProviderArgValue,
@@ -4985,33 +4992,11 @@ export class ChatView {
 	}
 
 	private normalizeThinkingText(value: string): string {
-		let text = value.replace(/^\s*thinking\.\.\.\s*/i, "").trim();
-		if (!text) return "";
-		const paragraphs = text
-		.split(/\n{2,}/)
-			.map((part) => part.trim())
-			.filter(Boolean);
-		const deduped: string[] = [];
-		const seen = new Set<string>();
-		for (const part of paragraphs) {
-			if (seen.has(part)) continue;
-			seen.add(part);
-			deduped.push(part);
-		}
-		text = deduped.join("\n\n").trim();
-		const half = Math.floor(text.length / 2);
-		if (text.length > 40 && text.length % 2 === 0 && text.slice(0, half) === text.slice(half)) {
-			text = text.slice(0, half).trim();
-		}
-		return text;
+		return normalizeThinkingText(value);
 	}
 
 	private isStandaloneCodeBlockMarkdown(value: string): boolean {
-		const text = value.trim();
-		if (!text) return false;
-		if (/^```[^\n`]*\n[\s\S]*\n```$/.test(text)) return true;
-		if (/^~~~[^\n~]*\n[\s\S]*\n~~~$/.test(text)) return true;
-		return false;
+		return isStandaloneCodeBlockMarkdown(value);
 	}
 
 	private renderThinking(msg: UiMessage): TemplateResult | typeof nothing {
@@ -5059,46 +5044,8 @@ export class ChatView {
 		`;
 	}
 
-	private pickToolArg(args: Record<string, unknown>, keys: string[]): string {
-		for (const key of keys) {
-			const value = args[key];
-			if (typeof value === "string" && value.trim().length > 0) return value.trim();
-		}
-		return "";
-	}
-
 	private summarizeToolCall(tc: ToolCallBlock): string {
-		const name = tc.name.trim().toLowerCase();
-		const command = this.pickToolArg(tc.args, ["command", "cmd", "shell", "script"]);
-		const path = this.pickToolArg(tc.args, ["path", "filePath", "targetPath", "from", "to"]);
-		const query = this.pickToolArg(tc.args, ["query", "pattern", "glob", "name"]);
-		if (name === "bash" && command) return `Ran ${truncate(command, 84)}`;
-		if ((name === "read" || name === "readfile") && path) return `Read ${truncate(path, 74)}`;
-		if ((name === "write" || name === "writefile") && path) return `Wrote ${truncate(path, 74)}`;
-		if (name === "edit" && path) return `Edited ${truncate(path, 74)}`;
-		if (name.includes("search") && query) return `Explored ${truncate(query, 74)}`;
-		if ((name === "list" || name.includes("ls")) && path) return `Explored ${truncate(path, 74)}`;
-		if (path) return `${tc.name} ${truncate(path, 74)}`;
-		return `Ran ${tc.name}`;
-	}
-
-	private buildToolCallGroups(toolCalls: ToolCallBlock[]): ToolCallGroup[] {
-		const groups: ToolCallGroup[] = [];
-		for (const tc of toolCalls) {
-			const preview = this.summarizeToolCall(tc);
-			const previous = groups[groups.length - 1];
-			if (previous && previous.toolName === tc.name && previous.preview === preview) {
-				previous.calls.push(tc);
-				continue;
-			}
-			groups.push({
-				id: `${tc.id}-group`,
-				toolName: tc.name,
-				preview,
-				calls: [tc],
-			});
-		}
-		return groups;
+		return summarizeToolCall(tc, truncate);
 	}
 
 	private isToolWorkflowExpanded(workflowId: string): boolean {
@@ -5161,14 +5108,6 @@ export class ChatView {
 		return html`${verb} <span class="tool-file-target">${target}</span>`;
 	}
 
-	private isThinkingOnlyAssistantMessage(message: UiMessage | undefined): boolean {
-		if (!message || message.role !== "assistant") return false;
-		if (message.toolCalls.length > 0) return false;
-		if (message.text.trim().length > 0) return false;
-		if ((message.errorText ?? "").trim().length > 0) return false;
-		return Boolean((message.thinking ?? "").trim());
-	}
-
 	private collectAssistantWorkflow(startIndex: number): {
 		workflow: {
 			id: string;
@@ -5185,104 +5124,14 @@ export class ChatView {
 		};
 		nextIndex: number;
 	} | null {
-		const start = this.messages[startIndex];
-		if (!start || start.role !== "assistant") return null;
-		const startIsThinkingOnly = this.isThinkingOnlyAssistantMessage(start);
-		const startHasTools = start.toolCalls.length > 0;
-		if (!startIsThinkingOnly && !startHasTools) return null;
-
-		const grouped: UiMessage[] = [];
-		let sawTools = false;
-		let consumedFinalMessage = false;
-		let cursor = startIndex;
-
-		while (cursor < this.messages.length) {
-			const candidate = this.messages[cursor];
-			if (candidate.role !== "assistant") break;
-			const hasTools = candidate.toolCalls.length > 0;
-			const hasText = candidate.text.trim().length > 0;
-			const hasThinking = Boolean((candidate.thinking ?? "").trim());
-			const hasError = Boolean((candidate.errorText ?? "").trim());
-
-			if (hasTools) {
-				grouped.push(candidate);
-				sawTools = true;
-				cursor += 1;
-				continue;
-			}
-
-			if (!sawTools) {
-				if (hasThinking && !hasText && !hasError) {
-					grouped.push(candidate);
-					cursor += 1;
-					continue;
-				}
-				break;
-			}
-
-			if (!consumedFinalMessage && (hasText || hasError)) {
-				grouped.push(candidate);
-				consumedFinalMessage = true;
-				cursor += 1;
-				break;
-			}
-
-			if (!consumedFinalMessage && hasThinking) {
-				grouped.push(candidate);
-				cursor += 1;
-				continue;
-			}
-
-			break;
-		}
-
-		if (grouped.length === 0) return null;
-		const toolCalls = grouped.flatMap((entry) => entry.toolCalls);
-		const isProvisionalWorkflow =
-			toolCalls.length === 0 && this.currentIsStreaming() && this.keepWorkflowExpandedUntilAssistantText && !this.runHasAssistantText;
-		if (toolCalls.length === 0 && !isProvisionalWorkflow) return null;
-
-		const startedAt = toolCalls.reduce((min, tc) => {
-			if (!tc.startedAt) return min;
-			return min === 0 ? tc.startedAt : Math.min(min, tc.startedAt);
-		}, 0);
-		const endedAt = toolCalls.reduce((max, tc) => {
-			if (!tc.endedAt) return max;
-			return Math.max(max, tc.endedAt);
-		}, 0);
-		const thinkingParts = grouped
-			.map((entry) => this.normalizeThinkingText((entry.thinking ?? "").replace(/^\s+/, "")))
-			.filter(Boolean);
-		const dedupedThinkingParts = thinkingParts.filter((part, index) => index === 0 || part !== thinkingParts[index - 1]);
-		const thinkingText = dedupedThinkingParts.join("\n\n").trim();
-		const finalText = grouped
-			.filter((entry) => entry.toolCalls.length === 0)
-			.map((entry) => entry.text.trim())
-			.filter(Boolean)
-			.join("\n\n");
-		const errorText = grouped
-			.map((entry) => (entry.errorText ?? "").trim())
-			.filter(Boolean)
-			.join("\n");
-		const workflowId = `workflow-${grouped[0]?.id ?? start.id}`;
-
-		const nextIndex = Math.max(startIndex + 1, cursor);
-		return {
-			workflow: {
-				id: workflowId,
-				messages: grouped,
-				toolCalls,
-				toolGroups: this.buildToolCallGroups(toolCalls),
-				thinkingText,
-				finalText,
-				errorText,
-				isStreaming: grouped.some((entry) => entry.isStreaming),
-				startedAt,
-				endedAt,
-				isTerminal: nextIndex >= this.messages.length,
-			},
-			nextIndex,
-		};
+		return collectAssistantWorkflow({
+			messages: this.messages,
+			startIndex,
+			currentIsStreaming: this.currentIsStreaming(),
+			keepWorkflowExpandedUntilAssistantText: this.keepWorkflowExpandedUntilAssistantText,
+			runHasAssistantText: this.runHasAssistantText,
+			truncateText: truncate,
+		});
 	}
 
 	private resolveWorkflowExpansionState(
@@ -5295,17 +5144,15 @@ export class ChatView {
 		autoExpanded: boolean;
 		expanded: boolean;
 	} {
-		const total = toolCalls.length;
-		const running = toolCalls.filter((tc) => tc.isRunning).length;
-		const manualExpanded = this.isToolWorkflowExpanded(workflowId);
-		const autoExpanded = isTerminal && this.keepWorkflowExpandedUntilAssistantText && (running > 0 || this.runSawToolActivity || total === 0);
-		const expanded = (autoExpanded && !this.collapsedAutoWorkflowIds.has(workflowId)) || manualExpanded;
-		return {
-			total,
-			running,
-			autoExpanded,
-			expanded,
-		};
+		return resolveWorkflowExpansionState({
+			workflowId,
+			toolCalls,
+			isTerminal,
+			keepWorkflowExpandedUntilAssistantText: this.keepWorkflowExpandedUntilAssistantText,
+			runSawToolActivity: this.runSawToolActivity,
+			expandedWorkflowIds: this.expandedToolWorkflowIds,
+			collapsedAutoWorkflowIds: this.collapsedAutoWorkflowIds,
+		});
 	}
 
 	private renderAssistantWorkflow(workflow: {
