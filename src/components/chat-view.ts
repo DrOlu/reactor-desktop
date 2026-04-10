@@ -64,6 +64,10 @@ import { renderCenteredWelcomeView } from "./chat-view/welcome-dashboard-view.js
 import { renderAssistantWorkflowView } from "./chat-view/assistant-workflow-view.js";
 import { mapBackendMessages as mapBackendMessagesView } from "./chat-view/backend-message-mapper.js";
 import {
+	handleCompactionAndRetryEvent,
+	handleMessageStreamEvent,
+} from "./chat-view/event-stream-handlers.js";
+import {
 	createAndCheckoutBranchAction,
 	fetchGitRemotesAction,
 	switchGitBranchAction,
@@ -686,6 +690,18 @@ export class ChatView {
 		this.runHasAssistantText = false;
 		this.runSawToolActivity = false;
 		this.clearWorkingStatusTimer(true);
+	}
+
+	private markAssistantTextObserved(): void {
+		this.runHasAssistantText = true;
+		if (this.runSawToolActivity) {
+			this.keepWorkflowExpandedUntilAssistantText = false;
+		}
+	}
+
+	private markToolActivityObserved(): void {
+		this.runSawToolActivity = true;
+		this.keepWorkflowExpandedUntilAssistantText = true;
 	}
 
 	setProjectPath(path: string | null): void {
@@ -2520,6 +2536,59 @@ export class ChatView {
 		const type = event.type as string;
 		if (type === "response") return;
 
+		if (
+			handleMessageStreamEvent(type, event, {
+				promoteQueuedMessageFromUserEvent: this.promoteQueuedMessageFromUserEvent.bind(this),
+				getLastMessage: () => this.messages[this.messages.length - 1] ?? null,
+				ensureStreamingAssistantMessage: this.ensureStreamingAssistantMessage.bind(this),
+				extractText: this.extractText.bind(this),
+				extractAssistantMessageError: this.extractAssistantMessageError.bind(this),
+				markAssistantTextObserved: this.markAssistantTextObserved.bind(this),
+				markToolActivityObserved: this.markToolActivityObserved.bind(this),
+				extractToolOutput: this.extractToolOutput.bind(this),
+				findToolCall: this.findToolCall.bind(this),
+				findMostRecentRunningToolByName: this.findMostRecentRunningToolByName.bind(this),
+				attachOrphanToolResult: this.attachOrphanToolResult.bind(this),
+				render: this.render.bind(this),
+				scrollToBottom: this.scrollToBottom.bind(this),
+				extractRuntimeErrorMessage: this.extractRuntimeErrorMessage.bind(this),
+				extractAssistantPartialContent: this.extractAssistantPartialContent.bind(this),
+				mergeStreamingText: this.mergeStreamingText.bind(this),
+				scheduleStreamingUiReconcile: this.scheduleStreamingUiReconcile.bind(this),
+				createId: uid,
+			})
+		) {
+			return;
+		}
+
+		if (
+			handleCompactionAndRetryEvent(type, event, {
+				messagesLength: () => this.messages.length,
+				getCompactionCycle: () => this.compactionCycle,
+				setCompactionCycle: (cycle) => {
+					this.compactionCycle = cycle;
+				},
+				setCompactionInsertIndex: (index) => {
+					this.compactionInsertIndex = index;
+				},
+				createId: uid,
+				extractToolOutput: this.extractToolOutput.bind(this),
+				extractRuntimeErrorMessage: this.extractRuntimeErrorMessage.bind(this),
+				truncate,
+				pushNotice: this.pushNotice.bind(this),
+				pushRuntimeNotice: this.pushRuntimeNotice.bind(this),
+				markContextUsageUnknown: this.markContextUsageUnknown.bind(this),
+				refreshAfterCompaction: this.refreshAfterCompaction.bind(this),
+				setRetryStatus: (status) => {
+					this.retryStatus = status;
+				},
+				appendSystemMessage: this.appendSystemMessage.bind(this),
+				render: this.render.bind(this),
+			})
+		) {
+			return;
+		}
+
 		switch (type) {
 			case "agent_start": {
 				this.pendingDeliveryMode = "steer";
@@ -2573,333 +2642,6 @@ export class ChatView {
 					.catch(() => {
 						/* ignore */
 					});
-				this.render();
-				break;
-			}
-
-			case "message_start": {
-				const msg = event.message as Record<string, unknown>;
-				const role = typeof msg.role === "string" ? msg.role : "";
-				if (role === "user") {
-					this.promoteQueuedMessageFromUserEvent(msg);
-					break;
-				}
-				if (role === "assistant") {
-					const last = this.messages[this.messages.length - 1];
-					if (last?.role === "assistant" && last.isStreaming) {
-						break;
-					}
-					const initialText = this.extractText(msg.content);
-					const assistantError = this.extractAssistantMessageError(msg);
-					if (initialText.trim().length === 0 && !assistantError) {
-						break;
-					}
-					this.ensureStreamingAssistantMessage({
-						text: initialText,
-						errorText: assistantError || undefined,
-					});
-					if (initialText.trim().length > 0) {
-						this.runHasAssistantText = true;
-						if (this.runSawToolActivity) {
-							this.keepWorkflowExpandedUntilAssistantText = false;
-						}
-					}
-					this.render();
-					this.scrollToBottom();
-					break;
-				}
-
-				if (role === "toolResult") {
-					this.runSawToolActivity = true;
-					this.keepWorkflowExpandedUntilAssistantText = true;
-					const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : "";
-					const output = this.extractToolOutput(msg.content ?? msg.result ?? msg);
-					const isError = Boolean(msg.isError);
-					const toolName = typeof msg.toolName === "string" ? msg.toolName : "";
-					let tool = toolCallId ? this.findToolCall(toolCallId) : null;
-					if (!tool && toolName) {
-						tool = this.findMostRecentRunningToolByName(toolName);
-					}
-					if (tool) {
-						tool.result = output || "(no output)";
-						tool.isError = isError;
-						tool.isRunning = false;
-						tool.streamingOutput = undefined;
-						tool.isExpanded = false;
-						tool.endedAt = Date.now();
-						if (!tool.startedAt) tool.startedAt = tool.endedAt;
-					} else {
-						this.attachOrphanToolResult(toolName, output, isError);
-					}
-					this.render();
-					this.scrollToBottom();
-				}
-				break;
-			}
-
-			case "message_update": {
-				const assistantEvent = event.assistantMessageEvent as Record<string, unknown>;
-				if (!assistantEvent) break;
-				const subtype = typeof assistantEvent.type === "string" ? assistantEvent.type : "";
-
-				if (subtype === "error") {
-					const streamError = this.extractRuntimeErrorMessage(assistantEvent) || this.extractRuntimeErrorMessage(event);
-					const assistant = this.ensureStreamingAssistantMessage(streamError ? { errorText: streamError } : undefined);
-					assistant.isStreaming = false;
-					assistant.isThinkingStreaming = false;
-					if (streamError) {
-						assistant.errorText = streamError;
-					}
-					this.render();
-					break;
-				}
-
-				if (subtype === "text_delta") {
-					const assistant = this.ensureStreamingAssistantMessage();
-					const partialText = this.extractAssistantPartialContent(assistantEvent, "text");
-					assistant.text = this.mergeStreamingText(assistant.text, partialText, assistantEvent.delta);
-					assistant.isThinkingStreaming = false;
-					if (assistant.text.trim().length > 0) {
-						this.runHasAssistantText = true;
-						if (this.runSawToolActivity) {
-							this.keepWorkflowExpandedUntilAssistantText = false;
-						}
-					}
-					this.scheduleStreamingUiReconcile(1800);
-					this.render();
-					this.scrollToBottom();
-				} else if (subtype === "thinking_delta" || subtype === "reasoning_delta" || subtype.includes("thinking") || subtype.includes("reason")) {
-					const assistant = this.ensureStreamingAssistantMessage();
-					const partialThinking = this.extractAssistantPartialContent(assistantEvent, "thinking");
-					const currentThinking = assistant.thinking || "";
-					assistant.thinking = this.mergeStreamingText(currentThinking, partialThinking, assistantEvent.delta);
-					assistant.isThinkingStreaming = true;
-					this.scheduleStreamingUiReconcile(1800);
-					if ((assistant.thinking?.length || 0) % 100 === 0) this.render();
-				} else if (subtype === "toolcall_end") {
-					this.runSawToolActivity = true;
-					this.keepWorkflowExpandedUntilAssistantText = true;
-					const assistant = this.ensureStreamingAssistantMessage();
-					assistant.isThinkingStreaming = false;
-					const tc = assistantEvent.toolCall as Record<string, unknown>;
-					if (tc) {
-						const rawId = typeof tc.id === "string" ? tc.id.trim() : "";
-						const id = rawId || uid("tc");
-						const existing = assistant.toolCalls.find((entry) => entry.id === id);
-						if (existing) {
-							existing.name = typeof tc.name === "string" && tc.name.trim().length > 0 ? tc.name : existing.name;
-							existing.args = ((tc.arguments ?? existing.args) as Record<string, unknown>) || existing.args;
-							existing.isRunning = true;
-							existing.isExpanded = false;
-							existing.startedAt = existing.startedAt ?? Date.now();
-							existing.endedAt = undefined;
-						} else {
-							assistant.toolCalls.push({
-								id,
-								name: (tc.name as string) || "tool",
-								args: ((tc.arguments ?? {}) as Record<string, unknown>) || {},
-								isRunning: true,
-								isExpanded: false,
-								startedAt: Date.now(),
-							});
-						}
-						this.render();
-					}
-				}
-				break;
-			}
-
-			case "turn_end": {
-				const turnMessage = event.message as Record<string, unknown> | undefined;
-				const turnRole = typeof turnMessage?.role === "string" ? turnMessage.role : "";
-				if (turnRole === "assistant") {
-					const last = this.messages[this.messages.length - 1];
-					if (last?.role === "assistant") {
-						last.isStreaming = false;
-						last.isThinkingStreaming = false;
-						const turnError = this.extractAssistantMessageError(turnMessage);
-						if (turnError) {
-							last.errorText = turnError;
-						}
-					}
-					this.render();
-				}
-				break;
-			}
-
-			case "message_end": {
-				const last = this.messages[this.messages.length - 1];
-				if (last?.role === "assistant") {
-					last.isStreaming = false;
-					last.isThinkingStreaming = false;
-					const completed = event.message as Record<string, unknown> | undefined;
-					const completedError = this.extractAssistantMessageError(completed);
-					if (completedError) {
-						last.errorText = completedError;
-					}
-				}
-				this.scheduleStreamingUiReconcile(350);
-				this.render();
-				break;
-			}
-
-			case "tool_execution_start": {
-				const id = event.toolCallId as string | undefined;
-				if (!id) break;
-				const tool = this.findToolCall(id);
-				if (tool) {
-					tool.isRunning = true;
-					tool.isExpanded = false;
-					tool.startedAt = tool.startedAt ?? Date.now();
-					tool.endedAt = undefined;
-					this.render();
-				}
-				break;
-			}
-
-			case "tool_execution_update": {
-				const toolCallId = event.toolCallId as string | undefined;
-				const partialResult = event.partialResult as Record<string, unknown> | undefined;
-				if (!toolCallId || !partialResult) break;
-				const tool = this.findToolCall(toolCallId);
-				if (!tool) break;
-				const partialText = this.extractToolOutput(partialResult);
-				if (partialText) {
-					const currentOutput = tool.streamingOutput ?? tool.result ?? "";
-					tool.streamingOutput = this.mergeStreamingText(currentOutput, partialText, partialResult.delta);
-				}
-				tool.isRunning = true;
-				this.render();
-				this.scrollToBottom();
-				break;
-			}
-
-			case "tool_execution_end": {
-				const toolCallId = event.toolCallId as string | undefined;
-				if (!toolCallId) break;
-				const result = event.result as Record<string, unknown> | string | undefined;
-				const isError = Boolean(event.isError);
-				const tool = this.findToolCall(toolCallId);
-				if (!tool) break;
-				tool.isRunning = false;
-				tool.streamingOutput = undefined;
-				tool.isError = isError;
-				if (typeof result === "string") {
-					tool.result = result;
-				} else if (result && typeof result === "object") {
-					const content = this.extractToolOutput(result);
-					tool.result = content || "(no output)";
-				} else {
-					tool.result = tool.result || "(no output)";
-				}
-				tool.isExpanded = false;
-				tool.endedAt = Date.now();
-				if (!tool.startedAt) tool.startedAt = tool.endedAt;
-				this.render();
-				this.scrollToBottom();
-				break;
-			}
-
-			case "auto_compaction_start": {
-				this.compactionInsertIndex = this.messages.length;
-				this.compactionCycle = {
-					id: uid("compaction"),
-					status: "running",
-					startedAt: Date.now(),
-					endedAt: null,
-					summary: "Compacting context…",
-					errorMessage: null,
-					details: ["Compaction started"],
-					expanded: false,
-				};
-				this.render();
-				break;
-			}
-
-			case "auto_compaction_update":
-			case "auto_compaction_progress": {
-				if (!this.compactionCycle) break;
-				const detail =
-					pickString(event, ["message", "status", "phase", "step", "detail"]) ||
-					this.extractToolOutput(event.detail ?? event.payload ?? event).trim();
-				if (detail) {
-					const cleaned = truncate(detail.replace(/\s+/g, " ").trim(), 220);
-					if (cleaned && this.compactionCycle.details[this.compactionCycle.details.length - 1] !== cleaned) {
-						this.compactionCycle.details.push(cleaned);
-					}
-				}
-				this.render();
-				break;
-			}
-
-			case "auto_compaction_end": {
-				const aborted = Boolean(event.aborted);
-				const errorMessage = this.extractRuntimeErrorMessage(event);
-				if (!this.compactionCycle) {
-					this.compactionInsertIndex = this.messages.length;
-					this.compactionCycle = {
-						id: uid("compaction"),
-						status: "running",
-						startedAt: Date.now(),
-						endedAt: null,
-						summary: "Compacting context…",
-						errorMessage: null,
-						details: [],
-						expanded: false,
-					};
-				}
-				this.compactionCycle.endedAt = Date.now();
-				if (aborted) {
-					this.compactionCycle.status = "aborted";
-					this.compactionCycle.summary = "Compaction aborted";
-					this.compactionCycle.details.push("Compaction was aborted before completion.");
-					this.pushNotice("Auto-compaction aborted", "info");
-				} else if (errorMessage) {
-					this.compactionCycle.status = "error";
-					this.compactionCycle.summary = "Compaction failed";
-					this.compactionCycle.errorMessage = truncate(errorMessage, 220);
-					this.compactionCycle.details.push(`Failure: ${truncate(errorMessage, 220)}`);
-					this.pushRuntimeNotice(`Auto-compaction failed: ${truncate(errorMessage, 180)}`, "error", 2600);
-				} else {
-					this.compactionCycle.status = "done";
-					this.compactionCycle.summary = "Compaction complete";
-					const tokensBefore = pickNumber(event, ["result.tokensBefore", "tokensBefore", "tokens_before"]);
-					if (typeof tokensBefore === "number" && Number.isFinite(tokensBefore)) {
-						this.compactionCycle.details.push(`Context before compaction: ${Math.round(tokensBefore).toLocaleString()} tokens`);
-					}
-					this.compactionCycle.details.push("Compaction completed successfully.");
-					this.markContextUsageUnknown();
-					this.pushNotice("Auto-compaction complete", "success");
-					this.refreshAfterCompaction();
-				}
-				this.render();
-				break;
-			}
-
-			case "auto_retry_start": {
-				const attempt = typeof event.attempt === "number" ? event.attempt : 1;
-				const maxAttempts = typeof event.maxAttempts === "number" ? event.maxAttempts : 1;
-				const delayMs = typeof event.delayMs === "number" ? event.delayMs : 0;
-				const errorMessage = this.extractRuntimeErrorMessage(event);
-				this.retryStatus = `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s`;
-				const retryLine = errorMessage
-					? `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s · ${truncate(errorMessage, 150)}`
-					: `Retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s`;
-				this.appendSystemMessage(retryLine, { idPrefix: "runtime" });
-				this.render();
-				break;
-			}
-
-			case "auto_retry_end": {
-				const success = Boolean(event.success);
-				const attempt = typeof event.attempt === "number" ? event.attempt : null;
-				this.retryStatus = "";
-				if (!success) {
-					const finalError = this.extractRuntimeErrorMessage(event) || "Unknown retry failure";
-					this.pushRuntimeNotice(`Retry failed: ${truncate(finalError, 180)}`, "error", 2600);
-				} else {
-					this.appendSystemMessage(attempt ? `Retry succeeded on attempt ${attempt}` : "Retry succeeded", { idPrefix: "runtime" });
-				}
 				this.render();
 				break;
 			}
