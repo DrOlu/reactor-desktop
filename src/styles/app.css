@@ -4398,15 +4398,6 @@ html.sidebar-file-drag-active body {
 	cursor: default;
 }
 
-html.sidebar-file-drag-active * {
-	-webkit-user-select: none !important;
-	user-select: none !important;
-}
-
-html.sidebar-file-drag-active .chat-input {
-	caret-color: transparent;
-}
-
 .sidebar-file-main:hover {
 	background: color-mix(in srgb, var(--bg-soft) 65%, transparent);
 	color: var(--text);

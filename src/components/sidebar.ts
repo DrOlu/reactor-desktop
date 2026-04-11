@@ -314,9 +314,6 @@ export class Sidebar {
 		this.loadSidebarState();
 		this.loadPersistedProjects();
 		this.loadPinnedSessions();
-		window.addEventListener("dragend", this.onGlobalFileDragCleanup, true);
-		window.addEventListener("drop", this.onGlobalFileDragCleanup, true);
-		window.addEventListener("pointerup", this.onGlobalFileDragCleanup, true);
 		this.render();
 		this.workspaceHydrationToken += 1;
 		void this.hydrateProjects(this.workspaceHydrationToken);
@@ -586,10 +583,6 @@ export class Sidebar {
 			this.render();
 		}
 	}
-
-	private readonly onGlobalFileDragCleanup = (): void => {
-		document.documentElement.classList.remove("sidebar-file-drag-active");
-	};
 
 	private readonly onWindowContextMenuPointerDown = (event: PointerEvent): void => {
 		if (!this.contextMenu) return;
@@ -2222,12 +2215,6 @@ export class Sidebar {
 			return;
 		}
 		this.primeFileDragPayload(node, fileRenameActive);
-		window.getSelection()?.removeAllRanges();
-		const activeElement = document.activeElement;
-		if (activeElement instanceof HTMLTextAreaElement || activeElement instanceof HTMLInputElement) {
-			const caret = typeof activeElement.selectionEnd === "number" ? activeElement.selectionEnd : activeElement.value.length;
-			activeElement.setSelectionRange(caret, caret);
-		}
 		document.documentElement.classList.add("sidebar-file-drag-active");
 		const transfer = event.dataTransfer;
 		if (!transfer) return;

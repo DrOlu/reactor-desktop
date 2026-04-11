@@ -825,60 +825,9 @@ export class ChatView {
 		document.documentElement.classList.remove("sidebar-file-drag-active");
 	}
 
-	private insertAttachmentTokensAtComposerIndex(tokens: string[], insertionIndex?: number): void {
-		const normalizedTokens = tokens.map((token) => token.trim()).filter((token) => token.length > 0);
-		if (normalizedTokens.length === 0) return;
-		let nextText = this.inputText;
-		let cursor = this.clampComposerInsertIndex(insertionIndex);
-		for (const token of normalizedTokens) {
-			const before = nextText.slice(0, cursor);
-			const after = nextText.slice(cursor);
-			const prefix = before.length > 0 && !/\s$/.test(before) ? " " : "";
-			const suffix = after.length > 0 && !/^\s/.test(after) ? " " : "";
-			const insertText = `${prefix}${token}${suffix}`;
-			nextText = `${before}${insertText}${after}`;
-			cursor = before.length + insertText.length;
-		}
-		this.inputText = nextText;
-		this.resetComposerHistoryNavigation();
-		this.updateSlashPaletteStateFromInput();
-		this.render();
-		this.syncComposerTextareaDeferred(nextText, {
-			maxHeight: 220,
-			focus: true,
-			selectionIndex: cursor,
-		});
-	}
-
-	private removeAttachmentTokenFromComposer(token: string): void {
-		const normalizedToken = token.trim();
-		if (!normalizedToken) return;
-		const source = this.inputText;
-		const escaped = normalizedToken.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-		const pattern = new RegExp(`(^|\\s)${escaped}(?=\\s|$)`);
-		const match = pattern.exec(source);
-		if (!match) return;
-		const leadingWhitespace = match[1] ?? "";
-		const start = match.index + leadingWhitespace.length;
-		const end = start + normalizedToken.length;
-		const before = source.slice(0, start);
-		const after = source.slice(end);
-		const merged = `${before}${after}`.replace(/ {2,}/g, " ");
-		const caret = Math.max(0, start);
-		this.inputText = merged;
-		this.resetComposerHistoryNavigation();
-		this.updateSlashPaletteStateFromInput();
-		this.render();
-		this.syncComposerTextareaDeferred(merged, {
-			maxHeight: 220,
-			focus: true,
-			selectionIndex: Math.min(caret, merged.length),
-		});
-	}
-
 	private syncComposerTextarea(
 		text: string,
-		options: { maxHeight?: number; focus?: boolean; moveCaretToEnd?: boolean; selectionIndex?: number } = {},
+		options: { maxHeight?: number; focus?: boolean; moveCaretToEnd?: boolean } = {},
 	): void {
 		const textarea = this.getComposerTextarea();
 		if (!textarea) return;
@@ -887,10 +836,7 @@ export class ChatView {
 		if (typeof options.maxHeight === "number" && options.maxHeight > 0) {
 			textarea.style.height = `${Math.min(textarea.scrollHeight, options.maxHeight)}px`;
 		}
-		if (typeof options.selectionIndex === "number" && Number.isFinite(options.selectionIndex)) {
-			const index = Math.max(0, Math.min(text.length, Math.floor(options.selectionIndex)));
-			textarea.setSelectionRange(index, index);
-		} else if (options.moveCaretToEnd) {
+		if (options.moveCaretToEnd) {
 			const end = text.length;
 			textarea.setSelectionRange(end, end);
 		}
@@ -899,7 +845,7 @@ export class ChatView {
 
 	private syncComposerTextareaDeferred(
 		text: string,
-		options: { maxHeight?: number; focus?: boolean; moveCaretToEnd?: boolean; selectionIndex?: number } = {},
+		options: { maxHeight?: number; focus?: boolean; moveCaretToEnd?: boolean } = {},
 	): void {
 		requestAnimationFrame(() => this.syncComposerTextarea(text, options));
 	}
@@ -2863,10 +2809,7 @@ export class ChatView {
 		}
 		if (next.length === 0) return;
 		this.pendingFileReferences = [...this.pendingFileReferences, ...next];
-		this.insertAttachmentTokensAtComposerIndex(
-			next.map((entry) => entry.token),
-			insertAt,
-		);
+		this.render();
 	}
 
 	private dedupeDroppedPaths(paths: string[]): string[] {
@@ -2962,14 +2905,7 @@ export class ChatView {
 				return;
 			}
 			this.pendingImages = [...this.pendingImages, ...next];
-			const tokens = next
-				.map((entry) => (typeof entry.token === "string" ? entry.token.trim() : ""))
-				.filter((token) => token.length > 0);
-			if (tokens.length > 0) {
-				this.insertAttachmentTokensAtComposerIndex(tokens, insertAt);
-			} else {
-				this.render();
-			}
+			this.render();
 		} catch {
 			this.pushNotice("Drag/drop is blocked by file permissions", "error");
 		}
@@ -3185,14 +3121,7 @@ export class ChatView {
 		}
 
 		this.pendingImages = [...this.pendingImages, ...next];
-		const tokens = next
-			.map((entry) => (typeof entry.token === "string" ? entry.token.trim() : ""))
-			.filter((token) => token.length > 0);
-		if (tokens.length > 0) {
-			this.insertAttachmentTokensAtComposerIndex(tokens, insertAt);
-		} else {
-			this.render();
-		}
+		this.render();
 		if (failed > 0) {
 			this.pushNotice(`Attached ${next.length} image${next.length === 1 ? "" : "s"}; ${failed} failed`, "info");
 		}
@@ -3213,27 +3142,56 @@ export class ChatView {
 	}
 
 	private removePendingImage(id: string): void {
-		const removed = this.pendingImages.find((img) => img.id === id) ?? null;
 		this.pendingImages = this.pendingImages.filter((img) => img.id !== id);
-		if (removed?.token) {
-			this.removeAttachmentTokenFromComposer(removed.token);
-			return;
-		}
 		this.render();
 	}
 
 	private removePendingFileReference(id: string): void {
-		const removed = this.pendingFileReferences.find((entry) => entry.id === id) ?? null;
 		this.pendingFileReferences = this.pendingFileReferences.filter((entry) => entry.id !== id);
-		if (removed?.token) {
-			this.removeAttachmentTokenFromComposer(removed.token);
-			return;
-		}
 		this.render();
 	}
 
 	private composedPromptText(rawText: string): string {
-		return rawText.trim();
+		const baseText = rawText;
+		const tokenEntries = [
+			...this.pendingFileReferences
+				.filter((entry) => entry.token.length > 0)
+				.map((entry, idx) => ({ token: entry.token, insertAt: entry.insertAt, order: idx })),
+			...this.pendingImages
+				.filter((image) => typeof image.token === "string" && image.token.trim().length > 0)
+				.map((image, idx) => ({
+					token: (image.token || "").trim(),
+					insertAt: image.insertAt,
+					order: this.pendingFileReferences.length + idx,
+				})),
+		];
+		if (tokenEntries.length === 0) return baseText.trim();
+
+		const sorted = tokenEntries
+			.map((entry) => ({
+				token: entry.token,
+				insertAt: this.clampComposerInsertIndex(entry.insertAt),
+				order: entry.order,
+			}))
+			.sort((a, b) => a.insertAt - b.insertAt || a.order - b.order);
+
+		let cursor = 0;
+		let output = "";
+		for (const entry of sorted) {
+			const index = this.clampComposerInsertIndex(entry.insertAt);
+			output += baseText.slice(cursor, index);
+			if (output.length > 0 && !/\s$/.test(output)) {
+				output += " ";
+			}
+			output += entry.token;
+			const nextChar = baseText.slice(index, index + 1);
+			if (nextChar && !/^\s$/.test(nextChar)) {
+				output += " ";
+			}
+			cursor = index;
+		}
+		output += baseText.slice(cursor);
+		return output.trim();
 	}
 
 	private currentIsStreaming(): boolean {
@@ -4636,6 +4594,10 @@ export class ChatView {
 	}
 
 	private handleComposerDragOver(event: DragEvent, interactionLocked: boolean): void {
+		const target = event.currentTarget instanceof HTMLTextAreaElement ? event.currentTarget : null;
+		if (target && document.activeElement !== target) {
+			target.focus({ preventScroll: true });
+		}
 		handleComposerDragOverEvent({ event, interactionLocked });
 	}
 
@@ -4728,8 +4690,6 @@ export class ChatView {
 					<div class="composer-panel">
 						<div class="composer-row">
 							${renderComposerSkillDraftPillView(this.selectedSkillDraft, skillGlyphIcon(), () => this.removeComposerSkillDraft())}
-							${renderPendingImagesView(pendingImages, truncate, (id) => this.removePendingImage(id))}
-							${renderPendingFileReferencesView(pendingFileReferences, truncate, (id) => this.removePendingFileReference(id))}
 							<textarea
 								id="chat-input"
 								class="chat-input"
@@ -4746,6 +4706,8 @@ export class ChatView {
 								@drop=${(event: DragEvent) => this.handleComposerDrop(event, interactionLocked)}
 								@keydown=${(event: KeyboardEvent) => this.handleComposerKeyDown(event, interactionLocked, isStreaming)}
 							></textarea>
+							${renderPendingImagesView(pendingImages, truncate, (id) => this.removePendingImage(id))}
+							${renderPendingFileReferencesView(pendingFileReferences, truncate, (id) => this.removePendingFileReference(id))}
 						</div>
 						${this.renderSlashPalette(slashItems)}
 						${this.renderComposerControls(canSend, isStreaming, interactionLocked)}
