@@ -57,7 +57,7 @@ export function renderPendingImagesView(
 				(img) => html`
 					<div class="composer-attachment" title=${img.path || img.name}>
 						<img class="composer-attachment-thumb" src=${img.previewUrl} alt=${img.name} />
-						<span class="composer-attachment-name">${truncateText(img.name, 16)}</span>
+						<span class="composer-attachment-name">${truncateText(img.name, 12)}</span>
 						<button class="composer-attachment-remove" title="Remove image" @click=${() => onRemoveImage(img.id)}>✕</button>
 					</div>
 				`,
@@ -84,7 +84,7 @@ export function renderPendingFileReferencesView(
 				(file) => html`
 					<div class="composer-attachment" title=${file.path}>
 						<span class="composer-attachment-thumb file" aria-hidden="true">${fileBadgeLabel(file.name)}</span>
-						<span class="composer-attachment-name">${truncateText(file.token, 14)}</span>
+						<span class="composer-attachment-name">${truncateText(file.token, 11)}</span>
 						<button class="composer-attachment-remove" title="Remove file reference" @click=${() => onRemoveFile(file.id)}>✕</button>
 					</div>
 				`,

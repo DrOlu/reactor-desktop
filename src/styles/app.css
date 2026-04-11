@@ -4382,15 +4382,15 @@ body.file-split-resizing #file-split-resize-handle::after {
 	min-width: 0;
 }
 
-.sidebar-file-row[draggable="true"] {
+.sidebar-file-row.is-draggable {
 	-webkit-user-drag: element;
 }
 
-.sidebar-file-row[draggable="true"] .sidebar-file-main {
+.sidebar-file-row.is-draggable .sidebar-file-main {
 	cursor: grab;
 }
 
-.sidebar-file-row[draggable="true"] .sidebar-file-main:active {
+.sidebar-file-row.is-draggable .sidebar-file-main:active {
 	cursor: grabbing;
 }
 
@@ -6517,7 +6517,7 @@ body.file-split-resizing #file-split-resize-handle::after {
 
 .composer-attachments.inline {
 	margin-top: 5px;
-	max-width: min(34%, 260px);
+	max-width: min(28%, 220px);
 	overflow-x: auto;
 	padding: 0 0 2px;
 }
@@ -6558,7 +6558,7 @@ body.file-split-resizing #file-split-resize-handle::after {
 }
 
 .composer-attachment-name {
-	max-width: 58px;
+	max-width: 46px;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;

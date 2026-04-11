@@ -84,6 +84,10 @@ import {
 } from "./chat-view/message-content-utils.js";
 import { renderGitRepoControlView } from "./chat-view/git-repo-control-view.js";
 import {
+	clearActiveDraggedFilePaths,
+	peekActiveDraggedFilePaths,
+} from "./file-drag-transfer.js";
+import {
 	createDropSignature,
 	extractFilePathsFromDropPayload as extractFilePathsFromDropPayloadValue,
 	fileNameFromPath as fileNameFromPathValue,
@@ -697,6 +701,7 @@ export class ChatView {
 	private resetSessionUiTransientState(): void {
 		this.modelPickerOpen = false;
 		this.selectedSkillDraft = null;
+		this.pendingFileReferences = [];
 		this.slashPaletteOpen = false;
 		this.slashPaletteQuery = "";
 		this.slashPaletteIndex = 0;
@@ -2842,13 +2847,18 @@ export class ChatView {
 			.map((value) => value || "")
 			.join("\n");
 		const uriPaths = this.extractFilePathsFromDropPayload(uriPayload);
-		const droppedPaths = this.dedupeDroppedPaths([...customPaths, ...uriPaths]);
 		const directFiles = Array.from(dataTransfer.files || []);
 		const fromItems = Array.from(dataTransfer.items || [])
 			.filter((item) => item.kind === "file")
 			.map((item) => item.getAsFile())
 			.filter((f): f is File => Boolean(f));
 		const fileObjects = directFiles.length > 0 ? directFiles : fromItems;
+		const shouldUseSidebarFallbackPaths = customPaths.length === 0 && uriPaths.length === 0 && fileObjects.length === 0;
+		const fallbackSidebarPaths = shouldUseSidebarFallbackPaths ? peekActiveDraggedFilePaths() : [];
+		const droppedPaths = this.dedupeDroppedPaths([...customPaths, ...uriPaths, ...fallbackSidebarPaths]);
+		if (fallbackSidebarPaths.length > 0) {
+			clearActiveDraggedFilePaths();
+		}
 
 		const imageFiles = fileObjects.filter((file) => this.isImageFile(file));
 		const imagePaths = droppedPaths.filter((path) => this.isImageName(this.fileNameFromPath(path)));
@@ -3279,6 +3289,7 @@ export class ChatView {
 
 	private editUserMessage(msg: UiMessage): void {
 		this.pendingImages = this.cloneImages(msg.attachments);
+		this.pendingFileReferences = [];
 		this.setInputText(msg.text || "");
 		this.pushNotice("Loaded message into composer", "info");
 	}
@@ -3292,6 +3303,7 @@ export class ChatView {
 		}
 
 		this.pendingImages = images;
+		this.pendingFileReferences = [];
 		this.setInputText(text);
 		this.pushNotice("Message loaded. Press send to resend", "info");
 	}

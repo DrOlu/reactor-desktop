@@ -3,6 +3,7 @@
  */
 
 import { html, nothing, render, type TemplateResult } from "lit";
+import { clearActiveDraggedFilePaths, setActiveDraggedFilePaths } from "./file-drag-transfer.js";
 import { EMOJI_CATALOG } from "./workspace-tabs.js";
 
 export type SidebarMode = "projects" | "files";
@@ -2202,6 +2203,25 @@ export class Sidebar {
 		`;
 	}
 
+	private handleFileDragStart(event: DragEvent, node: FileNode, fileRenameActive: boolean): void {
+		if (node.isDirectory || fileRenameActive) {
+			event.preventDefault();
+			return;
+		}
+		const transfer = event.dataTransfer;
+		if (!transfer) return;
+		setActiveDraggedFilePaths([node.path]);
+		transfer.effectAllowed = "copy";
+		transfer.setData("text/plain", node.path);
+		transfer.setData("text/uri-list", toFileUri(node.path));
+		transfer.setData("application/x-pi-file-path", node.path);
+		transfer.setData("application/x-pi-file-paths-json", JSON.stringify([node.path]));
+	}
+
+	private handleFileDragEnd(): void {
+		clearActiveDraggedFilePaths();
+	}
+
 	private renderFileNode(projectId: string, node: FileNode, query: string): TemplateResult | typeof nothing {
 		if (!this.nodeMatchesQuery(node, query)) return nothing;
 		const indent = node.depth * 14;
@@ -2215,37 +2235,17 @@ export class Sidebar {
 		return html`
 			<div>
 				<div
-					class="sidebar-file-row ${node.isDirectory ? "dir" : "file"}"
+					class="sidebar-file-row ${node.isDirectory ? "dir" : "file"} ${!node.isDirectory && !fileRenameActive ? "is-draggable" : ""}"
 					style=${`--indent:${indent}px`}
-					?draggable=${!node.isDirectory && !fileRenameActive}
-					@dragstart=${(event: DragEvent) => {
-						if (node.isDirectory || fileRenameActive) {
-							event.preventDefault();
-							return;
-						}
-						const transfer = event.dataTransfer;
-						if (!transfer) return;
-						transfer.effectAllowed = "copy";
-						transfer.setData("text/plain", node.path);
-						transfer.setData("text/uri-list", toFileUri(node.path));
-						transfer.setData("application/x-pi-file-path", node.path);
-					}}
+					.draggable=${!node.isDirectory && !fileRenameActive}
+					@dragstart=${(event: DragEvent) => this.handleFileDragStart(event, node, fileRenameActive)}
+					@dragend=${() => this.handleFileDragEnd()}
 				>
 					<button
 						class="sidebar-file-main ${activeFile ? "active-file" : ""}"
-						?draggable=${!node.isDirectory && !fileRenameActive}
-						@dragstart=${(event: DragEvent) => {
-							if (node.isDirectory || fileRenameActive) {
-								event.preventDefault();
-								return;
-							}
-							const transfer = event.dataTransfer;
-							if (!transfer) return;
-							transfer.effectAllowed = "copy";
-							transfer.setData("text/plain", node.path);
-							transfer.setData("text/uri-list", toFileUri(node.path));
-							transfer.setData("application/x-pi-file-path", node.path);
-						}}
+						.draggable=${!node.isDirectory && !fileRenameActive}
+						@dragstart=${(event: DragEvent) => this.handleFileDragStart(event, node, fileRenameActive)}
+						@dragend=${() => this.handleFileDragEnd()}
 						@click=${() => {
 							if (node.isDirectory) {
 								void this.toggleDirectory(projectId, node);
