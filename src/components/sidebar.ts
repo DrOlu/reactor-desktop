@@ -2216,6 +2216,14 @@ export class Sidebar {
 		transfer.setData("text/uri-list", toFileUri(node.path));
 		transfer.setData("application/x-pi-file-path", node.path);
 		transfer.setData("application/x-pi-file-paths-json", JSON.stringify([node.path]));
+		const dragSource = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+		if (dragSource) {
+			try {
+				transfer.setDragImage(dragSource, 12, 12);
+			} catch {
+				// ignore unsupported drag-image calls
+			}
+		}
 	}
 
 	private handleFileDragEnd(): void {
