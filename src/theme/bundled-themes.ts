@@ -73,6 +73,19 @@ const BUNDLED_THEME_SPECS: readonly BundledThemeSpec[] = [
 		contrast: 60,
 	},
 	{
+		fileName: "pi-desktop-default-dark.json",
+		name: "pi-desktop-default-dark",
+		variant: "dark",
+		codeThemeId: "vscode-plus",
+		accent: "#7a818f",
+		surface: "#0d0d0f",
+		ink: "#f5f5f7",
+		diffAdded: "#22c55e",
+		diffRemoved: "#ef4444",
+		skill: "#7a818f",
+		contrast: 50,
+	},
+	{
 		fileName: "pi-desktop-notion-light.json",
 		legacyFileName: "codex-notion-light.json",
 		name: "pi-desktop-notion-light",
@@ -85,6 +98,19 @@ const BUNDLED_THEME_SPECS: readonly BundledThemeSpec[] = [
 		diffRemoved: "#a31515",
 		skill: "#0000ff",
 		contrast: 45,
+	},
+	{
+		fileName: "pi-desktop-default-light.json",
+		name: "pi-desktop-default-light",
+		variant: "light",
+		codeThemeId: "vscode-plus",
+		accent: "#6b7280",
+		surface: "#f3f3f5",
+		ink: "#151518",
+		diffAdded: "#16a34a",
+		diffRemoved: "#dc2626",
+		skill: "#6b7280",
+		contrast: 50,
 	},
 	{
 		fileName: "pi-desktop-vscode-plus-light.json",
@@ -166,7 +192,10 @@ function toPiThemeDocument(spec: BundledThemeSpec) {
 	});
 }
 
-const BUNDLED_THEMES_MARKER = ".pi-desktop-default-themes-installed-v1";
+const BUNDLED_THEMES_MARKER = "pi-desktop-default-themes-installed-v2.marker";
+const LEGACY_BUNDLED_THEMES_MARKERS = [
+	".pi-desktop-default-themes-installed-v1",
+] as const;
 
 export interface BundledThemeInstallResult {
 	created: number;
@@ -228,6 +257,25 @@ async function hasBundledThemeRepairCandidate(
 	return false;
 }
 
+async function existsSafe(exists: (path: string) => Promise<boolean>, path: string): Promise<boolean> {
+	try {
+		return await exists(path);
+	} catch {
+		return false;
+	}
+}
+
+async function hasBundledThemesMarker(
+	themesRoot: string,
+	exists: (path: string) => Promise<boolean>,
+): Promise<boolean> {
+	const markerNames = [BUNDLED_THEMES_MARKER, ...LEGACY_BUNDLED_THEMES_MARKERS];
+	for (const markerName of markerNames) {
+		if (await existsSafe(exists, joinFsPath(themesRoot, markerName))) return true;
+	}
+	return false;
+}
+
 async function installBundledThemes(options: { respectMarker: boolean }): Promise<BundledThemeInstallResult> {
 	const { exists, mkdir, writeTextFile, readTextFile, rename, remove } = await import("@tauri-apps/plugin-fs");
 	const themesRoot = await resolveThemesRoot();
@@ -235,7 +283,7 @@ async function installBundledThemes(options: { respectMarker: boolean }): Promis
 	await mkdir(themesRoot, { recursive: true });
 
 	const markerPath = joinFsPath(themesRoot, BUNDLED_THEMES_MARKER);
-	if (options.respectMarker && (await exists(markerPath))) {
+	if (options.respectMarker && (await hasBundledThemesMarker(themesRoot, exists))) {
 		const hasRepairCandidate = await hasBundledThemeRepairCandidate(themesRoot, exists, readTextFile);
 		if (!hasRepairCandidate) {
 			return { created: 0, updated: 0, renamed: 0, removedLegacy: 0, skippedByMarker: true };
@@ -283,7 +331,11 @@ async function installBundledThemes(options: { respectMarker: boolean }): Promis
 		}
 	}
 
-	await writeTextFile(markerPath, `${new Date().toISOString()}\n`);
+	try {
+		await writeTextFile(markerPath, `${new Date().toISOString()}\n`);
+	} catch {
+		// marker writes are best effort; avoid blocking theme installation
+	}
 	return { created, updated, renamed, removedLegacy, skippedByMarker: false };
 }
 

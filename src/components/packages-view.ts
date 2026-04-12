@@ -634,7 +634,7 @@ export class PackagesView {
 	private activeSkillContentNotice = "";
 	private desktopThemesInstalled = false;
 	private desktopThemesInstalledCount = 0;
-	private desktopThemesTotal = 8;
+	private desktopThemesTotal = 10;
 	private desktopThemesRootPath = "";
 
 	constructor(container: HTMLElement) {
