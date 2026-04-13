@@ -84,5 +84,5 @@ xattr -cr /Applications/Pi\ Desktop.app
 
 2. System Settings workaround:
    - Open **System Settings → Privacy & Security**
-   - Find the blocked Pi Desktop launch warning
+   - Find the blocked Reactor Desktop launch warning
    - Click **Open Anyway** and confirm

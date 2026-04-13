@@ -3877,7 +3877,7 @@ function renderApp(): void {
 								${windowsHost
 									? html`
 										<p class="onboarding-footnote">
-											Using WSL? Pi Desktop v1 starts a Windows-native agent. Install <code>pi</code> in Windows too (not only inside WSL).
+											Using WSL? Reactor Desktop v1 starts a Windows-native agent. Install <code>pi</code> in Windows too (not only inside WSL).
 										</p>
 									`
 									: nothing}

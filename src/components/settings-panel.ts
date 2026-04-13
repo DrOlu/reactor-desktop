@@ -1957,7 +1957,7 @@ export class SettingsPanel {
 								<div class="settings-desc">Current: <code>${this.desktopStatus?.currentVersion || "unknown"}</code> · Latest: <code>${this.desktopStatus?.latestVersion || "unknown"}</code></div>
 								${this.desktopStatus
 									? this.desktopStatus.updateAvailable
-										? html`<div class="settings-desc">A newer Pi Desktop release is available.</div>`
+										? html`<div class="settings-desc">A newer Reactor Desktop release is available.</div>`
 										: html`<div class="settings-desc">No desktop update available right now.</div>`
 									: html`<div class="settings-desc">Desktop update status unavailable. Check your network and try again.</div>`}
 								${this.desktopStatus?.assetName ? html`<div class="settings-desc">Recommended installer: <code>${this.desktopStatus.assetName}</code></div>` : null}

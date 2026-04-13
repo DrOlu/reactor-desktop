@@ -15,7 +15,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [1.0.0] - 2026-04-13
 
 ### Changed
-- Reworked the no-project / new-thread welcome view into a cleaner Codex-inspired centered layout with Pi Desktop branding, a project-focused dropdown, and reduced UI chrome.
+- Reworked the no-project / new-thread welcome view into a cleaner Codex-inspired centered layout with Reactor Desktop branding, a project-focused dropdown, and reduced UI chrome.
 - Settings navigation now lives in the main left sidebar while Settings is open, and the right pane uses simplified section-first headers with reduced chrome.
 - Composer now supports terminal-style full input history traversal (`ArrowUp` / `ArrowDown`) across previously sent prompts and slash commands.
 - Slash palette keyboard navigation now previews the active command directly in the composer input and keeps the active row visible while traversing.
@@ -84,10 +84,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 - Modal/backdrop layers now preserve window corner clipping (rounded dim/blur overlay) so opening dialogs no longer introduces square edge artifacts around the app window.
-- Bundled default Pi Desktop themes now emit full Pi CLI-compatible theme schema (all required color tokens) instead of a partial Desktop-only color set.
+- Bundled default Reactor Desktop themes now emit full Pi CLI-compatible theme schema (all required color tokens) instead of a partial Desktop-only color set.
 - Fixed bundled-themes first-run install marker handling by migrating to a non-hidden marker filename and making marker reads/writes best-effort, preventing `forbidden path` install failures.
 - Added bundled-theme package expansion with `pi-desktop-default-dark` and `pi-desktop-default-light`, and updated package metadata/counts accordingly.
-- Fixed bundled-theme install-state resilience so “Pi Desktop Themes” is treated as preinstalled when bundled resources are already present on disk.
+- Fixed bundled-theme install-state resilience so “Reactor Desktop Themes” is treated as preinstalled when bundled resources are already present on disk.
 - Fixed model-picker UX to suppress backend placeholder `unknown/unknown` entries and treat them as “no selected model”.
 - Fixed recommended-skill installation materialization to guarantee `~/.pi/agent/skills/<skill>/SKILL.md` before exposing `/skill:<name>` staging.
 - Fixed `/scoped-models` settings-open race causing Lit `ChildPart has no parentNode` errors by removing unsupported `innerHTML` mutation paths in `SettingsPanel` render/fallback lifecycle.

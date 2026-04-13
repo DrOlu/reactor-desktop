@@ -14,8 +14,8 @@ export interface RecommendedPackageDefinition {
 export const RECOMMENDED_PACKAGES: RecommendedPackageDefinition[] = [
 	{
 		id: "pi-desktop-themes",
-		name: "Pi Desktop Themes",
-		description: "Default Pi Desktop light/dark themes for desktop + TUI (Default, Notion, Catppuccin, GitHub, VSCode Plus).",
+		name: "Reactor Desktop Themes",
+		description: "Default Reactor Desktop light/dark themes for desktop + TUI (Default, Notion, Catppuccin, GitHub, VSCode Plus).",
 		installScopeHint: "global",
 		source: "local:pi-desktop-themes",
 		sourceKind: "local",
