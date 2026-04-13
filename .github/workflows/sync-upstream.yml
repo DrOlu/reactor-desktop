@@ -109,8 +109,9 @@ jobs:
           SEMVER="${UPSTREAM_TAG#v}"
 
           echo "Merging upstream $UPSTREAM_TAG into main..."
+          # Merge the upstream tag directly (fetched as refs/tags/$UPSTREAM_TAG, not a branch)
           # Allow unrelated histories in case the merge base is not shared
-          git merge "upstream/$UPSTREAM_TAG" \
+          git merge "$UPSTREAM_TAG" \
             --no-edit \
             --allow-unrelated-histories \
             --strategy-option=theirs \
