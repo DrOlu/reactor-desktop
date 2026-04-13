@@ -1,8 +1,8 @@
 [package]
-name = "reactor-desktop"
-version = "0.1.9"
-description = "Reactor Desktop - A minimal coding agent desktop app"
-authors = ["Hyperspace Technologies <reactor@hyperspace.ng>"]
+name = "pi-desktop"
+version = "1.0.0"
+description = "Pi Desktop - A minimal coding agent desktop app"
+authors = ["Pi Desktop contributors"]
 edition = "2021"
 
 [lib]

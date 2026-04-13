@@ -1,8 +1,8 @@
 {
 	"$schema": "https://raw.githubusercontent.com/nicegui/nicegui/refs/heads/main/nicegui/static/tauri_v2_schema.json",
-	"productName": "Reactor Desktop",
-	"identifier": "ng.hyperspace.reactor-desktop",
-	"version": "0.1.9",
+	"productName": "Pi Desktop",
+	"identifier": "com.pi.desktop",
+	"version": "1.0.0",
 	"build": {
 		"beforeDevCommand": "npx vite --port 1420",
 		"devUrl": "http://localhost:1420",
@@ -39,13 +39,21 @@
 			"icons/icon.icns",
 			"icons/icon.ico"
 		],
-		"macOS": {
-			"signingIdentity": null,
-			"hardenedRuntime": false
-		},
 		"linux": {
+			"appimage": {
+				"files": {
+					"usr/share/metainfo/com.pi.desktop.metainfo.xml": "linux/com.pi.desktop.metainfo.xml"
+				}
+			},
 			"deb": {
-				"depends": []
+				"files": {
+					"usr/share/metainfo/com.pi.desktop.metainfo.xml": "linux/com.pi.desktop.metainfo.xml"
+				}
+			},
+			"rpm": {
+				"files": {
+					"usr/share/metainfo/com.pi.desktop.metainfo.xml": "linux/com.pi.desktop.metainfo.xml"
+				}
 			}
 		}
 	},
