@@ -98,7 +98,8 @@ jobs:
         if: steps.resolve.outputs.needs_sync == 'true'
         run: |
           git remote add upstream "${{ env.UPSTREAM_URL }}" || true
-          git fetch upstream --tags
+          # --force handles tag conflicts (our repo has same tag names pointing to our patched commits)
+          git fetch upstream --tags --force
 
       - name: Merge upstream tag into main
         if: steps.resolve.outputs.needs_sync == 'true'
